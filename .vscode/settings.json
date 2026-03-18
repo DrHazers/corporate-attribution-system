@@ -1,0 +1,11 @@
+{
+  "python.defaultInterpreterPath": "D:\\graduation_project\\corp_attribution_system\\venv\\Scripts\\python.exe",
+  "python.analysis.extraPaths": [
+    "D:\\graduation_project\\corp_attribution_system"
+  ],
+  "python.analysis.autoImportCompletions": true,
+
+  "http.proxy": "http://127.0.0.1:7890",
+  "https.proxy": "http://127.0.0.1:7890",
+  "http.proxyStrictSSL": false
+}

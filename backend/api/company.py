@@ -1,0 +1,89 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from backend.crud.company import (
+    create_company,
+    delete_company,
+    get_companies,
+    get_company_by_id,
+    get_company_by_stock_code,
+    update_company,
+)
+from backend.database import SessionLocal
+from backend.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
+
+
+router = APIRouter(prefix="/companies", tags=["companies"])
+
+
+def get_db():
+    # 为每个请求提供一个数据库会话，并在请求结束后关闭。
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_company_or_404(db: Session, company_id: int):
+    # 在执行详情、更新、删除前统一检查企业是否存在。
+    company = get_company_by_id(db, company_id)
+    if company is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Company not found.",
+        )
+
+    return company
+
+
+@router.post("", response_model=CompanyRead, status_code=status.HTTP_201_CREATED)
+def create_company_endpoint(
+    company_in: CompanyCreate,
+    db: Session = Depends(get_db),
+):
+    # 在第一阶段的 Company 模块中保持 stock_code 唯一。
+    existing_company = get_company_by_stock_code(db, company_in.stock_code)
+    if existing_company is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Company with this stock_code already exists.",
+        )
+
+    return create_company(db, company_in)
+
+
+@router.get("", response_model=list[CompanyRead])
+def list_companies(db: Session = Depends(get_db)):
+    return get_companies(db)
+
+
+@router.get("/{company_id}", response_model=CompanyRead)
+def get_company_detail(company_id: int, db: Session = Depends(get_db)):
+    company = get_company_or_404(db, company_id)
+
+    return company
+
+
+@router.put("/{company_id}", response_model=CompanyRead)
+def update_company_endpoint(
+    company_id: int,
+    company_in: CompanyUpdate,
+    db: Session = Depends(get_db),
+):
+    company = get_company_or_404(db, company_id)
+    existing_company = get_company_by_stock_code(db, company_in.stock_code)
+
+    # 更新时允许保留自己的 stock_code，但不能与其他企业重复。
+    if existing_company is not None and existing_company.id != company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Company with this stock_code already exists.",
+        )
+
+    return update_company(db, company, company_in)
+
+
+@router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_company_endpoint(company_id: int, db: Session = Depends(get_db)):
+    company = get_company_or_404(db, company_id)
+    delete_company(db, company)

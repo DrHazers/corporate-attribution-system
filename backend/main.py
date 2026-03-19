@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from backend.api.analysis import router as analysis_router
 from backend.api.company import router as company_router
 from backend.api.control_relationship import router as control_relationship_router
 from backend.api.country_attribution import router as country_attribution_router
@@ -9,6 +10,7 @@ from backend.models.control_relationship import ControlRelationship
 from backend.models.country_attribution import CountryAttribution
 from backend.models.shareholder import ShareholderEntity, ShareholderStructure
 app = FastAPI(title="Corporate Attribution System")
+app.include_router(analysis_router)
 app.include_router(company_router)
 app.include_router(control_relationship_router)
 app.include_router(country_attribution_router)

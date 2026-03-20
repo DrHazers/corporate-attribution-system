@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+﻿from sqlalchemy.orm import Session
 
 from backend.models.control_relationship import ControlRelationship
 from backend.schemas.control_relationship import (
@@ -11,7 +11,7 @@ def create_control_relationship(
     db: Session,
     control_relationship_in: ControlRelationshipCreate,
 ) -> ControlRelationship:
-    # 将校验后的控制关系输入数据转换为数据库记录。
+    # 将校验后的控制关系结果输入数据转换为数据库记录。
     control_relationship = ControlRelationship(**control_relationship_in.model_dump())
     db.add(control_relationship)
     db.commit()
@@ -34,7 +34,7 @@ def get_control_relationships_by_company_id(
     db: Session,
     company_id: int,
 ) -> list[ControlRelationship]:
-    # 按 company_id 返回控制关系列表，保证接口输出顺序稳定。
+    # 按 company_id 返回控制关系结果列表，保证接口输出顺序稳定。
     return (
         db.query(ControlRelationship)
         .filter(ControlRelationship.company_id == company_id)
@@ -48,7 +48,7 @@ def update_control_relationship(
     control_relationship: ControlRelationship,
     control_relationship_in: ControlRelationshipUpdate,
 ) -> ControlRelationship:
-    # 仅更新请求中显式传入的控制关系字段。
+    # 仅更新请求中显式传入的控制关系结果字段。
     for field, value in control_relationship_in.model_dump(exclude_unset=True).items():
         setattr(control_relationship, field, value)
 
@@ -61,6 +61,6 @@ def delete_control_relationship(
     db: Session,
     control_relationship: ControlRelationship,
 ) -> None:
-    # 删除指定控制关系记录并提交事务。
+    # 删除指定控制关系结果记录并提交事务。
     db.delete(control_relationship)
     db.commit()

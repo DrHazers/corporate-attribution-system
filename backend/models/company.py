@@ -1,10 +1,11 @@
 from sqlalchemy import Column, Integer, String, Text
 from sqlalchemy.orm import relationship
+
 from backend.database import Base
 
 
 class Company(Base):
-    # 仅存储第一阶段所需的 Company 基础信息。
+    # 继续作为公司基础信息主表，不直接承载股权图边信息。
     __tablename__ = "companies"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -15,9 +16,9 @@ class Company(Base):
     headquarters = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 
-    # 关联公司的股权结构记录。
-    shareholder_structures = relationship(
-        "ShareholderStructure",
+    # 关联映射到该公司的主体节点，便于后续构建主体图。
+    mapped_shareholder_entities = relationship(
+        "ShareholderEntity",
         back_populates="company",
         cascade="all, delete-orphan",
     )

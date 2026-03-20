@@ -5,8 +5,9 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ControlRelationshipCreate(BaseModel):
-    # 创建控制关系记录时使用的请求结构。
+    # 创建控制关系结果时使用的请求结构。
     company_id: int
+    controller_entity_id: int | None = None
     controller_name: str
     controller_type: str
     control_type: str
@@ -18,8 +19,9 @@ class ControlRelationshipCreate(BaseModel):
 
 
 class ControlRelationshipUpdate(BaseModel):
-    # 更新控制关系记录时使用的请求结构，所有字段均为可选。
+    # 更新控制关系结果时使用的请求结构，所有字段均为可选。
     company_id: int | None = None
+    controller_entity_id: int | None = None
     controller_name: str | None = None
     controller_type: str | None = None
     control_type: str | None = None
@@ -33,9 +35,10 @@ class ControlRelationshipUpdate(BaseModel):
 class ControlRelationshipRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    # 控制关系读取时使用的响应结构。
+    # 控制关系结果读取时使用的响应结构。
     id: int
     company_id: int
+    controller_entity_id: int | None = None
     controller_name: str
     controller_type: str
     control_type: str

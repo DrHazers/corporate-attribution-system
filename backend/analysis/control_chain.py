@@ -4,7 +4,10 @@ from backend.crud.control_relationship import get_control_relationships_by_compa
 
 
 def analyze_control_chain(db: Session, company_id: int) -> dict:
-    # 第一版控制链分析：仅基于 control_relationship 表中已有记录返回直接分析结果。
+    # 第一版控制链分析仍然基于 control_relationships 结果表返回直接分析结果。
+    #
+    # 后续股权网络分析应优先从 shareholder_entities + shareholder_structures
+    # 构建主体图，再据此生成或刷新 control_relationships。
     control_relationships = get_control_relationships_by_company_id(db, company_id)
 
     analysis_items = []
@@ -17,6 +20,7 @@ def analyze_control_chain(db: Session, company_id: int) -> dict:
 
         item = {
             "company_id": relationship.company_id,
+            "controller_entity_id": relationship.controller_entity_id,
             "controller_name": relationship.controller_name,
             "controller_type": relationship.controller_type,
             "control_type": relationship.control_type,

@@ -13,7 +13,7 @@ def create_shareholder_entity(
     db: Session,
     shareholder_entity_in: ShareholderEntityCreate,
 ) -> ShareholderEntity:
-    # 将校验后的股东主体输入数据转换为数据库记录。
+    # 将校验后的主体输入数据转换为数据库记录。
     shareholder_entity = ShareholderEntity(**shareholder_entity_in.model_dump())
     db.add(shareholder_entity)
     db.commit()
@@ -37,7 +37,7 @@ def get_shareholder_entities(
     skip: int = 0,
     limit: int = 10,
 ) -> list[ShareholderEntity]:
-    # 分页返回股东主体列表，保证接口输出顺序稳定。
+    # 分页返回主体节点列表，保证接口输出顺序稳定。
     return (
         db.query(ShareholderEntity)
         .order_by(ShareholderEntity.id.asc())
@@ -47,12 +47,23 @@ def get_shareholder_entities(
     )
 
 
+def get_shareholder_entity_by_name(
+    db: Session,
+    entity_name: str,
+) -> ShareholderEntity | None:
+    return (
+        db.query(ShareholderEntity)
+        .filter(ShareholderEntity.entity_name == entity_name)
+        .first()
+    )
+
+
 def update_shareholder_entity(
     db: Session,
     shareholder_entity: ShareholderEntity,
     shareholder_entity_in: ShareholderEntityUpdate,
 ) -> ShareholderEntity:
-    # 仅更新请求中显式传入的股东主体字段。
+    # 仅更新请求中显式传入的主体字段。
     for field, value in shareholder_entity_in.model_dump(exclude_unset=True).items():
         setattr(shareholder_entity, field, value)
 
@@ -65,7 +76,7 @@ def delete_shareholder_entity(
     db: Session,
     shareholder_entity: ShareholderEntity,
 ) -> None:
-    # 删除指定股东主体记录并提交事务。
+    # 删除指定主体记录并提交事务。
     db.delete(shareholder_entity)
     db.commit()
 
@@ -74,7 +85,7 @@ def create_shareholder_structure(
     db: Session,
     shareholder_structure_in: ShareholderStructureCreate,
 ) -> ShareholderStructure:
-    # 将校验后的股权结构输入数据转换为数据库记录。
+    # 将校验后的持股边输入数据转换为数据库记录。
     shareholder_structure = ShareholderStructure(
         **shareholder_structure_in.model_dump()
     )
@@ -99,13 +110,17 @@ def get_shareholder_structures(
     db: Session,
     skip: int = 0,
     limit: int = 10,
-    company_id: int | None = None,
+    from_entity_id: int | None = None,
+    to_entity_id: int | None = None,
 ) -> list[ShareholderStructure]:
-    # 分页返回股权结构列表，并支持按 company_id 过滤。
+    # 分页返回主体间持股边，并支持按起点或终点主体过滤。
     query = db.query(ShareholderStructure)
 
-    if company_id is not None:
-        query = query.filter(ShareholderStructure.company_id == company_id)
+    if from_entity_id is not None:
+        query = query.filter(ShareholderStructure.from_entity_id == from_entity_id)
+
+    if to_entity_id is not None:
+        query = query.filter(ShareholderStructure.to_entity_id == to_entity_id)
 
     return (
         query.order_by(ShareholderStructure.id.asc())
@@ -120,7 +135,7 @@ def update_shareholder_structure(
     shareholder_structure: ShareholderStructure,
     shareholder_structure_in: ShareholderStructureUpdate,
 ) -> ShareholderStructure:
-    # 仅更新请求中显式传入的股权结构字段。
+    # 仅更新请求中显式传入的持股边字段。
     for field, value in shareholder_structure_in.model_dump(
         exclude_unset=True
     ).items():
@@ -135,6 +150,6 @@ def delete_shareholder_structure(
     db: Session,
     shareholder_structure: ShareholderStructure,
 ) -> None:
-    # 删除指定股权结构记录并提交事务。
+    # 删除指定持股边记录并提交事务。
     db.delete(shareholder_structure)
     db.commit()

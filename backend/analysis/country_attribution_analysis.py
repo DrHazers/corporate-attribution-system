@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+﻿from sqlalchemy.orm import Session
 
 from backend.analysis.control_chain import analyze_control_chain
 from backend.models.country_attribution import CountryAttribution
@@ -21,6 +21,7 @@ def analyze_country_attribution_with_control_chain(
     for item in control_chain_result["control_relationships"]:
         control_chain_basis.append(
             {
+                "controller_entity_id": item["controller_entity_id"],
                 "controller_name": item["controller_name"],
                 "control_type": item["control_type"],
                 "control_path": item["control_path"],

@@ -9,6 +9,7 @@ from backend.crud.control_relationship import (
     get_control_relationships_by_company_id,
     update_control_relationship,
 )
+from backend.crud.shareholder import get_shareholder_entity_by_id
 from backend.database import SessionLocal
 from backend.schemas.control_relationship import (
     ControlRelationshipCreate,
@@ -51,6 +52,16 @@ def validate_company_reference(db: Session, company_id: int):
         )
 
 
+def validate_controller_entity_reference(db: Session, controller_entity_id: int):
+    # 在写入 controller_entity_id 前检查主体是否存在。
+    controller_entity = get_shareholder_entity_by_id(db, controller_entity_id)
+    if controller_entity is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shareholder entity not found.",
+        )
+
+
 @router.post(
     "",
     response_model=ControlRelationshipRead,
@@ -61,6 +72,13 @@ def create_control_relationship_endpoint(
     db: Session = Depends(get_db),
 ):
     validate_company_reference(db, control_relationship_in.company_id)
+
+    if control_relationship_in.controller_entity_id is not None:
+        validate_controller_entity_reference(
+            db,
+            control_relationship_in.controller_entity_id,
+        )
+
     return create_control_relationship(db, control_relationship_in)
 
 
@@ -98,6 +116,12 @@ def update_control_relationship_endpoint(
 
     if control_relationship_in.company_id is not None:
         validate_company_reference(db, control_relationship_in.company_id)
+
+    if control_relationship_in.controller_entity_id is not None:
+        validate_controller_entity_reference(
+            db,
+            control_relationship_in.controller_entity_id,
+        )
 
     return update_control_relationship(
         db,

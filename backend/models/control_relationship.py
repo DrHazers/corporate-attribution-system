@@ -1,14 +1,31 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.orm import relationship
 
 from backend.database import Base
 
 
 class ControlRelationship(Base):
-    # 存储企业控制关系的基础记录。
+    # 存储分析或人工整理后的控制关系结果，而不是底层股权图原始边。
     __tablename__ = "control_relationships"
 
     id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
+    controller_entity_id = Column(
+        Integer,
+        ForeignKey("shareholder_entities.id"),
+        nullable=True,
+        index=True,
+    )
     controller_name = Column(String(255), nullable=False)
     controller_type = Column(String(50), nullable=False)
     control_type = Column(String(50), nullable=False)
@@ -23,4 +40,10 @@ class ControlRelationship(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+    # 可选关联到底层主体节点，兼容旧的 controller_name 展示字段。
+    controller_entity = relationship(
+        "ShareholderEntity",
+        back_populates="control_relationships",
     )

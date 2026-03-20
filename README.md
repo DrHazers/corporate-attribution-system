@@ -151,3 +151,24 @@ Corporate Attribution System 是一个面向产业研究的企业国别归属与
 - 征订日志与版本管理  
 
 ---
+## 当前股权数据模型说明（实体图版本）
+
+当前项目的股权网络结构已升级为“主体（Entity）+ 关系（Ownership Edge）”模型：
+
+- `companies`：公司基础信息表，继续存储公司静态信息
+- `shareholder_entities`：独立主体表，统一表示自然人、公司、基金、机构、政府等节点
+- `shareholder_structures`：主体到主体的持股关系表，表示 `from_entity_id -> to_entity_id` 的有向边
+- `control_relationships`：控制关系结果表，属于分析结果层，可选关联 `controller_entity_id`
+- `country_attributions`：国别归属结果表，继续作为归属判断结果存储层
+
+这套结构的意义是：
+
+- 原始图数据来自 `shareholder_entities + shareholder_structures`
+- 后续可基于这些数据构建 NetworkX 有向图
+- `control_relationships` 继续保留，但定位为“分析结果/派生结果”，不再作为底层图数据源
+
+开发阶段如果需要从旧结构迁移到新结构，可使用：
+
+```powershell
+.\venv\Scripts\python.exe -m scripts.migrate_to_entity_graph_model
+```

@@ -126,41 +126,61 @@ class ShareholderApiTestCase(unittest.TestCase):
         )
         self.assertEqual(status_code, 201)
 
-        entity_payload = {
+        company_entity_payload = {
+            "entity_name": company_data["name"],
+            "entity_type": "company",
+            "country": company_data["incorporation_country"],
+            "company_id": company_data["id"],
+            "identifier_code": company_data["stock_code"],
+            "is_listed": True,
+            "notes": "公司映射主体",
+        }
+        status_code, company_entity = self.request_json(
+            "POST",
+            "/shareholders/entities",
+            company_entity_payload,
+        )
+        self.assertEqual(status_code, 201)
+        self.assertEqual(company_entity["company_id"], company_data["id"])
+
+        investor_entity_payload = {
             "entity_name": "Naspers",
             "entity_type": "institution",
             "country": "South Africa",
             "company_id": None,
-            "notes": "示例股东主体",
+            "identifier_code": None,
+            "is_listed": True,
+            "notes": "示例投资主体",
         }
-        status_code, entity_data = self.request_json(
+        status_code, investor_entity = self.request_json(
             "POST",
             "/shareholders/entities",
-            entity_payload,
+            investor_entity_payload,
         )
         self.assertEqual(status_code, 201)
-        self.assertEqual(entity_data["entity_name"], "Naspers")
+        self.assertEqual(investor_entity["entity_name"], "Naspers")
 
-        entity_id = entity_data["id"]
+        investor_entity_id = investor_entity["id"]
+        company_entity_id = company_entity["id"]
 
         status_code, entity_list = self.request_json("GET", "/shareholders/entities")
         self.assertEqual(status_code, 200)
-        self.assertEqual(len(entity_list), 1)
+        self.assertEqual(len(entity_list), 2)
 
         update_entity_payload = {
-            "notes": "更新后的股东主体备注",
+            "notes": "更新后的主体备注",
         }
         status_code, updated_entity = self.request_json(
             "PUT",
-            f"/shareholders/entities/{entity_id}",
+            f"/shareholders/entities/{investor_entity_id}",
             update_entity_payload,
         )
         self.assertEqual(status_code, 200)
-        self.assertEqual(updated_entity["notes"], "更新后的股东主体备注")
+        self.assertEqual(updated_entity["notes"], "更新后的主体备注")
 
         structure_payload = {
-            "company_id": company_data["id"],
-            "shareholder_entity_id": entity_id,
+            "from_entity_id": investor_entity_id,
+            "to_entity_id": company_entity_id,
             "holding_ratio": "28.5000",
             "is_direct": True,
             "control_type": "equity",
@@ -169,7 +189,7 @@ class ShareholderApiTestCase(unittest.TestCase):
             "expiry_date": None,
             "is_current": True,
             "source": "annual report",
-            "remarks": "示例股权结构",
+            "remarks": "示例股权边",
         }
         status_code, structure_data = self.request_json(
             "POST",
@@ -177,19 +197,20 @@ class ShareholderApiTestCase(unittest.TestCase):
             structure_payload,
         )
         self.assertEqual(status_code, 201)
-        self.assertEqual(structure_data["company_id"], company_data["id"])
+        self.assertEqual(structure_data["from_entity_id"], investor_entity_id)
+        self.assertEqual(structure_data["to_entity_id"], company_entity_id)
 
         structure_id = structure_data["id"]
 
         status_code, structure_list = self.request_json(
             "GET",
-            f"/shareholders/structures?company_id={company_data['id']}",
+            f"/shareholders/structures?to_entity_id={company_entity_id}",
         )
         self.assertEqual(status_code, 200)
         self.assertEqual(len(structure_list), 1)
 
         update_structure_payload = {
-            "remarks": "更新后的股权结构备注",
+            "remarks": "更新后的股权边备注",
         }
         status_code, updated_structure = self.request_json(
             "PUT",
@@ -197,7 +218,7 @@ class ShareholderApiTestCase(unittest.TestCase):
             update_structure_payload,
         )
         self.assertEqual(status_code, 200)
-        self.assertEqual(updated_structure["remarks"], "更新后的股权结构备注")
+        self.assertEqual(updated_structure["remarks"], "更新后的股权边备注")
 
         status_code, _ = self.request_json(
             "DELETE",
@@ -217,24 +238,20 @@ class ShareholderApiTestCase(unittest.TestCase):
 
         status_code, _ = self.request_json(
             "DELETE",
-            f"/shareholders/entities/{entity_id}",
+            f"/shareholders/entities/{investor_entity_id}",
         )
         self.assertEqual(status_code, 204)
 
-        status_code, entity_not_found = self.request_json(
-            "GET",
-            f"/shareholders/entities/{entity_id}",
+        status_code, _ = self.request_json(
+            "DELETE",
+            f"/shareholders/entities/{company_entity_id}",
         )
-        self.assertEqual(status_code, 404)
-        self.assertEqual(
-            entity_not_found["detail"],
-            "Shareholder entity not found.",
-        )
+        self.assertEqual(status_code, 204)
 
     def test_create_structure_with_invalid_references_returns_404(self):
         invalid_structure_payload = {
-            "company_id": 9999,
-            "shareholder_entity_id": 9999,
+            "from_entity_id": 9999,
+            "to_entity_id": 9998,
             "holding_ratio": "10.0000",
             "is_direct": True,
             "control_type": "equity",
@@ -251,10 +268,8 @@ class ShareholderApiTestCase(unittest.TestCase):
             invalid_structure_payload,
         )
         self.assertEqual(status_code, 404)
-        self.assertEqual(response_data["detail"], "Company not found.")
+        self.assertEqual(response_data["detail"], "Shareholder entity not found.")
 
 
 if __name__ == "__main__":
     unittest.main()
-
-

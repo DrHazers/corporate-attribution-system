@@ -14,63 +14,76 @@ ShareholderEntityType = Literal[
     "other",
 ]
 
-ControlType = Literal["equity", "agreement", "other"]
+OwnershipControlType = Literal[
+    "equity",
+    "agreement",
+    "voting_right",
+    "nominee",
+    "vie",
+    "other",
+]
 
 
 class ShareholderEntityCreate(BaseModel):
-    # 创建股东主体时使用的请求结构。
+    # 创建主体节点时使用的请求结构。
     entity_name: str
     entity_type: ShareholderEntityType
     country: str | None = None
     company_id: int | None = None
+    identifier_code: str | None = None
+    is_listed: bool | None = None
     notes: str | None = None
 
 
 class ShareholderEntityUpdate(BaseModel):
-    # 更新股东主体时使用的请求结构，所有字段均为可选。
+    # 更新主体节点时使用的请求结构，所有字段均为可选。
     entity_name: str | None = None
     entity_type: ShareholderEntityType | None = None
     country: str | None = None
     company_id: int | None = None
+    identifier_code: str | None = None
+    is_listed: bool | None = None
     notes: str | None = None
 
 
 class ShareholderEntityRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    # 股东主体读取时使用的响应结构。
+    # 主体节点读取时使用的响应结构。
     id: int
     entity_name: str
     entity_type: ShareholderEntityType
     country: str | None = None
     company_id: int | None = None
+    identifier_code: str | None = None
+    is_listed: bool | None = None
     notes: str | None = None
     created_at: datetime
     updated_at: datetime
 
 
 class ShareholderStructureCreate(BaseModel):
-    # 创建股权结构时使用的请求结构。
-    company_id: int
-    shareholder_entity_id: int
-    holding_ratio: Decimal
-    is_direct: bool
-    control_type: ControlType
-    reporting_period: str
-    effective_date: date
+    # 创建主体间持股边时使用的请求结构。
+    from_entity_id: int
+    to_entity_id: int
+    holding_ratio: Decimal | None = None
+    is_direct: bool = True
+    control_type: OwnershipControlType | None = "equity"
+    reporting_period: str | None = None
+    effective_date: date | None = None
     expiry_date: date | None = None
-    is_current: bool
+    is_current: bool = True
     source: str | None = None
     remarks: str | None = None
 
 
 class ShareholderStructureUpdate(BaseModel):
-    # 更新股权结构时使用的请求结构，所有字段均为可选。
-    company_id: int | None = None
-    shareholder_entity_id: int | None = None
+    # 更新主体间持股边时使用的请求结构，所有字段均为可选。
+    from_entity_id: int | None = None
+    to_entity_id: int | None = None
     holding_ratio: Decimal | None = None
     is_direct: bool | None = None
-    control_type: ControlType | None = None
+    control_type: OwnershipControlType | None = None
     reporting_period: str | None = None
     effective_date: date | None = None
     expiry_date: date | None = None
@@ -82,15 +95,15 @@ class ShareholderStructureUpdate(BaseModel):
 class ShareholderStructureRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    # 股权结构读取时使用的响应结构。
+    # 主体间持股边读取时使用的响应结构。
     id: int
-    company_id: int
-    shareholder_entity_id: int
-    holding_ratio: Decimal
+    from_entity_id: int
+    to_entity_id: int
+    holding_ratio: Decimal | None = None
     is_direct: bool
-    control_type: ControlType
-    reporting_period: str
-    effective_date: date
+    control_type: OwnershipControlType | None = None
+    reporting_period: str | None = None
+    effective_date: date | None = None
     expiry_date: date | None = None
     is_current: bool
     source: str | None = None

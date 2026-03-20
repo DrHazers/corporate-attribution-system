@@ -126,8 +126,25 @@ class ControlRelationshipApiTestCase(unittest.TestCase):
         )
         self.assertEqual(status_code, 201)
 
+        controller_entity_payload = {
+            "entity_name": "Jack Ma",
+            "entity_type": "person",
+            "country": "China",
+            "company_id": None,
+            "identifier_code": None,
+            "is_listed": None,
+            "notes": "控制人主体",
+        }
+        status_code, controller_entity = self.request_json(
+            "POST",
+            "/shareholders/entities",
+            controller_entity_payload,
+        )
+        self.assertEqual(status_code, 201)
+
         control_payload = {
             "company_id": company_data["id"],
+            "controller_entity_id": controller_entity["id"],
             "controller_name": "Jack Ma",
             "controller_type": "person",
             "control_type": "direct",
@@ -144,6 +161,7 @@ class ControlRelationshipApiTestCase(unittest.TestCase):
         )
         self.assertEqual(status_code, 201)
         self.assertEqual(created_record["company_id"], company_data["id"])
+        self.assertEqual(created_record["controller_entity_id"], controller_entity["id"])
         self.assertEqual(created_record["controller_name"], "Jack Ma")
 
         record_id = created_record["id"]
@@ -154,6 +172,7 @@ class ControlRelationshipApiTestCase(unittest.TestCase):
         )
         self.assertEqual(status_code, 200)
         self.assertEqual(detail_record["control_type"], "direct")
+        self.assertEqual(detail_record["controller_entity_id"], controller_entity["id"])
 
         status_code, company_records = self.request_json(
             "GET",

@@ -1,4 +1,7 @@
-from sqlalchemy.orm import Session
+from datetime import date
+
+from sqlalchemy import desc, or_
+from sqlalchemy.orm import Session, joinedload
 
 from backend.models.shareholder import ShareholderEntity, ShareholderStructure
 from backend.schemas.shareholder import (
@@ -54,6 +57,19 @@ def get_shareholder_entity_by_name(
     return (
         db.query(ShareholderEntity)
         .filter(ShareholderEntity.entity_name == entity_name)
+        .first()
+    )
+
+
+def get_entity_by_company_id(
+    db: Session,
+    company_id: int,
+) -> ShareholderEntity | None:
+    # 根据 company_id 查找映射到该公司的主体节点，作为后续控制链分析的基础入口。
+    return (
+        db.query(ShareholderEntity)
+        .filter(ShareholderEntity.company_id == company_id)
+        .order_by(ShareholderEntity.id.asc())
         .first()
     )
 
@@ -126,6 +142,75 @@ def get_shareholder_structures(
         query.order_by(ShareholderStructure.id.asc())
         .offset(skip)
         .limit(limit)
+        .all()
+    )
+
+
+def get_direct_upstream_shareholder_structures(
+    db: Session,
+    target_entity_id: int,
+) -> list[ShareholderStructure]:
+    # 返回直接指向目标主体的当前有效持股边，作为后续 BFS/DFS 穿透分析的基础查询。
+    return (
+        db.query(ShareholderStructure)
+        .options(joinedload(ShareholderStructure.from_entity))
+        .filter(ShareholderStructure.to_entity_id == target_entity_id)
+        .filter(ShareholderStructure.is_current.is_(True))
+        .order_by(desc(ShareholderStructure.holding_ratio), ShareholderStructure.id.asc())
+        .all()
+    )
+
+
+def get_current_incoming_relationships(
+    db: Session,
+    to_entity_id: int,
+) -> list[ShareholderStructure]:
+    # 返回当前有效的入边关系，供后续控制链 DFS 分析作为基础查询使用。
+    today = date.today()
+
+    return (
+        db.query(ShareholderStructure)
+        .filter(ShareholderStructure.to_entity_id == to_entity_id)
+        .filter(ShareholderStructure.is_current.is_(True))
+        .filter(
+            or_(
+                ShareholderStructure.effective_date.is_(None),
+                ShareholderStructure.effective_date <= today,
+            )
+        )
+        .filter(
+            or_(
+                ShareholderStructure.expiry_date.is_(None),
+                ShareholderStructure.expiry_date >= today,
+            )
+        )
+        .order_by(ShareholderStructure.id.asc())
+        .all()
+    )
+
+
+def get_current_shareholder_structures(
+    db: Session,
+) -> list[ShareholderStructure]:
+    # 返回当前有效的全部主体关系边，供构建完整股权图使用。
+    today = date.today()
+
+    return (
+        db.query(ShareholderStructure)
+        .filter(ShareholderStructure.is_current.is_(True))
+        .filter(
+            or_(
+                ShareholderStructure.effective_date.is_(None),
+                ShareholderStructure.effective_date <= today,
+            )
+        )
+        .filter(
+            or_(
+                ShareholderStructure.expiry_date.is_(None),
+                ShareholderStructure.expiry_date >= today,
+            )
+        )
+        .order_by(ShareholderStructure.id.asc())
         .all()
     )
 

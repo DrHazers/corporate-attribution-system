@@ -5,7 +5,9 @@ from backend.analysis.country_attribution_analysis import (
     analyze_country_attribution_with_control_chain,
 )
 from backend.analysis.control_chain import analyze_control_chain
+from backend.analysis.ownership_graph import get_direct_upstream_entities
 from backend.crud.company import get_company_by_id
+from backend.crud.shareholder import get_shareholder_entity_by_id
 from backend.database import SessionLocal
 
 
@@ -59,3 +61,27 @@ def get_country_attribution_analysis(
         )
 
     return analyze_country_attribution_with_control_chain(db, company_id)
+
+
+@router.get("/entities/{entity_id}/upstream-shareholders")
+def get_upstream_shareholders_analysis(
+    entity_id: int,
+    db: Session = Depends(get_db),
+):
+    target_entity = get_shareholder_entity_by_id(db, entity_id)
+    if target_entity is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shareholder entity not found.",
+        )
+
+    analysis_result = get_direct_upstream_entities(db, entity_id)
+    if analysis_result["upstream_count"] == 0:
+        return {
+            "target_entity_id": entity_id,
+            "message": "No upstream shareholders found for this entity.",
+            "upstream_count": 0,
+            "upstream_entities": [],
+        }
+
+    return analysis_result

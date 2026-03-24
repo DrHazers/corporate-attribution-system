@@ -1,5 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+
+from backend.analysis.ownership_penetration import (
+    get_company_actual_controller_data,
+    get_company_control_chain_data,
+    get_company_country_attribution_data,
+)
 from backend.crud.company import (
     create_company,
     delete_company,
@@ -87,3 +93,21 @@ def update_company_endpoint(
 def delete_company_endpoint(company_id: int, db: Session = Depends(get_db)):
     company = get_company_or_404(db, company_id)
     delete_company(db, company)
+
+
+@router.get("/{company_id}/control-chain")
+def get_company_control_chain(company_id: int, db: Session = Depends(get_db)):
+    get_company_or_404(db, company_id)
+    return get_company_control_chain_data(db, company_id)
+
+
+@router.get("/{company_id}/actual-controller")
+def get_company_actual_controller(company_id: int, db: Session = Depends(get_db)):
+    get_company_or_404(db, company_id)
+    return get_company_actual_controller_data(db, company_id)
+
+
+@router.get("/{company_id}/country-attribution")
+def get_company_country_attribution(company_id: int, db: Session = Depends(get_db)):
+    get_company_or_404(db, company_id)
+    return get_company_country_attribution_data(db, company_id)

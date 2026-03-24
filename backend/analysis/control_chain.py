@@ -1,46 +1,35 @@
 from sqlalchemy.orm import Session
 
-from backend.crud.control_relationship import get_control_relationships_by_company_id
+from backend.analysis.ownership_penetration import (
+    get_company_control_chain_data,
+    refresh_company_control_analysis,
+)
+from backend.crud.shareholder import get_entity_by_company_id
+
+
+def _pick_actual_controller(
+    control_relationships: list[dict],
+) -> dict | None:
+    return next(
+        (
+            relationship
+            for relationship in control_relationships
+            if relationship["is_actual_controller"]
+        ),
+        None,
+    )
 
 
 def analyze_control_chain(db: Session, company_id: int) -> dict:
-    # ç¬¬ä¸€ç‰ˆæŽ§åˆ¶é“¾åˆ†æžä»ç„¶åŸºäºŽ control_relationships ç»“æžœè¡¨è¿”å›žç›´æŽ¥åˆ†æžç»“æžœã€‚
-    #
-    # åŽç»­è‚¡æƒç½‘ç»œåˆ†æžåº”ä¼˜å…ˆä»Ž shareholder_entities + shareholder_structures
-    # æž„å»ºä¸»ä½“å›¾ï¼Œå†æ®æ­¤ç”Ÿæˆæˆ–åˆ·æ–° control_relationshipsã€‚
-    control_relationships = get_control_relationships_by_company_id(db, company_id)
+    # ·ÖÎöÈë¿ÚÓÅÏÈ»ùÓÚ shareholder_structures Ë¢ÐÂ AUTO ¿ØÖÆ¹ØÏµ½á¹û£¬
+    # ÈÃ control_relationships ¾¡Á¿±£³ÖÎª×îÐÂµÄ´©Í¸·ÖÎö¿ìÕÕ¡£
+    if get_entity_by_company_id(db, company_id) is not None:
+        refresh_company_control_analysis(db, company_id)
 
-    analysis_items = []
-    actual_controller = None
-
-    for relationship in control_relationships:
-        control_path = relationship.control_path
-        if not control_path:
-            control_path = f"{relationship.controller_name} -> company_id:{company_id}"
-
-        item = {
-            "company_id": relationship.company_id,
-            "controller_entity_id": relationship.controller_entity_id,
-            "controller_name": relationship.controller_name,
-            "controller_type": relationship.controller_type,
-            "control_type": relationship.control_type,
-            "control_ratio": (
-                str(relationship.control_ratio)
-                if relationship.control_ratio is not None
-                else None
-            ),
-            "control_path": control_path,
-            "is_actual_controller": relationship.is_actual_controller,
-            "basis": relationship.basis,
-        }
-        analysis_items.append(item)
-
-        if relationship.is_actual_controller and actual_controller is None:
-            actual_controller = item
+    control_chain_data = get_company_control_chain_data(db, company_id)
+    control_relationships = control_chain_data["control_relationships"]
 
     return {
-        "company_id": company_id,
-        "controller_count": len(analysis_items),
-        "actual_controller": actual_controller,
-        "control_relationships": analysis_items,
+        **control_chain_data,
+        "actual_controller": _pick_actual_controller(control_relationships),
     }

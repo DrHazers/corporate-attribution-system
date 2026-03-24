@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +13,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from backend.analysis.control_chain import analyze_control_chain
+from backend.crud.company import get_company_by_id
 from backend.database import SessionLocal
-from backend.models.company import Company
-from backend.models.control_relationship import ControlRelationship
+from backend.models.company import Company  # noqa: F401
+from backend.models.control_relationship import ControlRelationship  # noqa: F401
 from backend.models.country_attribution import CountryAttribution  # noqa: F401
 from backend.models.shareholder import ShareholderEntity
 
@@ -36,72 +37,36 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _serialize_company(company) -> dict[str, Any]:
+    return {
+        "id": company.id,
+        "name": company.name,
+        "stock_code": company.stock_code,
+        "incorporation_country": company.incorporation_country,
+        "listing_country": company.listing_country,
+        "headquarters": company.headquarters,
+        "description": company.description,
+    }
+
+
 def load_company_analysis_data(db, company_id: int) -> dict[str, Any] | None:
-    company = (
-        db.query(Company)
-        .filter(Company.id == company_id)
-        .first()
-    )
+    company = get_company_by_id(db, company_id)
     if company is None:
         return None
 
-    relationships = (
-        db.query(ControlRelationship)
-        .filter(ControlRelationship.company_id == company_id)
-        .order_by(
-            ControlRelationship.control_ratio.is_(None),
-            ControlRelationship.control_ratio.desc(),
-            ControlRelationship.id.asc(),
-        )
-        .all()
-    )
+    control_chain_data = analyze_control_chain(db, company_id)
+    control_relationships = control_chain_data["control_relationships"]
+    actual_controllers = [
+        relationship
+        for relationship in control_relationships
+        if relationship["is_actual_controller"]
+    ]
 
     return {
-        "company": {
-            "id": company.id,
-            "name": company.name,
-            "stock_code": company.stock_code,
-            "incorporation_country": company.incorporation_country,
-            "listing_country": company.listing_country,
-            "headquarters": company.headquarters,
-            "description": company.description,
-        },
-        "control_relationships": [
-            {
-                "id": relationship.id,
-                "company_id": relationship.company_id,
-                "controller_entity_id": relationship.controller_entity_id,
-                "controller_name": relationship.controller_name,
-                "controller_type": relationship.controller_type,
-                "control_type": relationship.control_type,
-                "control_ratio": (
-                    str(relationship.control_ratio)
-                    if relationship.control_ratio is not None
-                    else None
-                ),
-                "control_path": relationship.control_path,
-                "is_actual_controller": relationship.is_actual_controller,
-                "basis": relationship.basis,
-                "notes": relationship.notes,
-            }
-            for relationship in relationships
-        ],
-        "actual_controllers": [
-            {
-                "id": relationship.id,
-                "controller_entity_id": relationship.controller_entity_id,
-                "controller_name": relationship.controller_name,
-                "controller_type": relationship.controller_type,
-                "control_ratio": (
-                    str(relationship.control_ratio)
-                    if relationship.control_ratio is not None
-                    else None
-                ),
-                "basis": relationship.basis,
-            }
-            for relationship in relationships
-            if relationship.is_actual_controller
-        ],
+        "company": _serialize_company(company),
+        "control_relationships": control_relationships,
+        "actual_controllers": actual_controllers,
+        "actual_controller": control_chain_data["actual_controller"],
     }
 
 
@@ -114,110 +79,69 @@ def _make_virtual_node_id(
     return f"virtual:{relationship['id']}:{index}:{safe_name}"
 
 
-def _build_fallback_path(
-    company: dict[str, Any],
-    relationship: dict[str, Any],
-    warning_message: str | None = None,
-) -> dict[str, Any]:
-    warnings = []
-    if warning_message:
-        warnings.append(warning_message)
-
-    controller_node_id: int | str
-    if relationship["controller_entity_id"] is not None:
-        controller_node_id = relationship["controller_entity_id"]
-    else:
-        controller_node_id = _make_virtual_node_id(
-            relationship,
-            0,
-            relationship["controller_name"],
-        )
-
-    return {
-        "relationship_id": relationship["id"],
-        "controller_entity_id": relationship["controller_entity_id"],
-        "controller_name": relationship["controller_name"],
-        "controller_type": relationship["controller_type"],
-        "control_ratio": relationship["control_ratio"],
-        "is_actual_controller": relationship["is_actual_controller"],
-        "source": "fallback_direct",
-        "path_entity_ids": [controller_node_id, company["id"]],
-        "path_entity_names": [
-            relationship["controller_name"],
-            company["name"],
-        ],
-        "edge_holding_ratio_pct": (
-            [relationship["control_ratio"]]
-            if relationship["control_ratio"] is not None
-            else []
-        ),
-        "path_ratio_pct": relationship["control_ratio"],
-        "warnings": warnings,
-    }
-
-
 def _normalize_path_item(
     company: dict[str, Any],
     relationship: dict[str, Any],
     raw_path: Any,
     path_index: int,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(raw_path, dict):
-        return _build_fallback_path(
-            company,
-            relationship,
-            warning_message=(
+        return (
+            None,
+            (
                 f"Relationship {relationship['id']} path item {path_index} "
-                "is not a JSON object."
+                "is not a JSON object and was skipped."
+            ),
+        )
+
+    path_entity_names = raw_path.get("path_entity_names")
+    if not isinstance(path_entity_names, list) or len(path_entity_names) < 2:
+        return (
+            None,
+            (
+                f"Relationship {relationship['id']} path item {path_index} "
+                "missing usable path_entity_names and was skipped."
             ),
         )
 
     path_entity_ids = raw_path.get("path_entity_ids")
-    path_entity_names = raw_path.get("path_entity_names")
-    edge_holding_ratio_pct = raw_path.get("edge_holding_ratio_pct")
-    path_ratio_pct = raw_path.get("path_ratio_pct") or raw_path.get("ratio_pct")
-
-    if not isinstance(path_entity_names, list) or len(path_entity_names) < 2:
-        return _build_fallback_path(
-            company,
-            relationship,
-            warning_message=(
-                f"Relationship {relationship['id']} path item {path_index} "
-                "missing usable path_entity_names."
-            ),
-        )
-
     if not isinstance(path_entity_ids, list) or len(path_entity_ids) != len(
         path_entity_names
     ):
-        path_entity_ids = []
+        rebuilt_entity_ids: list[int | str] = []
         for node_index, node_name in enumerate(path_entity_names):
             if node_index == 0 and relationship["controller_entity_id"] is not None:
-                path_entity_ids.append(relationship["controller_entity_id"])
+                rebuilt_entity_ids.append(relationship["controller_entity_id"])
             elif node_index == len(path_entity_names) - 1:
-                path_entity_ids.append(company["id"])
+                rebuilt_entity_ids.append(company["id"])
             else:
-                path_entity_ids.append(
+                rebuilt_entity_ids.append(
                     _make_virtual_node_id(relationship, node_index, node_name)
                 )
+        path_entity_ids = rebuilt_entity_ids
 
+    edge_holding_ratio_pct = raw_path.get("edge_holding_ratio_pct")
     if not isinstance(edge_holding_ratio_pct, list):
         edge_holding_ratio_pct = []
 
-    return {
-        "relationship_id": relationship["id"],
-        "controller_entity_id": relationship["controller_entity_id"],
-        "controller_name": relationship["controller_name"],
-        "controller_type": relationship["controller_type"],
-        "control_ratio": relationship["control_ratio"],
-        "is_actual_controller": relationship["is_actual_controller"],
-        "source": "control_path_json",
-        "path_entity_ids": path_entity_ids,
-        "path_entity_names": path_entity_names,
-        "edge_holding_ratio_pct": [str(item) for item in edge_holding_ratio_pct],
-        "path_ratio_pct": str(path_ratio_pct) if path_ratio_pct is not None else None,
-        "warnings": [],
-    }
+    path_ratio_pct = raw_path.get("path_ratio_pct") or raw_path.get("ratio_pct")
+
+    return (
+        {
+            "relationship_id": relationship["id"],
+            "controller_entity_id": relationship["controller_entity_id"],
+            "controller_name": relationship["controller_name"],
+            "controller_type": relationship["controller_type"],
+            "control_ratio": relationship["control_ratio"],
+            "is_actual_controller": relationship["is_actual_controller"],
+            "source": "control_path_json",
+            "path_entity_ids": path_entity_ids,
+            "path_entity_names": path_entity_names,
+            "edge_holding_ratio_pct": [str(item) for item in edge_holding_ratio_pct],
+            "path_ratio_pct": str(path_ratio_pct) if path_ratio_pct is not None else None,
+        },
+        None,
+    )
 
 
 def parse_control_paths(
@@ -228,40 +152,30 @@ def parse_control_paths(
     warnings: list[str] = []
 
     for relationship in control_relationships:
-        raw_control_path = relationship["control_path"]
-        if not raw_control_path:
-            fallback_path = _build_fallback_path(
-                company,
-                relationship,
-                warning_message=(
-                    f"Relationship {relationship['id']} has empty control_path; "
-                    "using fallback direct edge."
-                ),
+        raw_control_path = relationship.get("control_path")
+        if raw_control_path in (None, ""):
+            warnings.append(
+                f"Relationship {relationship['id']} has empty control_path and was skipped."
             )
-            parsed_paths.append(fallback_path)
-            warnings.extend(fallback_path["warnings"])
             continue
 
-        try:
-            payload = json.loads(raw_control_path)
-        except json.JSONDecodeError as exc:
-            fallback_path = _build_fallback_path(
-                company,
-                relationship,
-                warning_message=(
-                    f"Relationship {relationship['id']} control_path JSON parse "
-                    f"failed: {exc}"
-                ),
-            )
-            parsed_paths.append(fallback_path)
-            warnings.extend(fallback_path["warnings"])
-            continue
+        payload = raw_control_path
+        if isinstance(raw_control_path, str):
+            try:
+                payload = json.loads(raw_control_path)
+            except json.JSONDecodeError as exc:
+                warnings.append(
+                    (
+                        f"Relationship {relationship['id']} control_path JSON parse "
+                        f"failed: {exc}"
+                    )
+                )
+                continue
 
         path_items: list[Any] = []
         if isinstance(payload, dict):
             best_path = payload.get("best_path")
             paths_top_k = payload.get("paths_top_k")
-
             if best_path is not None:
                 path_items.append(best_path)
             if isinstance(paths_top_k, list):
@@ -271,48 +185,34 @@ def parse_control_paths(
         elif isinstance(payload, list):
             path_items.extend(payload)
         else:
-            fallback_path = _build_fallback_path(
-                company,
-                relationship,
-                warning_message=(
+            warnings.append(
+                (
                     f"Relationship {relationship['id']} control_path JSON shape is "
-                    "unsupported; using fallback direct edge."
-                ),
+                    "unsupported and was skipped."
+                )
             )
-            parsed_paths.append(fallback_path)
-            warnings.extend(fallback_path["warnings"])
             continue
 
         if not path_items:
-            fallback_path = _build_fallback_path(
-                company,
-                relationship,
-                warning_message=(
-                    f"Relationship {relationship['id']} has no usable best_path or "
-                    "paths_top_k; using fallback direct edge."
-                ),
+            warnings.append(
+                (
+                    f"Relationship {relationship['id']} has no usable path items and "
+                    "was skipped."
+                )
             )
-            parsed_paths.append(fallback_path)
-            warnings.extend(fallback_path["warnings"])
             continue
 
         for path_index, raw_path in enumerate(path_items):
-            normalized_path = _normalize_path_item(
+            normalized_path, warning_message = _normalize_path_item(
                 company,
                 relationship,
                 raw_path,
                 path_index,
             )
-            if normalized_path is None:
-                warning_message = (
-                    f"Relationship {relationship['id']} path item {path_index} "
-                    "could not be normalized and was skipped."
-                )
+            if warning_message is not None:
                 warnings.append(warning_message)
-                continue
-
-            parsed_paths.append(normalized_path)
-            warnings.extend(normalized_path["warnings"])
+            if normalized_path is not None:
+                parsed_paths.append(normalized_path)
 
     return parsed_paths, warnings
 
@@ -351,8 +251,6 @@ def build_visual_graph(
         default=1,
     )
 
-    # The target company node is always present so the graph remains viewable
-    # even when a company has no parsed control paths yet.
     graph.add_node(
         target_node_key,
         label=company["name"],
@@ -363,7 +261,7 @@ def build_visual_graph(
         title=(
             f"<b>{company['name']}</b><br/>"
             f"Entity ID: {company['id']}<br/>"
-            "Entity Type: company<br/>"
+            "Role: Target Company<br/>"
             f"Stock Code: {company['stock_code']}"
         ),
     )
@@ -381,6 +279,7 @@ def build_visual_graph(
         for index, node_name in enumerate(path["path_entity_names"]):
             raw_node_id = path["path_entity_ids"][index]
             is_target = index == path_length - 1
+
             if is_target:
                 node_key = target_node_key
                 node_role = "target_company"
@@ -389,7 +288,7 @@ def build_visual_graph(
                 title = (
                     f"<b>{company['name']}</b><br/>"
                     f"Entity ID: {company['id']}<br/>"
-                    "Entity Type: company<br/>"
+                    "Role: Target Company<br/>"
                     f"Stock Code: {company['stock_code']}"
                 )
             else:
@@ -402,10 +301,13 @@ def build_visual_graph(
 
                 if index == 0 and relationship["is_actual_controller"]:
                     node_role = "actual_controller"
+                    role_label = "Actual Controller"
                 elif index == 0:
                     node_role = "significant_controller"
+                    role_label = "Significant Controller"
                 else:
                     node_role = "intermediate"
+                    role_label = "Intermediate Holder"
 
                 if index == 0:
                     entity_type = relationship["controller_type"]
@@ -419,6 +321,7 @@ def build_visual_graph(
                     f"<b>{node_name}</b><br/>"
                     f"Entity ID: {entity_id_label}<br/>"
                     f"Entity Type: {entity_type}<br/>"
+                    f"Role: {role_label}<br/>"
                     f"Relationship ID: {relationship['id']}"
                 )
 
@@ -652,6 +555,7 @@ def main() -> int:
 
         print(f"Company: {company['name']}")
         print(f"Control relationships: {len(control_relationships)}")
+        print(f"Parsed paths: {len(parsed_paths)}")
         print(f"HTML output: {html_path.resolve()}")
         print(f"JSON output: {json_path.resolve()}")
         return 0
@@ -661,6 +565,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-

@@ -1,0 +1,321 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        
+            <script>function neighbourhoodHighlight(params) {
+  // console.log("in nieghbourhoodhighlight");
+  allNodes = nodes.get({ returnType: "Object" });
+  // originalNodes = JSON.parse(JSON.stringify(allNodes));
+  // if something is selected:
+  if (params.nodes.length > 0) {
+    highlightActive = true;
+    var i, j;
+    var selectedNode = params.nodes[0];
+    var degrees = 2;
+
+    // mark all nodes as hard to read.
+    for (let nodeId in allNodes) {
+      // nodeColors[nodeId] = allNodes[nodeId].color;
+      allNodes[nodeId].color = "rgba(200,200,200,0.5)";
+      if (allNodes[nodeId].hiddenLabel === undefined) {
+        allNodes[nodeId].hiddenLabel = allNodes[nodeId].label;
+        allNodes[nodeId].label = undefined;
+      }
+    }
+    var connectedNodes = network.getConnectedNodes(selectedNode);
+    var allConnectedNodes = [];
+
+    // get the second degree nodes
+    for (i = 1; i < degrees; i++) {
+      for (j = 0; j < connectedNodes.length; j++) {
+        allConnectedNodes = allConnectedNodes.concat(
+          network.getConnectedNodes(connectedNodes[j])
+        );
+      }
+    }
+
+    // all second degree nodes get a different color and their label back
+    for (i = 0; i < allConnectedNodes.length; i++) {
+      // allNodes[allConnectedNodes[i]].color = "pink";
+      allNodes[allConnectedNodes[i]].color = "rgba(150,150,150,0.75)";
+      if (allNodes[allConnectedNodes[i]].hiddenLabel !== undefined) {
+        allNodes[allConnectedNodes[i]].label =
+          allNodes[allConnectedNodes[i]].hiddenLabel;
+        allNodes[allConnectedNodes[i]].hiddenLabel = undefined;
+      }
+    }
+
+    // all first degree nodes get their own color and their label back
+    for (i = 0; i < connectedNodes.length; i++) {
+      // allNodes[connectedNodes[i]].color = undefined;
+      allNodes[connectedNodes[i]].color = nodeColors[connectedNodes[i]];
+      if (allNodes[connectedNodes[i]].hiddenLabel !== undefined) {
+        allNodes[connectedNodes[i]].label =
+          allNodes[connectedNodes[i]].hiddenLabel;
+        allNodes[connectedNodes[i]].hiddenLabel = undefined;
+      }
+    }
+
+    // the main node gets its own color and its label back.
+    // allNodes[selectedNode].color = undefined;
+    allNodes[selectedNode].color = nodeColors[selectedNode];
+    if (allNodes[selectedNode].hiddenLabel !== undefined) {
+      allNodes[selectedNode].label = allNodes[selectedNode].hiddenLabel;
+      allNodes[selectedNode].hiddenLabel = undefined;
+    }
+  } else if (highlightActive === true) {
+    // console.log("highlightActive was true");
+    // reset all nodes
+    for (let nodeId in allNodes) {
+      // allNodes[nodeId].color = "purple";
+      allNodes[nodeId].color = nodeColors[nodeId];
+      // delete allNodes[nodeId].color;
+      if (allNodes[nodeId].hiddenLabel !== undefined) {
+        allNodes[nodeId].label = allNodes[nodeId].hiddenLabel;
+        allNodes[nodeId].hiddenLabel = undefined;
+      }
+    }
+    highlightActive = false;
+  }
+
+  // transform the object into an array
+  var updateArray = [];
+  if (params.nodes.length > 0) {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        // console.log(allNodes[nodeId]);
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  } else {
+    // console.log("Nothing was selected");
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        // console.log(allNodes[nodeId]);
+        // allNodes[nodeId].color = {};
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  }
+}
+
+function filterHighlight(params) {
+  allNodes = nodes.get({ returnType: "Object" });
+  // if something is selected:
+  if (params.nodes.length > 0) {
+    filterActive = true;
+    let selectedNodes = params.nodes;
+
+    // hiding all nodes and saving the label
+    for (let nodeId in allNodes) {
+      allNodes[nodeId].hidden = true;
+      if (allNodes[nodeId].savedLabel === undefined) {
+        allNodes[nodeId].savedLabel = allNodes[nodeId].label;
+        allNodes[nodeId].label = undefined;
+      }
+    }
+
+    for (let i=0; i < selectedNodes.length; i++) {
+      allNodes[selectedNodes[i]].hidden = false;
+      if (allNodes[selectedNodes[i]].savedLabel !== undefined) {
+        allNodes[selectedNodes[i]].label = allNodes[selectedNodes[i]].savedLabel;
+        allNodes[selectedNodes[i]].savedLabel = undefined;
+      }
+    }
+
+  } else if (filterActive === true) {
+    // reset all nodes
+    for (let nodeId in allNodes) {
+      allNodes[nodeId].hidden = false;
+      if (allNodes[nodeId].savedLabel !== undefined) {
+        allNodes[nodeId].label = allNodes[nodeId].savedLabel;
+        allNodes[nodeId].savedLabel = undefined;
+      }
+    }
+    filterActive = false;
+  }
+
+  // transform the object into an array
+  var updateArray = [];
+  if (params.nodes.length > 0) {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  } else {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  }
+}
+
+function selectNode(nodes) {
+  network.selectNodes(nodes);
+  neighbourhoodHighlight({ nodes: nodes });
+  return nodes;
+}
+
+function selectNodes(nodes) {
+  network.selectNodes(nodes);
+  filterHighlight({nodes: nodes});
+  return nodes;
+}
+
+function highlightFilter(filter) {
+  let selectedNodes = []
+  let selectedProp = filter['property']
+  if (filter['item'] === 'node') {
+    let allNodes = nodes.get({ returnType: "Object" });
+    for (let nodeId in allNodes) {
+      if (allNodes[nodeId][selectedProp] && filter['value'].includes((allNodes[nodeId][selectedProp]).toString())) {
+        selectedNodes.push(nodeId)
+      }
+    }
+  }
+  else if (filter['item'] === 'edge'){
+    let allEdges = edges.get({returnType: 'object'});
+    // check if the selected property exists for selected edge and select the nodes connected to the edge
+    for (let edge in allEdges) {
+      if (allEdges[edge][selectedProp] && filter['value'].includes((allEdges[edge][selectedProp]).toString())) {
+        selectedNodes.push(allEdges[edge]['from'])
+        selectedNodes.push(allEdges[edge]['to'])
+      }
+    }
+  }
+  selectNodes(selectedNodes)
+}</script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" integrity="sha512-WgxfT5LWjfszlPHXRmBWHkV2eceiWTOBvrKCNbdgDYTHrT2AeLCGbF4sZlZw3UMN3WtL0tGUoIAKsu8mllg/XA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js" integrity="sha512-LnvoEWDFrqGHlHmDD2101OrLcbsfkrzoSpvtSQtxK3RMnRV0eOkhhBN2dXHKRrUU8p2DGRTk35n4O8nWSVe1mQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+            
+            
+            
+            
+            
+            
+
+        
+<center>
+<h1>Full Control Chain Visualization - Alibaba Group Holding Limited</h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+        <link
+          href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6"
+          crossorigin="anonymous"
+        />
+        <script
+          src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
+          crossorigin="anonymous"
+        ></script>
+
+
+        <center>
+          <h1>Full Control Chain Visualization - Alibaba Group Holding Limited</h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 920px;
+                 background-color: #f8fafc;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+             
+
+             
+
+             
+        </style>
+    </head>
+
+
+    <body>
+        <div class="card" style="width: 100%">
+            
+            
+            <div id="mynetwork" class="card-body"></div>
+        </div>
+
+        
+        
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+              
+
+              
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+                  
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"borderWidth": 4, "color": {"background": "#dbeafe", "border": "#b45309", "highlight": {"background": "#dbeafe", "border": "#b45309"}}, "font": {"color": "#0f172a"}, "id": "company:3", "label": "Alibaba Group Holding\nLimited", "level": 1, "margin": 12, "shadow": true, "shape": "box", "title": "\u003cb\u003eAlibaba Group Holding Limited\u003c/b\u003e\u003cbr/\u003eEntity ID: 3\u003cbr/\u003eVisual Category: company\u003cbr/\u003eRaw Entity Type: company\u003cbr/\u003eCountry: China\u003cbr/\u003eRole: Target Company\u003cbr/\u003eMapped Company: Alibaba Group Holding Limited (company_id=3)"}, {"borderWidth": 4, "color": {"background": "#dbeafe", "border": "#b91c1c", "highlight": {"background": "#dbeafe", "border": "#b91c1c"}}, "font": {"color": "#0f172a"}, "id": "entity:10012", "label": "Alibaba Partnership", "level": 0, "margin": 12, "shadow": true, "shape": "box", "title": "\u003cb\u003eAlibaba Partnership\u003c/b\u003e\u003cbr/\u003eEntity ID: 10012\u003cbr/\u003eVisual Category: company\u003cbr/\u003eRaw Entity Type: company\u003cbr/\u003eCountry: China\u003cbr/\u003eRole: Actual Controller"}, {"borderWidth": 2, "color": {"background": "#fee2e2", "border": "#dc2626", "highlight": {"background": "#fee2e2", "border": "#dc2626"}}, "font": {"color": "#0f172a"}, "id": "entity:10011", "label": "Joe Tsai", "level": 0, "margin": 12, "shadow": false, "shape": "ellipse", "title": "\u003cb\u003eJoe Tsai\u003c/b\u003e\u003cbr/\u003eEntity ID: 10011\u003cbr/\u003eVisual Category: person\u003cbr/\u003eRaw Entity Type: person\u003cbr/\u003eCountry: Canada\u003cbr/\u003eRole: Intermediate Holder"}, {"borderWidth": 2, "color": {"background": "#ede9fe", "border": "#7c3aed", "highlight": {"background": "#ede9fe", "border": "#7c3aed"}}, "font": {"color": "#0f172a"}, "id": "entity:10010", "label": "JPMorgan Chase \u0026\nCo.", "level": 0, "margin": 12, "shadow": false, "shape": "box", "title": "\u003cb\u003eJPMorgan Chase \u0026 Co.\u003c/b\u003e\u003cbr/\u003eEntity ID: 10010\u003cbr/\u003eVisual Category: institution\u003cbr/\u003eRaw Entity Type: institution\u003cbr/\u003eCountry: USA\u003cbr/\u003eRole: Intermediate Holder"}, {"borderWidth": 2, "color": {"background": "#ede9fe", "border": "#7c3aed", "highlight": {"background": "#ede9fe", "border": "#7c3aed"}}, "font": {"color": "#0f172a"}, "id": "entity:10002", "label": "BlackRock, Inc.", "level": 0, "margin": 12, "shadow": false, "shape": "box", "title": "\u003cb\u003eBlackRock, Inc.\u003c/b\u003e\u003cbr/\u003eEntity ID: 10002\u003cbr/\u003eVisual Category: institution\u003cbr/\u003eRaw Entity Type: institution\u003cbr/\u003eCountry: USA\u003cbr/\u003eRole: Intermediate Holder"}, {"borderWidth": 2, "color": {"background": "#ede9fe", "border": "#7c3aed", "highlight": {"background": "#ede9fe", "border": "#7c3aed"}}, "font": {"color": "#0f172a"}, "id": "entity:10001", "label": "The Vanguard Group", "level": 0, "margin": 12, "shadow": false, "shape": "box", "title": "\u003cb\u003eThe Vanguard Group\u003c/b\u003e\u003cbr/\u003eEntity ID: 10001\u003cbr/\u003eVisual Category: institution\u003cbr/\u003eRaw Entity Type: institution\u003cbr/\u003eCountry: USA\u003cbr/\u003eRole: Intermediate Holder"}, {"borderWidth": 2, "color": {"background": "#fef3c7", "border": "#d97706", "highlight": {"background": "#fef3c7", "border": "#d97706"}}, "font": {"color": "#0f172a"}, "id": "entity:10018", "label": "Public Float -\nGreater China", "level": 0, "margin": 12, "shadow": false, "shape": "box", "title": "\u003cb\u003ePublic Float - Greater China\u003c/b\u003e\u003cbr/\u003eEntity ID: 10018\u003cbr/\u003eVisual Category: public_float\u003cbr/\u003eRaw Entity Type: fund\u003cbr/\u003eCountry: China\u003cbr/\u003eRole: Intermediate Holder"}]);
+                  edges = new vis.DataSet([{"arrows": "to", "color": "#c2410c", "dashes": true, "from": "entity:10012", "label": "board_control", "title": "\u003cb\u003eAlibaba Partnership\u003c/b\u003e -\u003e \u003cb\u003eAlibaba Group Holding Limited\u003c/b\u003e\u003cbr/\u003eStructure ID: 15\u003cbr/\u003eDisplay Label: board_control\u003cbr/\u003eRaw Control Type: agreement\u003cbr/\u003eHolding Ratio: 0.0000\u003cbr/\u003eSource: https://www.hkexnews.hk/listedco/listconews/sehk/2025/0626/2025062601064.pdf\u003cbr/\u003eCurrent Edge: True\u003cbr/\u003eEffective Date: 2025-06-20\u003cbr/\u003eExpiry Date: N/A\u003cbr/\u003eHighlighted by persisted path: no\u003cbr/\u003eRemarks: Partnership nominates simple majority of board\n[import] original_control_type=board_control", "to": "company:3", "width": 2.4}, {"arrows": "to", "color": "#2563eb", "dashes": false, "from": "entity:10011", "label": "equity 1.48%", "title": "\u003cb\u003eJoe Tsai\u003c/b\u003e -\u003e \u003cb\u003eAlibaba Group Holding Limited\u003c/b\u003e\u003cbr/\u003eStructure ID: 16\u003cbr/\u003eDisplay Label: equity 1.48%\u003cbr/\u003eRaw Control Type: equity\u003cbr/\u003eHolding Ratio: 1.4800\u003cbr/\u003eSource: https://www.hkexnews.hk/listedco/listconews/sehk/2025/0626/2025062601064.pdf\u003cbr/\u003eCurrent Edge: True\u003cbr/\u003eEffective Date: 2025-06-20\u003cbr/\u003eExpiry Date: N/A\u003cbr/\u003eHighlighted by persisted path: no\u003cbr/\u003eRemarks: Joe Tsai beneficial ownership based on annual report note", "to": "company:3", "width": 2.4}, {"arrows": "to", "color": "#2563eb", "dashes": false, "from": "entity:10010", "label": "equity 1.88%", "title": "\u003cb\u003eJPMorgan Chase \u0026 Co.\u003c/b\u003e -\u003e \u003cb\u003eAlibaba Group Holding Limited\u003c/b\u003e\u003cbr/\u003eStructure ID: 17\u003cbr/\u003eDisplay Label: equity 1.88%\u003cbr/\u003eRaw Control Type: equity\u003cbr/\u003eHolding Ratio: 1.8800\u003cbr/\u003eSource: https://www.hkexnews.hk/listedco/listconews/sehk/2025/0626/2025062601064.pdf\u003cbr/\u003eCurrent Edge: True\u003cbr/\u003eEffective Date: 2025-06-20\u003cbr/\u003eExpiry Date: N/A\u003cbr/\u003eHighlighted by persisted path: no\u003cbr/\u003eRemarks: Disclosed substantial shareholder in FY2025 annual report", "to": "company:3", "width": 2.4}, {"arrows": "to", "color": "#2563eb", "dashes": false, "from": "entity:10002", "label": "equity 2%", "title": "\u003cb\u003eBlackRock, Inc.\u003c/b\u003e -\u003e \u003cb\u003eAlibaba Group Holding Limited\u003c/b\u003e\u003cbr/\u003eStructure ID: 18\u003cbr/\u003eDisplay Label: equity 2%\u003cbr/\u003eRaw Control Type: equity\u003cbr/\u003eHolding Ratio: 2.0000\u003cbr/\u003eSource: simulated_from_template\u003cbr/\u003eCurrent Edge: True\u003cbr/\u003eEffective Date: 2025-06-20\u003cbr/\u003eExpiry Date: N/A\u003cbr/\u003eHighlighted by persisted path: no\u003cbr/\u003eRemarks: Institutional tail", "to": "company:3", "width": 2.4}, {"arrows": "to", "color": "#2563eb", "dashes": false, "from": "entity:10001", "label": "equity 1.8%", "title": "\u003cb\u003eThe Vanguard Group\u003c/b\u003e -\u003e \u003cb\u003eAlibaba Group Holding Limited\u003c/b\u003e\u003cbr/\u003eStructure ID: 19\u003cbr/\u003eDisplay Label: equity 1.8%\u003cbr/\u003eRaw Control Type: equity\u003cbr/\u003eHolding Ratio: 1.8000\u003cbr/\u003eSource: simulated_from_template\u003cbr/\u003eCurrent Edge: True\u003cbr/\u003eEffective Date: 2025-06-20\u003cbr/\u003eExpiry Date: N/A\u003cbr/\u003eHighlighted by persisted path: no\u003cbr/\u003eRemarks: Institutional tail", "to": "company:3", "width": 2.4}, {"arrows": "to", "color": "#2563eb", "dashes": false, "from": "entity:10018", "label": "equity 92.84%", "title": "\u003cb\u003ePublic Float - Greater China\u003c/b\u003e -\u003e \u003cb\u003eAlibaba Group Holding Limited\u003c/b\u003e\u003cbr/\u003eStructure ID: 20\u003cbr/\u003eDisplay Label: equity 92.84%\u003cbr/\u003eRaw Control Type: equity\u003cbr/\u003eHolding Ratio: 92.8400\u003cbr/\u003eSource: simulated_free_float\u003cbr/\u003eCurrent Edge: True\u003cbr/\u003eEffective Date: 2025-06-20\u003cbr/\u003eExpiry Date: N/A\u003cbr/\u003eHighlighted by persisted path: no\u003cbr/\u003eRemarks: Residual free float and ADR holders", "to": "company:3", "width": 2.4}]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {"layout": {"hierarchical": {"enabled": true, "direction": "UD", "sortMethod": "directed", "levelSeparation": 160, "nodeSpacing": 210, "treeSpacing": 250}}, "physics": {"enabled": true, "hierarchicalRepulsion": {"nodeDistance": 180}, "solver": "hierarchicalRepulsion"}, "interaction": {"hover": true, "navigationButtons": true, "keyboard": true}, "nodes": {"shape": "box", "font": {"multi": false, "size": 15, "strokeWidth": 0}}, "edges": {"smooth": {"enabled": true, "type": "cubicBezier", "roundness": 0.3}, "font": {"align": "middle", "size": 15, "strokeWidth": 0}}};
+
+                  
+
+
+                  
+
+                  network = new vis.Network(container, data, options);
+
+                  
+
+                  
+
+                  
+
+
+                  
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+    </body>
+</html>

@@ -1,0 +1,213 @@
+{
+  "company": {
+    "id": 2,
+    "name": "Alphabet Inc.",
+    "stock_code": "GOOG",
+    "incorporation_country": "USA",
+    "listing_country": "USA",
+    "headquarters": "USA",
+    "description": "real_anchor | Technology | dual-class founder control | seeded from 2025 proxy and holder disclosures"
+  },
+  "target_entity": {
+    "id": 2,
+    "entity_name": "Alphabet Inc.",
+    "raw_entity_name": "Alphabet Inc.",
+    "entity_type": "company",
+    "visual_category": "company",
+    "country": "USA",
+    "company_id": 2,
+    "mapped_company_name": "Alphabet Inc.",
+    "identifier_code": "GOOG",
+    "is_listed": true
+  },
+  "database_url": "sqlite:///D:/graduation_project/corp_attribution_system/company_import_test.db",
+  "filter_rules": {
+    "is_current": true,
+    "effective_date": "effective_date is null or <= today",
+    "expiry_date": "expiry_date is null or >= today",
+    "data_source": "shareholder_structures (primary), control_relationships (optional highlight)"
+  },
+  "raw_edges": [
+    {
+      "id": 9,
+      "from_entity_id": 10015,
+      "to_entity_id": 2,
+      "from_entity_name": "Page-Brin Voting Block",
+      "to_entity_name": "Alphabet Inc.",
+      "from_entity_type": "company",
+      "to_entity_type": "company",
+      "holding_ratio": "10.6000",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "voting_right",
+      "display_control_type": "voting_right",
+      "label": "voting_right 10.6%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-12-31",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "https://www.sec.gov/Archives/edgar/data/1652044/000130817925000511/goog012701-def14a.htm",
+      "remarks": "Super-voting Class B founder block"
+    },
+    {
+      "id": 10,
+      "from_entity_id": 10001,
+      "to_entity_id": 2,
+      "from_entity_name": "The Vanguard Group",
+      "to_entity_name": "Alphabet Inc.",
+      "from_entity_type": "institution",
+      "to_entity_type": "company",
+      "holding_ratio": "7.7400",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 7.74%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-12-31",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "https://finance.yahoo.com/quote/GOOG/holders/",
+      "remarks": "Top institutional holder"
+    },
+    {
+      "id": 11,
+      "from_entity_id": 10002,
+      "to_entity_id": 2,
+      "from_entity_name": "BlackRock, Inc.",
+      "to_entity_name": "Alphabet Inc.",
+      "from_entity_type": "institution",
+      "to_entity_type": "company",
+      "holding_ratio": "6.6400",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 6.64%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-12-31",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "https://finance.yahoo.com/quote/GOOG/holders/",
+      "remarks": "Top institutional holder"
+    },
+    {
+      "id": 12,
+      "from_entity_id": 10006,
+      "to_entity_id": 2,
+      "from_entity_name": "FMR LLC",
+      "to_entity_name": "Alphabet Inc.",
+      "from_entity_type": "institution",
+      "to_entity_type": "company",
+      "holding_ratio": "1.8000",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 1.8%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-12-31",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "simulated_from_template",
+      "remarks": "Institutional tail"
+    },
+    {
+      "id": 13,
+      "from_entity_id": 10010,
+      "to_entity_id": 2,
+      "from_entity_name": "JPMorgan Chase & Co.",
+      "to_entity_name": "Alphabet Inc.",
+      "from_entity_type": "institution",
+      "to_entity_type": "company",
+      "holding_ratio": "1.0000",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 1%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-12-31",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "simulated_from_template",
+      "remarks": "Institutional tail"
+    },
+    {
+      "id": 14,
+      "from_entity_id": 10017,
+      "to_entity_id": 2,
+      "from_entity_name": "Public Float - US",
+      "to_entity_name": "Alphabet Inc.",
+      "from_entity_type": "fund",
+      "to_entity_type": "company",
+      "holding_ratio": "72.2200",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 72.22%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-12-31",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "simulated_free_float",
+      "remarks": "Residual free float"
+    }
+  ],
+  "raw_edge_count": 6,
+  "control_types": [
+    "equity",
+    "voting_right"
+  ],
+  "mixed_path_visible": false,
+  "mixed_path_examples": [],
+  "distance_to_target": {
+    "2": 0,
+    "10017": 1,
+    "10015": 1,
+    "10001": 1,
+    "10002": 1,
+    "10006": 1,
+    "10010": 1
+  },
+  "max_depth": 1,
+  "skipped_counts": {
+    "self_loop": 2
+  },
+  "persisted_control_relationships": [
+    {
+      "id": 2,
+      "controller_entity_id": 10015,
+      "controller_name": "Page-Brin Voting Block",
+      "controller_type": "company",
+      "control_type": "voting_right",
+      "control_ratio": "51.4000",
+      "is_actual_controller": true,
+      "notes": "Founders retain majority voting power despite minority economic ownership.",
+      "control_path": [
+        {
+          "path_entity_names": [
+            "Page-Brin Voting Block",
+            "Alphabet Inc."
+          ],
+          "path_ratio_pct": "51.4000"
+        }
+      ]
+    }
+  ],
+  "controller_entity_ids": [
+    10015
+  ],
+  "actual_controller_entity_ids": [
+    10015
+  ],
+  "highlighted_path_pairs": [],
+  "warnings": []
+}

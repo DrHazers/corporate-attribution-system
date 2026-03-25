@@ -1,0 +1,213 @@
+{
+  "company": {
+    "id": 3,
+    "name": "Alibaba Group Holding Limited",
+    "stock_code": "BABA",
+    "incorporation_country": "Cayman Islands",
+    "listing_country": "USA",
+    "headquarters": "China",
+    "description": "real_anchor | Technology | partnership board-control / VIE-like contractual control | seeded from FY2025 annual report"
+  },
+  "target_entity": {
+    "id": 3,
+    "entity_name": "Alibaba Group Holding Limited",
+    "raw_entity_name": "Alibaba Group Holding Limited",
+    "entity_type": "company",
+    "visual_category": "company",
+    "country": "China",
+    "company_id": 3,
+    "mapped_company_name": "Alibaba Group Holding Limited",
+    "identifier_code": "BABA",
+    "is_listed": true
+  },
+  "database_url": "sqlite:///D:/graduation_project/corp_attribution_system/company_import_test.db",
+  "filter_rules": {
+    "is_current": true,
+    "effective_date": "effective_date is null or <= today",
+    "expiry_date": "expiry_date is null or >= today",
+    "data_source": "shareholder_structures (primary), control_relationships (optional highlight)"
+  },
+  "raw_edges": [
+    {
+      "id": 15,
+      "from_entity_id": 10012,
+      "to_entity_id": 3,
+      "from_entity_name": "Alibaba Partnership",
+      "to_entity_name": "Alibaba Group Holding Limited",
+      "from_entity_type": "company",
+      "to_entity_type": "company",
+      "holding_ratio": "0.0000",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "agreement",
+      "display_control_type": "board_control",
+      "label": "board_control",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-06-20",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "https://www.hkexnews.hk/listedco/listconews/sehk/2025/0626/2025062601064.pdf",
+      "remarks": "Partnership nominates simple majority of board\n[import] original_control_type=board_control"
+    },
+    {
+      "id": 16,
+      "from_entity_id": 10011,
+      "to_entity_id": 3,
+      "from_entity_name": "Joe Tsai",
+      "to_entity_name": "Alibaba Group Holding Limited",
+      "from_entity_type": "person",
+      "to_entity_type": "company",
+      "holding_ratio": "1.4800",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 1.48%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-06-20",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "https://www.hkexnews.hk/listedco/listconews/sehk/2025/0626/2025062601064.pdf",
+      "remarks": "Joe Tsai beneficial ownership based on annual report note"
+    },
+    {
+      "id": 17,
+      "from_entity_id": 10010,
+      "to_entity_id": 3,
+      "from_entity_name": "JPMorgan Chase & Co.",
+      "to_entity_name": "Alibaba Group Holding Limited",
+      "from_entity_type": "institution",
+      "to_entity_type": "company",
+      "holding_ratio": "1.8800",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 1.88%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-06-20",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "https://www.hkexnews.hk/listedco/listconews/sehk/2025/0626/2025062601064.pdf",
+      "remarks": "Disclosed substantial shareholder in FY2025 annual report"
+    },
+    {
+      "id": 18,
+      "from_entity_id": 10002,
+      "to_entity_id": 3,
+      "from_entity_name": "BlackRock, Inc.",
+      "to_entity_name": "Alibaba Group Holding Limited",
+      "from_entity_type": "institution",
+      "to_entity_type": "company",
+      "holding_ratio": "2.0000",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 2%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-06-20",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "simulated_from_template",
+      "remarks": "Institutional tail"
+    },
+    {
+      "id": 19,
+      "from_entity_id": 10001,
+      "to_entity_id": 3,
+      "from_entity_name": "The Vanguard Group",
+      "to_entity_name": "Alibaba Group Holding Limited",
+      "from_entity_type": "institution",
+      "to_entity_type": "company",
+      "holding_ratio": "1.8000",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 1.8%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-06-20",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "simulated_from_template",
+      "remarks": "Institutional tail"
+    },
+    {
+      "id": 20,
+      "from_entity_id": 10018,
+      "to_entity_id": 3,
+      "from_entity_name": "Public Float - Greater China",
+      "to_entity_name": "Alibaba Group Holding Limited",
+      "from_entity_type": "fund",
+      "to_entity_type": "company",
+      "holding_ratio": "92.8400",
+      "control_ratio": null,
+      "contribution_ratio": null,
+      "control_type": "equity",
+      "display_control_type": "equity",
+      "label": "equity 92.84%",
+      "is_direct": true,
+      "is_current": true,
+      "effective_date": "2025-06-20",
+      "expiry_date": null,
+      "reporting_period": "2025",
+      "source": "simulated_free_float",
+      "remarks": "Residual free float and ADR holders"
+    }
+  ],
+  "raw_edge_count": 6,
+  "control_types": [
+    "board_control",
+    "equity"
+  ],
+  "mixed_path_visible": false,
+  "mixed_path_examples": [],
+  "distance_to_target": {
+    "3": 0,
+    "10018": 1,
+    "10002": 1,
+    "10010": 1,
+    "10001": 1,
+    "10011": 1,
+    "10012": 1
+  },
+  "max_depth": 1,
+  "skipped_counts": {
+    "self_loop": 2
+  },
+  "persisted_control_relationships": [
+    {
+      "id": 3,
+      "controller_entity_id": 10012,
+      "controller_name": "Alibaba Partnership",
+      "controller_type": "company",
+      "control_type": "board_control",
+      "control_ratio": "51.0000",
+      "is_actual_controller": true,
+      "notes": "Partnership has the exclusive right to nominate or appoint up to a simple majority of directors.",
+      "control_path": [
+        {
+          "path_entity_names": [
+            "Alibaba Partnership",
+            "Alibaba Group Holding Limited"
+          ],
+          "path_ratio_pct": "51.0000"
+        }
+      ]
+    }
+  ],
+  "controller_entity_ids": [
+    10012
+  ],
+  "actual_controller_entity_ids": [
+    10012
+  ],
+  "highlighted_path_pairs": [],
+  "warnings": []
+}

@@ -5,7 +5,6 @@ from backend.database import Base
 
 
 class CountryAttribution(Base):
-    # 存储企业国别归属的基础记录。
     __tablename__ = "country_attributions"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -17,6 +16,7 @@ class CountryAttribution(Base):
     basis = Column(Text, nullable=True)
     is_manual = Column(Boolean, nullable=False, default=True)
     notes = Column(Text, nullable=True)
+    source_mode = Column(String(30), nullable=True, index=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(
         DateTime,
@@ -25,5 +25,4 @@ class CountryAttribution(Base):
         onupdate=func.now(),
     )
 
-    # 关联到被判定国别归属的公司。
     company = relationship("Company", back_populates="country_attributions")

@@ -16,9 +16,12 @@ from backend.crud.shareholder import (
 )
 from backend.database import SessionLocal
 from backend.schemas.shareholder import (
+    ConfidenceLevel,
     ShareholderEntityCreate,
     ShareholderEntityRead,
     ShareholderEntityUpdate,
+    ShareholderRelationRole,
+    ShareholderRelationType,
     ShareholderStructureCreate,
     ShareholderStructureRead,
     ShareholderStructureUpdate,
@@ -29,7 +32,6 @@ router = APIRouter(prefix="/shareholders", tags=["shareholders"])
 
 
 def get_db():
-    # 为每个请求提供一个数据库会话，并在请求结束后关闭。
     db = SessionLocal()
     try:
         yield db
@@ -38,19 +40,16 @@ def get_db():
 
 
 def get_shareholder_entity_or_404(db: Session, shareholder_entity_id: int):
-    # 在执行详情、更新、删除前统一检查主体是否存在。
     shareholder_entity = get_shareholder_entity_by_id(db, shareholder_entity_id)
     if shareholder_entity is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Shareholder entity not found.",
         )
-
     return shareholder_entity
 
 
 def get_shareholder_structure_or_404(db: Session, shareholder_structure_id: int):
-    # 在执行详情、更新、删除前统一检查持股边记录是否存在。
     shareholder_structure = get_shareholder_structure_by_id(
         db,
         shareholder_structure_id,
@@ -60,12 +59,10 @@ def get_shareholder_structure_or_404(db: Session, shareholder_structure_id: int)
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Shareholder structure not found.",
         )
-
     return shareholder_structure
 
 
 def validate_company_reference(db: Session, company_id: int):
-    # 在写入主体映射 company_id 前检查公司是否存在。
     company = get_company_by_id(db, company_id)
     if company is None:
         raise HTTPException(
@@ -75,7 +72,6 @@ def validate_company_reference(db: Session, company_id: int):
 
 
 def validate_shareholder_entity_reference(db: Session, shareholder_entity_id: int):
-    # 在写入主体边外键前检查主体是否存在。
     shareholder_entity = get_shareholder_entity_by_id(db, shareholder_entity_id)
     if shareholder_entity is None:
         raise HTTPException(
@@ -85,7 +81,6 @@ def validate_shareholder_entity_reference(db: Session, shareholder_entity_id: in
 
 
 def validate_structure_entity_pair(from_entity_id: int, to_entity_id: int):
-    # 当前先在业务层阻止主体指向自身，后续如有需要可补数据库约束。
     if from_entity_id == to_entity_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -122,8 +117,7 @@ def get_shareholder_entity_detail(
     shareholder_entity_id: int,
     db: Session = Depends(get_db),
 ):
-    shareholder_entity = get_shareholder_entity_or_404(db, shareholder_entity_id)
-    return shareholder_entity
+    return get_shareholder_entity_or_404(db, shareholder_entity_id)
 
 
 @router.put("/entities/{shareholder_entity_id}", response_model=ShareholderEntityRead)
@@ -167,7 +161,6 @@ def create_shareholder_structure_endpoint(
         shareholder_structure_in.from_entity_id,
         shareholder_structure_in.to_entity_id,
     )
-
     return create_shareholder_structure(db, shareholder_structure_in)
 
 
@@ -177,6 +170,11 @@ def list_shareholder_structures(
     limit: int = Query(default=10, ge=1, le=100),
     from_entity_id: int | None = Query(default=None, ge=1),
     to_entity_id: int | None = Query(default=None, ge=1),
+    relation_type: ShareholderRelationType | None = Query(default=None),
+    relation_role: ShareholderRelationRole | None = Query(default=None),
+    is_current: bool | None = Query(default=None),
+    has_numeric_ratio: bool | None = Query(default=None),
+    confidence_level: ConfidenceLevel | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     if from_entity_id is not None:
@@ -191,6 +189,11 @@ def list_shareholder_structures(
         limit=limit,
         from_entity_id=from_entity_id,
         to_entity_id=to_entity_id,
+        relation_type=relation_type,
+        relation_role=relation_role,
+        is_current=is_current,
+        has_numeric_ratio=has_numeric_ratio,
+        confidence_level=confidence_level,
     )
 
 
@@ -202,11 +205,7 @@ def get_shareholder_structure_detail(
     shareholder_structure_id: int,
     db: Session = Depends(get_db),
 ):
-    shareholder_structure = get_shareholder_structure_or_404(
-        db,
-        shareholder_structure_id,
-    )
-    return shareholder_structure
+    return get_shareholder_structure_or_404(db, shareholder_structure_id)
 
 
 @router.put(
@@ -236,7 +235,6 @@ def update_shareholder_structure_endpoint(
         new_to_entity_id = shareholder_structure.to_entity_id
 
     validate_structure_entity_pair(new_from_entity_id, new_to_entity_id)
-
     return update_shareholder_structure(
         db,
         shareholder_structure,

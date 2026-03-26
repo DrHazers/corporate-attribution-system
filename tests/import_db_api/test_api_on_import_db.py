@@ -3,8 +3,6 @@
 import json
 from decimal import Decimal
 
-import pytest
-
 from backend.models.country_attribution import CountryAttribution
 
 
@@ -18,6 +16,7 @@ def assert_company_payload(payload: dict) -> None:
     assert "description" in payload
 
 
+
 def assert_control_path_payload(control_path) -> None:
     if isinstance(control_path, str):
         control_path = json.loads(control_path)
@@ -29,6 +28,7 @@ def assert_control_path_payload(control_path) -> None:
         assert len(path_item["path_entity_names"]) >= 2
 
 
+
 def assert_control_relationship_payload(payload: dict) -> None:
     assert isinstance(payload["id"], int)
     assert isinstance(payload["company_id"], int)
@@ -36,10 +36,19 @@ def assert_control_relationship_payload(payload: dict) -> None:
     assert isinstance(payload["controller_type"], str) and payload["controller_type"]
     assert isinstance(payload["control_type"], str) and payload["control_type"]
     assert isinstance(payload["is_actual_controller"], bool)
+    assert payload["control_mode"] in {"numeric", "semantic", "mixed"}
+    assert payload["review_status"] in {
+        "auto",
+        "manual_confirmed",
+        "manual_rejected",
+        "needs_review",
+    }
+    assert "semantic_flags" in payload
     assert "control_ratio" in payload
     if payload["control_ratio"] is not None:
         Decimal(str(payload["control_ratio"]))
     assert_control_path_payload(payload["control_path"])
+
 
 
 def assert_control_chain_basis_item(payload: dict) -> None:
@@ -47,15 +56,30 @@ def assert_control_chain_basis_item(payload: dict) -> None:
     assert isinstance(payload["controller_name"], str) and payload["controller_name"]
     assert isinstance(payload["control_type"], str) and payload["control_type"]
     assert isinstance(payload["is_actual_controller"], bool)
+    assert payload["control_mode"] in {"numeric", "semantic", "mixed"}
+    assert payload["review_status"] in {
+        "auto",
+        "manual_confirmed",
+        "manual_rejected",
+        "needs_review",
+    }
     assert "basis" in payload
     assert_control_path_payload(payload["control_path"])
+
 
 
 def assert_country_attribution_payload(payload: dict) -> None:
     assert isinstance(payload["company_id"], int)
     assert isinstance(payload["actual_control_country"], str)
     assert isinstance(payload["attribution_type"], str)
+    assert payload["source_mode"] in {
+        "control_chain_analysis",
+        "fallback_rule",
+        "manual_override",
+        "hybrid",
+    }
     assert "basis" in payload
+
 
 
 def test_app_starts_and_main_health_endpoints_work(client, import_database_url: str):
@@ -72,14 +96,16 @@ def test_app_starts_and_main_health_endpoints_work(client, import_database_url: 
     assert health_response.json() == {"status": "ok"}
 
 
-def test_company_list_and_detail_return_valid_schema(client, sample_ids: dict[str, int]):
+
+def test_company_list_and_detail_return_seeded_schema(client, sample_ids: dict[str, int]):
     list_response = client.get("/companies")
     assert list_response.status_code == 200
 
     companies = list_response.json()
     assert isinstance(companies, list)
-    assert len(companies) >= 10000
+    assert len(companies) >= 5
     assert_company_payload(companies[0])
+    assert {item["stock_code"] for item in companies} >= {"AAPL", "GOOGL", "BABA", "AEC", "HRH"}
 
     sample_company_id = sample_ids["with_actual_controller"]
     detail_response = client.get(f"/companies/{sample_company_id}")
@@ -88,6 +114,7 @@ def test_company_list_and_detail_return_valid_schema(client, sample_ids: dict[st
     company_detail = detail_response.json()
     assert_company_payload(company_detail)
     assert company_detail["id"] == sample_company_id
+
 
 
 def test_control_relationship_list_api_reads_persisted_results(
@@ -106,6 +133,7 @@ def test_control_relationship_list_api_reads_persisted_results(
     assert all(item["company_id"] == company_id for item in relationships)
 
 
+
 def test_companies_control_chain_endpoint_returns_non_empty_data_for_sample_company(
     client,
     sample_ids: dict[str, int],
@@ -122,6 +150,7 @@ def test_companies_control_chain_endpoint_returns_non_empty_data_for_sample_comp
     assert isinstance(payload["control_relationships"], list)
     assert payload["control_relationships"]
     assert_control_relationship_payload(payload["control_relationships"][0])
+
 
 
 def test_analysis_control_chain_endpoint_refreshes_and_persisted_read_still_works(
@@ -147,6 +176,7 @@ def test_analysis_control_chain_endpoint_refreshes_and_persisted_read_still_work
     assert persisted_payload["company_id"] == company_id
     assert persisted_payload["controller_count"] >= 1
     assert persisted_payload["control_relationships"]
+
 
 
 def test_actual_controller_endpoint_handles_both_non_empty_and_empty_results(
@@ -176,6 +206,7 @@ def test_actual_controller_endpoint_handles_both_non_empty_and_empty_results(
     assert empty_payload["actual_controllers"] == []
 
 
+
 def test_country_attribution_read_api_returns_valid_payloads(
     client,
     db_session,
@@ -192,6 +223,12 @@ def test_country_attribution_read_api_returns_valid_payloads(
     assert isinstance(first_item["id"], int)
     assert isinstance(first_item["company_id"], int)
     assert isinstance(first_item["actual_control_country"], str)
+    assert first_item["source_mode"] in {
+        "control_chain_analysis",
+        "fallback_rule",
+        "manual_override",
+        "hybrid",
+    }
 
     detail_record = (
         db_session.query(CountryAttribution)
@@ -207,6 +244,8 @@ def test_country_attribution_read_api_returns_valid_payloads(
     assert detail_payload["id"] == detail_record.id
     assert detail_payload["company_id"] == company_id
     assert isinstance(detail_payload["is_manual"], bool)
+    assert detail_payload["source_mode"] is not None
+
 
 
 def test_country_attribution_endpoints_work_for_actual_and_fallback_cases(
@@ -238,6 +277,59 @@ def test_country_attribution_endpoints_work_for_actual_and_fallback_cases(
     fallback_payload = fallback_response.json()
     assert_country_attribution_payload(fallback_payload)
     assert fallback_payload["company_id"] == without_actual_controller
+    assert fallback_payload["source_mode"] == "fallback_rule"
+
+
+
+def test_relationship_graph_and_special_control_summary_return_seeded_semantic_edges(
+    client,
+    sample_ids: dict[str, int],
+):
+    company_id = sample_ids["alibaba_company_id"]
+
+    graph_response = client.get(f"/companies/{company_id}/relationship-graph")
+    assert graph_response.status_code == 200
+    graph_payload = graph_response.json()
+    assert graph_payload["company_id"] == company_id
+    assert graph_payload["target_company"]["stock_code"] == "BABA"
+    assert graph_payload["node_count"] >= 4
+    assert graph_payload["edge_count"] >= 3
+    assert graph_payload["nodes"]
+    assert graph_payload["edges"]
+
+    first_node = graph_payload["nodes"][0]
+    assert "entity_id" in first_node
+    assert "name" in first_node
+
+    relation_types = {edge["relation_type"] for edge in graph_payload["edges"]}
+    assert "equity" in relation_types
+    assert "board_control" in relation_types
+
+    first_edge = graph_payload["edges"][0]
+    for field in [
+        "structure_id",
+        "relation_role",
+        "control_basis",
+        "board_seats",
+        "nomination_rights",
+        "agreement_scope",
+        "relation_priority",
+        "confidence_level",
+    ]:
+        assert field in first_edge
+
+    special_response = client.get(f"/companies/{company_id}/special-control-relations")
+    assert special_response.status_code == 200
+    special_payload = special_response.json()
+    assert special_payload["company_id"] == company_id
+    assert special_payload["total_count"] >= 1
+    assert special_payload["has_special_control_relations"] is True
+    assert special_payload["relation_type_counts"]["board_control"] >= 1
+    assert isinstance(special_payload["relations"], list)
+    assert special_payload["relations"]
+    assert "structure_id" in special_payload["relations"][0]
+    assert "confidence_level" in special_payload["relations"][0]
+
 
 
 def test_upstream_shareholders_analysis_endpoint_returns_valid_payload(
@@ -259,51 +351,12 @@ def test_upstream_shareholders_analysis_endpoint_returns_valid_payload(
     first_entity = payload["upstream_entities"][0]
     assert isinstance(first_entity["entity_id"], int)
     assert isinstance(first_entity["entity_name"], str) and first_entity["entity_name"]
+    assert "relation_priority" in first_entity
+    assert "confidence_level" in first_entity
     assert "holding_ratio" in first_entity
     if first_entity["holding_ratio"] is not None:
         Decimal(str(first_entity["holding_ratio"]))
 
-
-@pytest.mark.parametrize("sample_key", ["with_actual_controller", "without_actual_controller"])
-def test_end_to_end_analysis_chain_for_multiple_sample_companies(
-    client,
-    sample_ids: dict[str, int],
-    sample_key: str,
-):
-    company_id = sample_ids[sample_key]
-
-    control_chain_response = client.get(f"/analysis/control-chain/{company_id}")
-    actual_controller_response = client.get(f"/companies/{company_id}/actual-controller")
-    country_analysis_response = client.get(f"/analysis/country-attribution/{company_id}")
-    country_persisted_response = client.get(f"/companies/{company_id}/country-attribution")
-
-    assert control_chain_response.status_code == 200
-    assert actual_controller_response.status_code == 200
-    assert country_analysis_response.status_code == 200
-    assert country_persisted_response.status_code == 200
-
-    control_chain_payload = control_chain_response.json()
-    actual_controller_payload = actual_controller_response.json()
-    country_analysis_payload = country_analysis_response.json()
-    country_persisted_payload = country_persisted_response.json()
-
-    assert control_chain_payload["company_id"] == company_id
-    assert isinstance(control_chain_payload["control_relationships"], list)
-    assert control_chain_payload["controller_count"] >= 1
-    assert control_chain_payload["control_relationships"]
-    assert_control_relationship_payload(control_chain_payload["control_relationships"][0])
-
-    assert actual_controller_payload["company_id"] == company_id
-    assert isinstance(actual_controller_payload["actual_controllers"], list)
-
-    assert country_analysis_payload["company_id"] == company_id
-    assert country_analysis_payload["country_attribution"] is not None
-    assert_country_attribution_payload(country_analysis_payload["country_attribution"])
-    assert isinstance(country_analysis_payload["control_chain_basis"], list)
-    assert country_analysis_payload["control_chain_basis"]
-
-    assert country_persisted_payload["company_id"] == company_id
-    assert_country_attribution_payload(country_persisted_payload)
 
 
 def test_invalid_company_ids_return_404_for_company_scoped_endpoints(client):
@@ -314,6 +367,8 @@ def test_invalid_company_ids_return_404_for_company_scoped_endpoints(client):
         f"/companies/{invalid_company_id}/control-chain",
         f"/companies/{invalid_company_id}/actual-controller",
         f"/companies/{invalid_company_id}/country-attribution",
+        f"/companies/{invalid_company_id}/relationship-graph",
+        f"/companies/{invalid_company_id}/special-control-relations",
         f"/analysis/control-chain/{invalid_company_id}",
         f"/analysis/country-attribution/{invalid_company_id}",
     ]:

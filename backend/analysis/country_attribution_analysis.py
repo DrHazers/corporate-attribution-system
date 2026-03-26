@@ -8,7 +8,6 @@ def analyze_country_attribution_with_control_chain(
     db: Session,
     company_id: int,
 ) -> dict:
-    # 联动分析先刷新控制链，再读取最新的归属结果快照。
     control_chain_result = analyze_control_chain(db, company_id)
     country_attribution = (
         db.query(CountryAttribution)
@@ -27,6 +26,9 @@ def analyze_country_attribution_with_control_chain(
                 "control_path": item["control_path"],
                 "is_actual_controller": item["is_actual_controller"],
                 "basis": item["basis"],
+                "control_mode": item.get("control_mode"),
+                "semantic_flags": item.get("semantic_flags"),
+                "review_status": item.get("review_status"),
             }
         )
 
@@ -50,6 +52,7 @@ def analyze_country_attribution_with_control_chain(
             "basis": country_attribution.basis,
             "is_manual": country_attribution.is_manual,
             "notes": country_attribution.notes,
+            "source_mode": country_attribution.source_mode,
         },
         "control_chain_basis": control_chain_basis,
     }

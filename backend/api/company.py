@@ -1,10 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from backend.analysis.ownership_graph import (
+    get_company_relationship_graph_data,
+    get_company_special_control_relations_summary,
+)
 from backend.analysis.ownership_penetration import (
     get_company_actual_controller_data,
     get_company_control_chain_data,
     get_company_country_attribution_data,
+    refresh_company_control_analysis,
 )
 from backend.crud.company import (
     create_company,
@@ -14,6 +19,7 @@ from backend.crud.company import (
     get_company_by_stock_code,
     update_company,
 )
+from backend.crud.shareholder import get_entity_by_company_id
 from backend.database import SessionLocal
 from backend.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
 
@@ -98,16 +104,40 @@ def delete_company_endpoint(company_id: int, db: Session = Depends(get_db)):
 @router.get("/{company_id}/control-chain")
 def get_company_control_chain(company_id: int, db: Session = Depends(get_db)):
     get_company_or_404(db, company_id)
+    if get_entity_by_company_id(db, company_id) is not None:
+        refresh_company_control_analysis(db, company_id)
     return get_company_control_chain_data(db, company_id)
 
 
 @router.get("/{company_id}/actual-controller")
 def get_company_actual_controller(company_id: int, db: Session = Depends(get_db)):
     get_company_or_404(db, company_id)
+    if get_entity_by_company_id(db, company_id) is not None:
+        refresh_company_control_analysis(db, company_id)
     return get_company_actual_controller_data(db, company_id)
 
 
 @router.get("/{company_id}/country-attribution")
 def get_company_country_attribution(company_id: int, db: Session = Depends(get_db)):
     get_company_or_404(db, company_id)
+    if get_entity_by_company_id(db, company_id) is not None:
+        refresh_company_control_analysis(db, company_id)
     return get_company_country_attribution_data(db, company_id)
+
+
+@router.get("/{company_id}/relationship-graph")
+def get_company_relationship_graph(
+    company_id: int,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    return get_company_relationship_graph_data(db, company_id)
+
+
+@router.get("/{company_id}/special-control-relations")
+def get_company_special_control_relations(
+    company_id: int,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    return get_company_special_control_relations_summary(db, company_id)

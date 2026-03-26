@@ -15,7 +15,6 @@ from backend.database import Base
 
 
 class ControlRelationship(Base):
-    # 存储分析或人工整理后的控制关系结果，而不是底层股权图原始边。
     __tablename__ = "control_relationships"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -34,6 +33,9 @@ class ControlRelationship(Base):
     is_actual_controller = Column(Boolean, nullable=False, default=False)
     basis = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
+    control_mode = Column(String(20), nullable=True, index=True)
+    semantic_flags = Column(Text, nullable=True)
+    review_status = Column(String(30), nullable=True, index=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(
         DateTime,
@@ -42,7 +44,7 @@ class ControlRelationship(Base):
         onupdate=func.now(),
     )
 
-    # 可选关联到底层主体节点，兼容旧的 controller_name 展示字段。
+    company = relationship("Company", back_populates="control_relationships")
     controller_entity = relationship(
         "ShareholderEntity",
         back_populates="control_relationships",

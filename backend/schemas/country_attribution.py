@@ -1,10 +1,35 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from backend.shareholder_relations import (
+    COUNTRY_SOURCE_MODE_VALUES,
+    normalize_country_source_mode,
+)
 
 
-class CountryAttributionCreate(BaseModel):
-    # 创建国别归属记录时使用的请求结构。
+CountrySourceMode = Literal[
+    "control_chain_analysis",
+    "fallback_rule",
+    "manual_override",
+    "hybrid",
+]
+
+
+class CountryAttributionBase(BaseModel):
+    @field_validator("source_mode", check_fields=False)
+    @classmethod
+    def validate_source_mode(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = normalize_country_source_mode(value)
+        if normalized not in COUNTRY_SOURCE_MODE_VALUES:
+            raise ValueError(f"Unsupported source_mode: {value}")
+        return normalized
+
+
+class CountryAttributionCreate(CountryAttributionBase):
     company_id: int
     incorporation_country: str
     listing_country: str
@@ -13,10 +38,10 @@ class CountryAttributionCreate(BaseModel):
     basis: str | None = None
     is_manual: bool = True
     notes: str | None = None
+    source_mode: CountrySourceMode | None = None
 
 
-class CountryAttributionUpdate(BaseModel):
-    # 更新国别归属记录时使用的请求结构，所有字段均为可选。
+class CountryAttributionUpdate(CountryAttributionBase):
     company_id: int | None = None
     incorporation_country: str | None = None
     listing_country: str | None = None
@@ -25,12 +50,12 @@ class CountryAttributionUpdate(BaseModel):
     basis: str | None = None
     is_manual: bool | None = None
     notes: str | None = None
+    source_mode: CountrySourceMode | None = None
 
 
 class CountryAttributionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    # 国别归属读取时使用的响应结构。
     id: int
     company_id: int
     incorporation_country: str
@@ -40,5 +65,6 @@ class CountryAttributionRead(BaseModel):
     basis: str | None = None
     is_manual: bool
     notes: str | None = None
+    source_mode: CountrySourceMode | None = None
     created_at: datetime
     updated_at: datetime

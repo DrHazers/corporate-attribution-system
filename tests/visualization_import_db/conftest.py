@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib.util
 import os
@@ -17,13 +17,14 @@ os.environ["DATABASE_URL"] = IMPORT_DATABASE_URL
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.database import DATABASE_URL, SessionLocal  # noqa: E402
+from backend.database import DATABASE_URL, SessionLocal, init_db  # noqa: E402
 
 
 @pytest.fixture(scope="session")
 def import_database_url() -> str:
     assert IMPORT_DB_PATH.exists(), f"Missing import DB: {IMPORT_DB_PATH}"
     assert DATABASE_URL == IMPORT_DATABASE_URL
+    init_db()
     return DATABASE_URL
 
 

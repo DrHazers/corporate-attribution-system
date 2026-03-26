@@ -1,6 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
+
+from backend.models.company import Company
+
 
 
 def _pick_sample(sample_selection, *, category: str | None = None, mixed: bool = False):
@@ -10,6 +13,7 @@ def _pick_sample(sample_selection, *, category: str | None = None, mixed: bool =
         if mixed and item["summary"].get("mixed_path_visible"):
             return item
     return None
+
 
 
 def test_build_edge_label_formats_control_types_and_percentages(visualization_module):
@@ -28,6 +32,7 @@ def test_build_edge_label_formats_control_types_and_percentages(visualization_mo
     )
 
 
+
 def test_sample_selection_covers_mixed_and_non_equity_patterns(sample_selection):
     categories = {item["category"] for item in sample_selection}
     assert len(sample_selection) == 5
@@ -38,6 +43,7 @@ def test_sample_selection_covers_mixed_and_non_equity_patterns(sample_selection)
         for item in sample_selection
     )
     assert any(item["summary"].get("max_depth", 0) >= 3 for item in sample_selection)
+
 
 
 def test_mixed_path_company_uses_shareholder_structures_and_preserves_labels(
@@ -76,14 +82,22 @@ def test_mixed_path_company_uses_shareholder_structures_and_preserves_labels(
     )
 
 
+
 def test_visual_graph_uses_entity_type_categories_and_multiline_labels(
     db_session,
     visualization_module,
 ):
+    alibaba_company_id = (
+        db_session.query(Company.id)
+        .filter(Company.stock_code == "BABA")
+        .scalar()
+    )
+    assert alibaba_company_id is not None
+
     context = visualization_module.load_visualization_context(db_session)
     data = visualization_module.load_company_visualization_data(
         db_session,
-        3,
+        alibaba_company_id,
         context=context,
     )
     assert data is not None
@@ -98,6 +112,7 @@ def test_visual_graph_uses_entity_type_categories_and_multiline_labels(
     assert nodes_by_name["Public Float - Greater China"]["visual_category"] == "public_float"
     assert nodes_by_name["Alibaba Partnership"]["visual_category"] == "company"
     assert "\n" in nodes_by_name["JPMorgan Chase & Co."]["label"]
+
 
 
 def test_batch_generation_outputs_five_html_files_and_report(
@@ -136,5 +151,3 @@ def test_batch_generation_outputs_five_html_files_and_report(
         for marker in ["agreement", "voting_right", "board_control", "nominee", "vie"]
     )
     assert any(item["mixed_path_visible"] for item in report["results"])
-
-

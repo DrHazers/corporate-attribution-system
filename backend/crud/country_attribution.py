@@ -5,14 +5,17 @@ from backend.schemas.country_attribution import (
     CountryAttributionCreate,
     CountryAttributionUpdate,
 )
+from backend.shareholder_relations import prepare_country_attribution_values
 
 
 def create_country_attribution(
     db: Session,
     country_attribution_in: CountryAttributionCreate,
 ) -> CountryAttribution:
-    # 将校验后的国别归属输入数据转换为数据库记录。
-    country_attribution = CountryAttribution(**country_attribution_in.model_dump())
+    prepared_values = prepare_country_attribution_values(
+        country_attribution_in.model_dump(exclude_unset=True)
+    )
+    country_attribution = CountryAttribution(**prepared_values)
     db.add(country_attribution)
     db.commit()
     db.refresh(country_attribution)
@@ -35,7 +38,6 @@ def get_country_attributions(
     skip: int = 0,
     limit: int = 10,
 ) -> list[CountryAttribution]:
-    # 分页返回国别归属列表，保证接口输出顺序稳定。
     return (
         db.query(CountryAttribution)
         .order_by(CountryAttribution.id.asc())
@@ -50,8 +52,11 @@ def update_country_attribution(
     country_attribution: CountryAttribution,
     country_attribution_in: CountryAttributionUpdate,
 ) -> CountryAttribution:
-    # 仅更新请求中显式传入的国别归属字段。
-    for field, value in country_attribution_in.model_dump(exclude_unset=True).items():
+    prepared_values = prepare_country_attribution_values(
+        country_attribution_in.model_dump(exclude_unset=True),
+        existing=country_attribution,
+    )
+    for field, value in prepared_values.items():
         setattr(country_attribution, field, value)
 
     db.commit()
@@ -63,6 +68,5 @@ def delete_country_attribution(
     db: Session,
     country_attribution: CountryAttribution,
 ) -> None:
-    # 删除指定国别归属记录并提交事务。
     db.delete(country_attribution)
     db.commit()

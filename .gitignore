@@ -9,3 +9,4 @@ tests/output/*.html
 tests/output/*.json
 tests/output/stage_a_full_graphs/*.html
 tests/output/stage_a_full_graphs/*.json
+data_import_tmp/

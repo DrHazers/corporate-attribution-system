@@ -1,22 +1,25 @@
 from __future__ import annotations
 
 import argparse
-import json
-import textwrap
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from html import escape
 from pathlib import Path
+import textwrap
 from typing import Any, Iterable
 
 import networkx as nx
 from pyvis.network import Network
 from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, load_only
 
+from backend.analysis.control_chain import analyze_control_chain_with_options
+from backend.analysis.country_attribution_analysis import (
+    analyze_country_attribution_with_options,
+)
 from backend.database import SessionLocal
-from backend.models.control_relationship import ControlRelationship
 from backend.models.shareholder import ShareholderEntity, ShareholderStructure
 
 
@@ -25,17 +28,18 @@ OUTPUT_HTML_DIR = PROJECT_ROOT / "tests" / "output"
 LATEST_OUTPUT_HTML_PATH = OUTPUT_HTML_DIR / "control_graph.html"
 DEFAULT_MAX_DEPTH = 3
 NODE_BASE_SIZE = 20
-ACTUAL_CONTROLLER_SIZE = 35
+ACTUAL_CONTROLLER_SIZE = 34
+FOCUSED_CONTROLLER_SIZE = 38
 TARGET_NODE_SIZE = 28
 PLACEHOLDER_PATH_TOKENS = {
-    "contractual arrangements",
     "contractual arrangement",
+    "contractual arrangements",
     "agreement",
     "agreements",
     "board control",
     "board governance",
-    "voting rights",
     "voting right",
+    "voting rights",
     "vie",
 }
 ENTITY_COLORS = {
@@ -55,14 +59,53 @@ EDGE_TYPE_PRIORITY = {
     "other": 6,
     "unknown": 7,
 }
+EDGE_VISUAL_STYLES = {
+    "equity": {"color": "#111111", "dashes": False},
+    "agreement": {"color": "#7c3aed", "dashes": True},
+    "board_control": {"color": "#ea580c", "dashes": False},
+    "voting_right": {"color": "#0f766e", "dashes": True},
+    "nominee": {"color": "#be185d", "dashes": True},
+    "vie": {"color": "#0891b2", "dashes": True},
+    "other": {"color": "#64748b", "dashes": True},
+    "unknown": {"color": "#94a3b8", "dashes": True},
+}
+
+
+@dataclass(slots=True)
+class FocusRelationship:
+    controller_entity_id: int | None
+    controller_name: str | None
+    controller_type: str | None
+    control_type: str | None
+    control_mode: str | None
+    control_ratio: str | None
+    semantic_flags: list[str]
+    review_status: str | None
+    is_actual_controller: bool
+    basis: dict[str, Any] | None
+    control_path: list[dict[str, Any]]
 
 
 @dataclass(slots=True)
 class HighlightContext:
     actual_controller_ids: set[int]
     actual_controller_names: list[str]
+    focus_controller_id: int | None
+    focus_controller_name: str | None
     highlighted_pairs: set[tuple[int, int]]
     highlighted_entity_ids: set[int]
+
+
+@dataclass(slots=True)
+class ControlGraphAnalysis:
+    focus_label: str | None
+    controller_count: int
+    actual_controller_ids: set[int]
+    actual_controller_names: list[str]
+    focus_relationship: FocusRelationship | None
+    attribution_type: str | None
+    actual_control_country: str | None
+    country_source_mode: str | None
 
 
 @dataclass(slots=True)
@@ -71,11 +114,17 @@ class ControlGraphContext:
     entities: dict[int, ShareholderEntity]
     edges: list[ShareholderStructure]
     highlights: HighlightContext
+    analysis: ControlGraphAnalysis | None
     max_depth: int
 
 
 def _normalize_text(value: str | None) -> str:
     return " ".join((value or "").strip().lower().split())
+
+
+def _safe_text(value: Any, *, default: str = "N/A") -> str:
+    rendered = str(value).strip() if value is not None else ""
+    return escape(rendered) if rendered else default
 
 
 def _slugify(value: str) -> str:
@@ -112,6 +161,19 @@ def _normalize_relation_type(edge: ShareholderStructure) -> str:
     return "equity" if edge.holding_ratio is not None else "unknown"
 
 
+def _normalize_flags(values: Iterable[Any] | None) -> list[str]:
+    return [
+        str(value).strip()
+        for value in values or []
+        if str(value).strip()
+    ]
+
+
+def _render_flag_text(values: Iterable[Any] | None) -> str:
+    flags = _normalize_flags(values)
+    return ", ".join(flags) if flags else "none"
+
+
 def _to_decimal(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
@@ -121,6 +183,17 @@ def _to_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+def _format_decimal(value: Any) -> str | None:
+    numeric_value = _to_decimal(value)
+    if numeric_value is None:
+        return None
+    quantized = numeric_value.quantize(Decimal("0.01"))
+    rendered = format(quantized.normalize(), "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered
 
 
 def _ratio_to_percent(value: Any) -> Decimal | None:
@@ -134,11 +207,13 @@ def _format_percent(value: Any) -> str | None:
     ratio_pct = _ratio_to_percent(value)
     if ratio_pct is None:
         return None
-    quantized = ratio_pct.quantize(Decimal("0.01"))
-    rendered = format(quantized.normalize(), "f")
-    if "." in rendered:
-        rendered = rendered.rstrip("0").rstrip(".")
-    return f"{rendered}%"
+    rendered = _format_decimal(ratio_pct)
+    return f"{rendered}%" if rendered is not None else None
+
+
+def _format_score_pct(value: Any) -> str | None:
+    rendered = _format_decimal(value)
+    return f"{rendered}%" if rendered is not None else None
 
 
 def _wrap_label(value: str, *, width: int = 18, max_lines: int = 3) -> str:
@@ -164,20 +239,23 @@ def _node_tooltip(
     *,
     is_target: bool,
     is_actual_controller: bool,
+    is_focus_controller: bool,
 ) -> str:
-    role = []
+    roles = []
     if is_target:
-        role.append("目标公司")
+        roles.append("target company")
+    if is_focus_controller:
+        roles.append("focused controller / candidate")
     if is_actual_controller:
-        role.append("实控人")
-    role_text = " / ".join(role) if role else "普通节点"
+        roles.append("actual controller")
+    role_text = " / ".join(roles) if roles else "upstream entity"
     return "<br/>".join(
         [
-            f"<b>{entity.entity_name}</b>",
-            f"名称: {entity.entity_name}",
-            f"类型: {entity.entity_type or 'other'}",
-            f"国家: {entity.country or '未知'}",
-            f"角色: {role_text}",
+            f"<b>{_safe_text(entity.entity_name)}</b>",
+            f"Name: {_safe_text(entity.entity_name)}",
+            f"Type: {_safe_text(entity.entity_type, default='other')}",
+            f"Country: {_safe_text(entity.country, default='unknown')}",
+            f"Role: {_safe_text(role_text)}",
         ]
     )
 
@@ -190,20 +268,20 @@ def _edge_tooltip(
     highlighted: bool,
 ) -> str:
     lines = [
-        f"<b>{source_entity.entity_name}</b> -> <b>{target_entity.entity_name}</b>",
-        f"控制路径高亮: {'是' if highlighted else '否'}",
+        f"<b>{_safe_text(source_entity.entity_name)}</b> -> <b>{_safe_text(target_entity.entity_name)}</b>",
+        f"Focused path: {'yes' if highlighted else 'no'}",
     ]
     for index, relation in enumerate(relations, start=1):
         lines.extend(
             [
                 "",
-                f"<b>关系 {index}</b>",
-                f"relation_type: {_normalize_relation_type(relation)}",
-                f"relation_role: {relation.relation_role or 'unknown'}",
-                f"control_type: {relation.control_type or _normalize_relation_type(relation)}",
-                f"holding_ratio: {_format_percent(relation.holding_ratio) or 'N/A'}",
+                f"<b>Relationship {index}</b>",
+                f"relation_type: {_safe_text(_normalize_relation_type(relation))}",
+                f"relation_role: {_safe_text(relation.relation_role, default='unknown')}",
+                f"control_type: {_safe_text(relation.control_type or _normalize_relation_type(relation))}",
+                f"holding_ratio: {_safe_text(_format_percent(relation.holding_ratio))}",
                 f"has_numeric_ratio: {'true' if relation.has_numeric_ratio else 'false'}",
-                f"confidence_level: {relation.confidence_level or 'unknown'}",
+                f"confidence_level: {_safe_text(relation.confidence_level, default='unknown')}",
             ]
         )
     return "<br/>".join(lines)
@@ -254,8 +332,31 @@ def _load_upstream_edges(
         edges = (
             db.query(ShareholderStructure)
             .options(
-                joinedload(ShareholderStructure.from_entity),
-                joinedload(ShareholderStructure.to_entity),
+                load_only(
+                    ShareholderStructure.id,
+                    ShareholderStructure.from_entity_id,
+                    ShareholderStructure.to_entity_id,
+                    ShareholderStructure.holding_ratio,
+                    ShareholderStructure.control_type,
+                    ShareholderStructure.relation_type,
+                    ShareholderStructure.has_numeric_ratio,
+                    ShareholderStructure.relation_role,
+                    ShareholderStructure.confidence_level,
+                ),
+                joinedload(ShareholderStructure.from_entity).load_only(
+                    ShareholderEntity.id,
+                    ShareholderEntity.entity_name,
+                    ShareholderEntity.entity_type,
+                    ShareholderEntity.country,
+                    ShareholderEntity.company_id,
+                ),
+                joinedload(ShareholderStructure.to_entity).load_only(
+                    ShareholderEntity.id,
+                    ShareholderEntity.entity_name,
+                    ShareholderEntity.entity_type,
+                    ShareholderEntity.country,
+                    ShareholderEntity.company_id,
+                ),
             )
             .filter(ShareholderStructure.to_entity_id.in_(frontier))
             .filter(*_current_structure_filters(as_of))
@@ -279,15 +380,6 @@ def _load_upstream_edges(
         frontier = next_frontier
 
     return entities, edges_by_id
-
-
-def _deserialize_json_text(value: str | None) -> Any:
-    if value in (None, ""):
-        return None
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return value
 
 
 def _build_name_index(entities: Iterable[ShareholderEntity]) -> dict[str, set[int]]:
@@ -323,10 +415,18 @@ def _iter_control_path_items(payload: Any) -> list[Any]:
     return [payload]
 
 
+def _normalize_control_path_payload(payload: Any) -> list[dict[str, Any]]:
+    normalized_items: list[dict[str, Any]] = []
+    for item in _iter_control_path_items(payload):
+        if isinstance(item, dict):
+            normalized_items.append(item)
+    return normalized_items
+
+
 def _resolve_path_from_string(
     path_text: str,
     *,
-    relationship: ControlRelationship,
+    controller_entity_id: int | None,
     target_entity_id: int,
     name_index: dict[str, set[int]],
 ) -> list[int] | None:
@@ -346,21 +446,21 @@ def _resolve_path_from_string(
     if len(resolved_ids) >= 2:
         return resolved_ids
 
-    if relationship.controller_entity_id is not None:
-        return [relationship.controller_entity_id, target_entity_id]
+    if controller_entity_id is not None:
+        return [controller_entity_id, target_entity_id]
     return None
 
 
 def _extract_highlight_sequences(
-    relationship: ControlRelationship,
+    control_path_payload: Any,
     *,
+    controller_entity_id: int | None,
     target_entity_id: int,
     name_index: dict[str, set[int]],
 ) -> list[list[int]]:
-    payload = _deserialize_json_text(relationship.control_path)
     sequences: list[list[int]] = []
 
-    for item in _iter_control_path_items(payload):
+    for item in _iter_control_path_items(control_path_payload):
         if isinstance(item, dict):
             path_entity_ids = item.get("path_entity_ids")
             if (
@@ -375,7 +475,7 @@ def _extract_highlight_sequences(
             if isinstance(path_text, str):
                 sequence = _resolve_path_from_string(
                     path_text,
-                    relationship=relationship,
+                    controller_entity_id=controller_entity_id,
                     target_entity_id=target_entity_id,
                     name_index=name_index,
                 )
@@ -384,15 +484,15 @@ def _extract_highlight_sequences(
         elif isinstance(item, str):
             sequence = _resolve_path_from_string(
                 item,
-                relationship=relationship,
+                controller_entity_id=controller_entity_id,
                 target_entity_id=target_entity_id,
                 name_index=name_index,
             )
             if sequence is not None:
                 sequences.append(sequence)
 
-    if not sequences and relationship.controller_entity_id is not None:
-        sequences.append([relationship.controller_entity_id, target_entity_id])
+    if not sequences and controller_entity_id is not None:
+        sequences.append([controller_entity_id, target_entity_id])
 
     return sequences
 
@@ -405,6 +505,15 @@ def _load_entities_by_ids(
         return {}
     rows = (
         db.query(ShareholderEntity)
+        .options(
+            load_only(
+                ShareholderEntity.id,
+                ShareholderEntity.entity_name,
+                ShareholderEntity.entity_type,
+                ShareholderEntity.country,
+                ShareholderEntity.company_id,
+            )
+        )
         .filter(ShareholderEntity.id.in_(entity_ids))
         .order_by(ShareholderEntity.id.asc())
         .all()
@@ -431,8 +540,31 @@ def _load_current_edges_for_pairs(
     rows = (
         db.query(ShareholderStructure)
         .options(
-            joinedload(ShareholderStructure.from_entity),
-            joinedload(ShareholderStructure.to_entity),
+            load_only(
+                ShareholderStructure.id,
+                ShareholderStructure.from_entity_id,
+                ShareholderStructure.to_entity_id,
+                ShareholderStructure.holding_ratio,
+                ShareholderStructure.control_type,
+                ShareholderStructure.relation_type,
+                ShareholderStructure.has_numeric_ratio,
+                ShareholderStructure.relation_role,
+                ShareholderStructure.confidence_level,
+            ),
+            joinedload(ShareholderStructure.from_entity).load_only(
+                ShareholderEntity.id,
+                ShareholderEntity.entity_name,
+                ShareholderEntity.entity_type,
+                ShareholderEntity.country,
+                ShareholderEntity.company_id,
+            ),
+            joinedload(ShareholderStructure.to_entity).load_only(
+                ShareholderEntity.id,
+                ShareholderEntity.entity_name,
+                ShareholderEntity.entity_type,
+                ShareholderEntity.country,
+                ShareholderEntity.company_id,
+            ),
         )
         .filter(or_(*pair_clauses))
         .filter(*_current_structure_filters(as_of))
@@ -442,33 +574,174 @@ def _load_current_edges_for_pairs(
     return {row.id: row for row in rows}
 
 
-def _build_highlight_context(
+def _relationship_match_score(
+    relationship: dict[str, Any],
+    *,
+    preferred_controller_name: str | None,
+    preferred_control_type: str | None,
+    preferred_semantic_flags: set[str],
+) -> int:
+    score = 0
+    relationship_name = _normalize_text(relationship.get("controller_name"))
+    relationship_type = _normalize_text(relationship.get("control_type"))
+    relationship_flags = {
+        _normalize_text(flag)
+        for flag in relationship.get("semantic_flags") or []
+        if str(flag).strip()
+    }
+
+    if preferred_controller_name:
+        preferred_name = _normalize_text(preferred_controller_name)
+        if relationship_name == preferred_name:
+            score += 10
+        elif preferred_name and preferred_name in relationship_name:
+            score += 5
+
+    if preferred_control_type:
+        preferred_type = _normalize_text(preferred_control_type)
+        if relationship_type == preferred_type:
+            score += 6
+
+    if preferred_semantic_flags:
+        if preferred_semantic_flags.issubset(relationship_flags):
+            score += 6
+        elif relationship_flags.intersection(preferred_semantic_flags):
+            score += 3
+
+    if relationship.get("is_actual_controller"):
+        score += 1
+
+    return score
+
+
+def _pick_focus_relationship_payload(
+    relationships: list[dict[str, Any]],
+    *,
+    preferred_controller_name: str | None,
+    preferred_control_type: str | None,
+    preferred_semantic_flags: Iterable[str] | None,
+) -> dict[str, Any] | None:
+    if not relationships:
+        return None
+
+    preferred_flags = {
+        _normalize_text(flag)
+        for flag in preferred_semantic_flags or []
+        if str(flag).strip()
+    }
+
+    scored_relationships: list[tuple[int, int, Decimal, int, dict[str, Any]]] = []
+    for index, relationship in enumerate(relationships):
+        match_score = _relationship_match_score(
+            relationship,
+            preferred_controller_name=preferred_controller_name,
+            preferred_control_type=preferred_control_type,
+            preferred_semantic_flags=preferred_flags,
+        )
+        is_actual_controller = 1 if relationship.get("is_actual_controller") else 0
+        ratio = _to_decimal(relationship.get("control_ratio")) or Decimal("-1")
+        scored_relationships.append(
+            (match_score, is_actual_controller, ratio, -index, relationship)
+        )
+
+    best_match = max(scored_relationships, key=lambda item: item[:4])
+    return best_match[-1]
+
+
+def _build_focus_relationship(relationship: dict[str, Any] | None) -> FocusRelationship | None:
+    if relationship is None:
+        return None
+    basis = relationship.get("basis") if isinstance(relationship.get("basis"), dict) else None
+    return FocusRelationship(
+        controller_entity_id=relationship.get("controller_entity_id"),
+        controller_name=relationship.get("controller_name"),
+        controller_type=relationship.get("controller_type"),
+        control_type=relationship.get("control_type"),
+        control_mode=relationship.get("control_mode"),
+        control_ratio=relationship.get("control_ratio"),
+        semantic_flags=_normalize_flags(relationship.get("semantic_flags")),
+        review_status=relationship.get("review_status"),
+        is_actual_controller=bool(relationship.get("is_actual_controller")),
+        basis=basis,
+        control_path=_normalize_control_path_payload(relationship.get("control_path")),
+    )
+
+
+def _build_analysis_context(
     db: Session,
     *,
     company_id: int,
+    focus_label: str | None,
+    preferred_controller_name: str | None,
+    preferred_control_type: str | None,
+    preferred_semantic_flags: Iterable[str] | None,
+) -> ControlGraphAnalysis:
+    control_chain = analyze_control_chain_with_options(db, company_id, refresh=False)
+    relationships = control_chain.get("control_relationships") or []
+    actual_controller_ids = {
+        relationship.get("controller_entity_id")
+        for relationship in relationships
+        if relationship.get("is_actual_controller")
+        and relationship.get("controller_entity_id") is not None
+    }
+    actual_controller_names = [
+        relationship.get("controller_name")
+        for relationship in relationships
+        if relationship.get("is_actual_controller") and relationship.get("controller_name")
+    ]
+    focus_payload = _pick_focus_relationship_payload(
+        relationships,
+        preferred_controller_name=preferred_controller_name,
+        preferred_control_type=preferred_control_type,
+        preferred_semantic_flags=preferred_semantic_flags,
+    )
+
+    country_result = analyze_country_attribution_with_options(
+        db,
+        company_id,
+        refresh=False,
+    )
+    country_attribution = (
+        country_result.get("country_attribution")
+        if isinstance(country_result, dict)
+        else None
+    )
+    if not isinstance(country_attribution, dict):
+        country_attribution = {}
+
+    return ControlGraphAnalysis(
+        focus_label=focus_label,
+        controller_count=int(control_chain.get("controller_count", 0)),
+        actual_controller_ids={entity_id for entity_id in actual_controller_ids if entity_id is not None},
+        actual_controller_names=[
+            str(name)
+            for name in actual_controller_names
+            if str(name).strip()
+        ],
+        focus_relationship=_build_focus_relationship(focus_payload),
+        attribution_type=country_attribution.get("attribution_type"),
+        actual_control_country=country_attribution.get("actual_control_country"),
+        country_source_mode=country_attribution.get("source_mode"),
+    )
+
+
+def _build_highlight_context(
+    db: Session,
+    *,
     target_entity: ShareholderEntity,
     entities: dict[int, ShareholderEntity],
     edges_by_id: dict[int, ShareholderStructure],
+    analysis: ControlGraphAnalysis,
 ) -> HighlightContext:
-    relationships = (
-        db.query(ControlRelationship)
-        .filter(ControlRelationship.company_id == company_id)
-        .order_by(ControlRelationship.id.asc())
-        .all()
+    focus_controller_id = (
+        analysis.focus_relationship.controller_entity_id
+        if analysis.focus_relationship is not None
+        else None
     )
-
-    actual_controller_ids = {
-        relationship.controller_entity_id
-        for relationship in relationships
-        if relationship.is_actual_controller and relationship.controller_entity_id is not None
-    }
-    actual_controller_names = [
-        relationship.controller_name
-        for relationship in relationships
-        if relationship.is_actual_controller
-    ]
-
-    missing_entity_ids = actual_controller_ids - set(entities)
+    missing_entity_ids = set(analysis.actual_controller_ids)
+    if focus_controller_id is not None:
+        missing_entity_ids.add(focus_controller_id)
+    missing_entity_ids -= set(entities)
     if missing_entity_ids:
         entities.update(_load_entities_by_ids(db, missing_entity_ids))
 
@@ -476,12 +749,14 @@ def _build_highlight_context(
     highlighted_pairs: set[tuple[int, int]] = set()
     highlighted_entity_ids: set[int] = set()
 
-    for relationship in relationships:
-        for sequence in _extract_highlight_sequences(
-            relationship,
+    if analysis.focus_relationship is not None:
+        sequences = _extract_highlight_sequences(
+            analysis.focus_relationship.control_path,
+            controller_entity_id=focus_controller_id,
             target_entity_id=target_entity.id,
             name_index=name_index,
-        ):
+        )
+        for sequence in sequences:
             highlighted_entity_ids.update(sequence)
             for index in range(len(sequence) - 1):
                 highlighted_pairs.add((sequence[index], sequence[index + 1]))
@@ -516,8 +791,14 @@ def _build_highlight_context(
             entities[edge.to_entity_id] = edge.to_entity
 
     return HighlightContext(
-        actual_controller_ids=actual_controller_ids,
-        actual_controller_names=actual_controller_names,
+        actual_controller_ids=set(analysis.actual_controller_ids),
+        actual_controller_names=list(analysis.actual_controller_names),
+        focus_controller_id=focus_controller_id,
+        focus_controller_name=(
+            analysis.focus_relationship.controller_name
+            if analysis.focus_relationship is not None
+            else None
+        ),
         highlighted_pairs=resolved_highlight_pairs,
         highlighted_entity_ids=resolved_highlight_entity_ids,
     )
@@ -528,6 +809,10 @@ def _load_control_graph_context(
     *,
     company_id: int,
     max_depth: int = DEFAULT_MAX_DEPTH,
+    focus_label: str | None = None,
+    preferred_controller_name: str | None = None,
+    preferred_control_type: str | None = None,
+    preferred_semantic_flags: Iterable[str] | None = None,
 ) -> ControlGraphContext:
     target_entity = _get_target_entity(db, company_id)
     entities, edges_by_id = _load_upstream_edges(
@@ -535,18 +820,27 @@ def _load_control_graph_context(
         target_entity=target_entity,
         max_depth=max_depth,
     )
-    highlights = _build_highlight_context(
+    analysis = _build_analysis_context(
         db,
         company_id=company_id,
+        focus_label=focus_label,
+        preferred_controller_name=preferred_controller_name,
+        preferred_control_type=preferred_control_type,
+        preferred_semantic_flags=preferred_semantic_flags,
+    )
+    highlights = _build_highlight_context(
+        db,
         target_entity=target_entity,
         entities=entities,
         edges_by_id=edges_by_id,
+        analysis=analysis,
     )
     return ControlGraphContext(
         target_entity=target_entity,
         entities=entities,
         edges=list(edges_by_id.values()),
         highlights=highlights,
+        analysis=analysis,
         max_depth=max_depth,
     )
 
@@ -580,6 +874,7 @@ def _build_node_attributes(
     *,
     target_entity_id: int,
     actual_controller_ids: set[int],
+    focus_controller_id: int | None,
     highlighted_entity_ids: set[int],
     level: int,
 ) -> dict[str, Any]:
@@ -587,15 +882,18 @@ def _build_node_attributes(
     fill_color = ENTITY_COLORS[entity_type]
     is_target = entity.id == target_entity_id
     is_actual_controller = entity.id in actual_controller_ids
+    is_focus_controller = entity.id == focus_controller_id
     is_path_node = entity.id in highlighted_entity_ids
 
-    if entity_type == "person":
-        shape = "ellipse"
-    else:
-        shape = "box"
+    shape = "ellipse" if entity_type == "person" else "box"
 
-    if is_actual_controller:
-        border_color = "#b91c1c"
+    if is_focus_controller:
+        border_color = "#be123c"
+        border_width = 5
+        size = FOCUSED_CONTROLLER_SIZE
+        shadow = True
+    elif is_actual_controller:
+        border_color = "#7c3aed"
         border_width = 4
         size = ACTUAL_CONTROLLER_SIZE
         shadow = True
@@ -615,9 +913,9 @@ def _build_node_attributes(
         size = NODE_BASE_SIZE
         shadow = False
 
-    font_size = 16 if is_target else 14
-    min_height = 72 if is_actual_controller else 64 if is_target else 56
-    min_width = 170 if is_actual_controller else 156 if is_target else 132
+    font_size = 16 if (is_target or is_focus_controller) else 14
+    min_height = 74 if is_focus_controller else 68 if is_actual_controller else 64 if is_target else 56
+    min_width = 178 if is_focus_controller else 168 if is_actual_controller else 156 if is_target else 132
 
     return {
         "label": _wrap_label(entity.entity_name, width=18),
@@ -625,6 +923,7 @@ def _build_node_attributes(
             entity,
             is_target=is_target,
             is_actual_controller=is_actual_controller,
+            is_focus_controller=is_focus_controller,
         ),
         "shape": shape,
         "size": size,
@@ -639,7 +938,7 @@ def _build_node_attributes(
         },
         "widthConstraint": {
             "minimum": min_width,
-            "maximum": 180,
+            "maximum": 186,
         },
         "heightConstraint": {
             "minimum": min_height,
@@ -671,37 +970,26 @@ def _build_node_attributes(
     }
 
 
-def _relation_group(relation_type: str) -> str:
-    if relation_type == "board_control":
-        return "board_control"
-    if relation_type in {"agreement", "vie"}:
-        return "agreement"
-    if relation_type == "equity":
-        return "equity"
-    return "other"
+def _edge_style_key(relation_type: str) -> str:
+    return relation_type if relation_type in EDGE_VISUAL_STYLES else "other"
 
 
 def _non_equity_label(edge: ShareholderStructure, relation_type: str) -> str:
     control_type = _normalize_text(edge.control_type)
-    if relation_type == "board_control":
-        return "董事会控制"
     if relation_type == "vie" or control_type == "vie":
         return "VIE"
-    if control_type:
-        return control_type
     if relation_type:
         return relation_type
+    if control_type:
+        return control_type
     return "other"
 
 
 def _edge_label(edge: ShareholderStructure) -> str:
     relation_type = _normalize_relation_type(edge)
-    group = _relation_group(relation_type)
-    if group == "equity":
+    if relation_type == "equity":
         return _format_percent(edge.holding_ratio) or "equity"
-    if group in {"agreement", "board_control"}:
-        return _non_equity_label(edge, relation_type)
-    return relation_type or "other"
+    return _non_equity_label(edge, relation_type)
 
 
 def _edge_width(relations: list[ShareholderStructure], *, highlighted: bool) -> float:
@@ -738,28 +1026,15 @@ def _pick_primary_relation(relations: list[ShareholderStructure]) -> Shareholder
 def _edge_style(relations: list[ShareholderStructure], *, highlighted: bool) -> dict[str, Any]:
     primary_relation = _pick_primary_relation(relations)
     primary_relation_type = _normalize_relation_type(primary_relation)
-    group = _relation_group(primary_relation_type)
-
-    if group == "equity":
-        color = "#111111"
-        dashes = False
-    elif group == "agreement":
-        color = "#7c3aed"
-        dashes = True
-    elif group == "board_control":
-        color = "#ea580c"
-        dashes = False
-    else:
-        color = "#64748b"
-        dashes = True
-
-    if highlighted:
-        color = "#dc2626"
+    style = EDGE_VISUAL_STYLES[_edge_style_key(primary_relation_type)]
+    color = "#dc2626" if highlighted else style["color"]
+    dashes = style["dashes"]
 
     unique_labels = list(dict.fromkeys(_edge_label(relation) for relation in relations))
     display_label = unique_labels[0] if unique_labels else ""
     if len(unique_labels) > 1:
         display_label = f"{display_label} +"
+
     return {
         "label": display_label,
         "color": color,
@@ -791,6 +1066,7 @@ def _build_visual_graph(context: ControlGraphContext) -> nx.DiGraph:
                 entity,
                 target_entity_id=context.target_entity.id,
                 actual_controller_ids=context.highlights.actual_controller_ids,
+                focus_controller_id=context.highlights.focus_controller_id,
                 highlighted_entity_ids=context.highlights.highlighted_entity_ids,
                 level=max_distance - distance_to_target.get(entity_id, 0),
             ),
@@ -829,14 +1105,80 @@ def _build_visual_graph(context: ControlGraphContext) -> nx.DiGraph:
     return graph
 
 
+def _basis_evidence_lines(basis: dict[str, Any] | None) -> list[str]:
+    if not isinstance(basis, dict):
+        return []
+    evidence_summary = basis.get("evidence_summary")
+    if not isinstance(evidence_summary, list):
+        return []
+    return [
+        str(item).strip()
+        for item in evidence_summary
+        if str(item).strip()
+    ][:3]
+
+
+def _path_summary_lines(focus_relationship: FocusRelationship | None) -> list[str]:
+    if focus_relationship is None:
+        return []
+
+    lines: list[str] = []
+    for item in focus_relationship.control_path[:3]:
+        path_names = [
+            str(name).strip()
+            for name in item.get("path_entity_names") or []
+            if str(name).strip()
+        ]
+        if not path_names:
+            path_names = [
+                f"Entity {entity_id}"
+                for entity_id in item.get("path_entity_ids") or []
+            ]
+        relation_types = [
+            _normalize_text(edge.get("relation_type"))
+            for edge in item.get("edges") or []
+            if _normalize_text(edge.get("relation_type"))
+        ]
+        relation_text = " + ".join(dict.fromkeys(relation_types)) if relation_types else "unknown"
+        score_text = _format_score_pct(item.get("path_score_pct"))
+        path_text = " -> ".join(path_names) if path_names else "unresolved path"
+        if score_text:
+            lines.append(f"{path_text} [{relation_text}] ({score_text})")
+        else:
+            lines.append(f"{path_text} [{relation_text}]")
+    return lines
+
+
+def _render_summary_list(items: list[str], *, empty_message: str) -> str:
+    if not items:
+        return f"<div class=\"control-graph-empty\">{_safe_text(empty_message)}</div>"
+    rendered_items = "".join(
+        f"<li>{_safe_text(item)}</li>"
+        for item in items
+    )
+    return f"<ul class=\"control-graph-list\">{rendered_items}</ul>"
+
+
 def _build_summary_card(context: ControlGraphContext, graph: nx.DiGraph) -> str:
+    analysis = context.analysis
+    focus_relationship = analysis.focus_relationship if analysis is not None else None
+    focus_label = analysis.focus_label if analysis is not None and analysis.focus_label else "Control Graph"
     relation_types = sorted({_normalize_relation_type(edge) for edge in context.edges})
+    relation_text = ", ".join(relation_types) if relation_types else "none"
+    focus_controller_text = (
+        focus_relationship.controller_name
+        if focus_relationship is not None and focus_relationship.controller_name
+        else "not identified"
+    )
     actual_controller_text = (
         " / ".join(dict.fromkeys(context.highlights.actual_controller_names))
         if context.highlights.actual_controller_names
-        else "未识别"
+        else "not identified"
     )
-    relation_text = ", ".join(relation_types) if relation_types else "无"
+    evidence_lines = _basis_evidence_lines(
+        focus_relationship.basis if focus_relationship is not None else None
+    )
+    path_lines = _path_summary_lines(focus_relationship)
 
     return f"""
     <style>
@@ -860,7 +1202,7 @@ def _build_summary_card(context: ControlGraphContext, graph: nx.DiGraph) -> str:
       .control-graph-card {{
         position: fixed;
         z-index: 9999;
-        background: rgba(255, 255, 255, 0.92);
+        background: rgba(255, 255, 255, 0.94);
         backdrop-filter: blur(14px);
         border: 1px solid rgba(148, 163, 184, 0.24);
         border-radius: 20px;
@@ -870,13 +1212,13 @@ def _build_summary_card(context: ControlGraphContext, graph: nx.DiGraph) -> str:
       #control-graph-summary {{
         top: 28px;
         left: 28px;
-        width: 380px;
+        width: 420px;
         padding: 18px 20px;
       }}
       #control-graph-legend {{
         top: 28px;
         right: 28px;
-        width: 260px;
+        width: 280px;
         padding: 16px 18px;
       }}
       .control-graph-kicker {{
@@ -896,22 +1238,47 @@ def _build_summary_card(context: ControlGraphContext, graph: nx.DiGraph) -> str:
       .control-graph-subtitle {{
         font-size: 13px;
         color: #475569;
-        line-height: 1.5;
+        line-height: 1.55;
         margin: 0 0 14px 0;
       }}
       .control-graph-meta {{
         font-size: 13px;
-        line-height: 1.7;
+        line-height: 1.6;
+      }}
+      .control-graph-meta-row {{
+        margin: 6px 0;
       }}
       .control-graph-meta strong {{
         color: #0f172a;
+      }}
+      .control-graph-section-title {{
+        margin-top: 14px;
+        margin-bottom: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #475569;
+      }}
+      .control-graph-list {{
+        margin: 0;
+        padding-left: 18px;
+        font-size: 13px;
+        line-height: 1.55;
+      }}
+      .control-graph-list li {{
+        margin: 4px 0;
+      }}
+      .control-graph-empty {{
+        font-size: 13px;
+        color: #64748b;
       }}
       .legend-item {{
         display: flex;
         align-items: center;
         gap: 10px;
         font-size: 13px;
-        line-height: 1.5;
+        line-height: 1.45;
         margin: 8px 0;
       }}
       .legend-dot {{
@@ -929,20 +1296,52 @@ def _build_summary_card(context: ControlGraphContext, graph: nx.DiGraph) -> str:
       .legend-line.dashed {{
         border-top-style: dashed;
       }}
+      .legend-chip {{
+        width: 18px;
+        height: 18px;
+        border-radius: 6px;
+        flex: 0 0 auto;
+        background: #ffffff;
+        border: 3px solid;
+      }}
+      @media (max-width: 1100px) {{
+        .control-graph-card {{
+          position: static;
+          width: auto !important;
+          margin: 20px;
+        }}
+        #mynetwork {{
+          height: 70vh !important;
+          width: calc(100vw - 40px) !important;
+          margin-top: 0 !important;
+        }}
+      }}
     </style>
     <div id="control-graph-summary" class="control-graph-card">
-      <div class="control-graph-kicker">Control Graph</div>
-      <div class="control-graph-title">{context.target_entity.entity_name}</div>
+      <div class="control-graph-kicker">{_safe_text(focus_label)}</div>
+      <div class="control-graph-title">{_safe_text(context.target_entity.entity_name)}</div>
       <div class="control-graph-subtitle">
-        基于统一关系边模型构建的上游控制链图谱，默认加载当前公司及上游 {context.max_depth} 层，
-        并补齐分析结果中出现的控制路径节点与边。
+        Built from current shareholder structures plus persisted control analysis results.
+        The focused path is highlighted in red and reflects the selected demo relationship or candidate.
       </div>
       <div class="control-graph-meta">
-        <div><strong>实控人高亮：</strong>{actual_controller_text}</div>
-        <div><strong>节点数：</strong>{graph.number_of_nodes()} | <strong>边数：</strong>{graph.number_of_edges()}</div>
-        <div><strong>关系类型：</strong>{relation_text}</div>
-        <div><strong>交互：</strong>Physics / Hover / Zoom / Drag / Select</div>
+        <div class="control-graph-meta-row"><strong>Focused controller / candidate:</strong> {_safe_text(focus_controller_text)}</div>
+        <div class="control-graph-meta-row"><strong>Focus control type:</strong> {_safe_text(focus_relationship.control_type if focus_relationship else None)}</div>
+        <div class="control-graph-meta-row"><strong>Control mode:</strong> {_safe_text(focus_relationship.control_mode if focus_relationship else None)}</div>
+        <div class="control-graph-meta-row"><strong>Focus score:</strong> {_safe_text(_format_score_pct(focus_relationship.control_ratio) if focus_relationship else None)}</div>
+        <div class="control-graph-meta-row"><strong>Semantic flags:</strong> {_safe_text(_render_flag_text(focus_relationship.semantic_flags if focus_relationship else []), default='none')}</div>
+        <div class="control-graph-meta-row"><strong>Attribution type:</strong> {_safe_text(analysis.attribution_type if analysis else None)}</div>
+        <div class="control-graph-meta-row"><strong>Actual control country:</strong> {_safe_text(analysis.actual_control_country if analysis else None)}</div>
+        <div class="control-graph-meta-row"><strong>Country source mode:</strong> {_safe_text(analysis.country_source_mode if analysis else None)}</div>
+        <div class="control-graph-meta-row"><strong>Actual controller:</strong> {_safe_text(actual_controller_text)}</div>
+        <div class="control-graph-meta-row"><strong>Controllers in result set:</strong> {_safe_text(analysis.controller_count if analysis else None, default='0')}</div>
+        <div class="control-graph-meta-row"><strong>Nodes / edges:</strong> {graph.number_of_nodes()} / {graph.number_of_edges()}</div>
+        <div class="control-graph-meta-row"><strong>Relation types present:</strong> {_safe_text(relation_text, default='none')}</div>
       </div>
+      <div class="control-graph-section-title">Basis Summary</div>
+      {_render_summary_list(evidence_lines, empty_message='No evidence summary available.')}
+      <div class="control-graph-section-title">Key Control Paths</div>
+      {_render_summary_list(path_lines, empty_message='No normalized control path available.')}
     </div>
     <div id="control-graph-legend" class="control-graph-card">
       <div class="control-graph-kicker">Legend</div>
@@ -951,10 +1350,16 @@ def _build_summary_card(context: ControlGraphContext, graph: nx.DiGraph) -> str:
       <div class="legend-item"><span class="legend-dot" style="background:#16a34a;"></span><span>Fund</span></div>
       <div class="legend-item"><span class="legend-dot" style="background:#ea580c;"></span><span>Government</span></div>
       <div class="legend-item"><span class="legend-dot" style="background:#6b7280;"></span><span>Other</span></div>
+      <div class="legend-item"><span class="legend-chip" style="border-color:#0f172a;"></span><span>Target company</span></div>
+      <div class="legend-item"><span class="legend-chip" style="border-color:#be123c;"></span><span>Focused controller / candidate</span></div>
+      <div class="legend-item"><span class="legend-chip" style="border-color:#7c3aed;"></span><span>Actual controller</span></div>
       <div class="legend-item"><span class="legend-line" style="border-color:#111111;"></span><span>Equity</span></div>
-      <div class="legend-item"><span class="legend-line dashed" style="border-color:#7c3aed;"></span><span>Agreement / VIE</span></div>
-      <div class="legend-item"><span class="legend-line" style="border-color:#ea580c;"></span><span>Board Control</span></div>
-      <div class="legend-item"><span class="legend-line" style="border-color:#dc2626;border-width:4px;"></span><span>Highlighted Control Path</span></div>
+      <div class="legend-item"><span class="legend-line dashed" style="border-color:#7c3aed;"></span><span>Agreement</span></div>
+      <div class="legend-item"><span class="legend-line" style="border-color:#ea580c;"></span><span>Board control</span></div>
+      <div class="legend-item"><span class="legend-line dashed" style="border-color:#0f766e;"></span><span>Voting right</span></div>
+      <div class="legend-item"><span class="legend-line dashed" style="border-color:#be185d;"></span><span>Nominee</span></div>
+      <div class="legend-item"><span class="legend-line dashed" style="border-color:#0891b2;"></span><span>VIE</span></div>
+      <div class="legend-item"><span class="legend-line" style="border-color:#dc2626;border-width:4px;"></span><span>Focused control path</span></div>
     </div>
     <script>
       window.addEventListener("load", function () {{
@@ -979,9 +1384,9 @@ def _decorate_html(
     context: ControlGraphContext,
     graph: nx.DiGraph,
 ) -> None:
-    html = html_path.read_text(encoding="utf-8")
-    html = html.replace("<body>", f"<body>{_build_summary_card(context, graph)}", 1)
-    html_path.write_text(html, encoding="utf-8")
+    raw_html = html_path.read_text(encoding="utf-8")
+    raw_html = raw_html.replace("<body>", f"<body>{_build_summary_card(context, graph)}", 1)
+    html_path.write_text(raw_html, encoding="utf-8")
 
 
 def _export_html_graph(
@@ -1105,34 +1510,58 @@ def _export_html_graph(
     _decorate_html(html_path, context=context, graph=graph)
 
 
-def build_control_graph(company_id: int) -> str:
-    """
-    返回 HTML 文件路径
-    """
-    db = SessionLocal()
-    try:
-        context = _load_control_graph_context(
-            db,
-            company_id=company_id,
-            max_depth=DEFAULT_MAX_DEPTH,
-        )
-    finally:
-        db.close()
-
+def build_control_graph_with_session(
+    db: Session,
+    company_id: int,
+    *,
+    output_path: str | Path | None = None,
+    latest_output_path: str | Path | None = None,
+    max_depth: int = DEFAULT_MAX_DEPTH,
+    focus_label: str | None = None,
+    focus_controller_name: str | None = None,
+    focus_control_type: str | None = None,
+    focus_semantic_flags: Iterable[str] | None = None,
+) -> Path:
+    context = _load_control_graph_context(
+        db,
+        company_id=company_id,
+        max_depth=max_depth,
+        focus_label=focus_label,
+        preferred_controller_name=focus_controller_name,
+        preferred_control_type=focus_control_type,
+        preferred_semantic_flags=focus_semantic_flags,
+    )
     graph = _build_visual_graph(context)
-    company_html_path = _company_output_html_path(
-        company_id,
-        context.target_entity.entity_name,
+    company_html_path = (
+        Path(output_path)
+        if output_path is not None
+        else _company_output_html_path(company_id, context.target_entity.entity_name)
     )
     _export_html_graph(context, graph, company_html_path)
 
-    if company_html_path != LATEST_OUTPUT_HTML_PATH:
-        LATEST_OUTPUT_HTML_PATH.write_text(
-            company_html_path.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+    if latest_output_path is not None:
+        latest_path = Path(latest_output_path)
+        if latest_path != company_html_path:
+            latest_path.parent.mkdir(parents=True, exist_ok=True)
+            latest_path.write_text(
+                company_html_path.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
 
-    return str(company_html_path.resolve())
+    return company_html_path.resolve()
+
+
+def build_control_graph(company_id: int) -> str:
+    db = SessionLocal()
+    try:
+        output_path = build_control_graph_with_session(
+            db,
+            company_id,
+            latest_output_path=LATEST_OUTPUT_HTML_PATH,
+        )
+    finally:
+        db.close()
+    return str(output_path)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -1144,9 +1573,26 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         help="Mapped company_id in shareholder_entities.",
     )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=DEFAULT_MAX_DEPTH,
+        help="Upstream traversal depth before filling focused path edges.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    print(build_control_graph(args.company_id))
+    db = SessionLocal()
+    try:
+        print(
+            build_control_graph_with_session(
+                db,
+                args.company_id,
+                max_depth=args.max_depth,
+                latest_output_path=LATEST_OUTPUT_HTML_PATH,
+            )
+        )
+    finally:
+        db.close()

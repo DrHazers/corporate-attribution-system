@@ -20,10 +20,21 @@ def _pick_actual_controller(
     )
 
 
-def analyze_control_chain(db: Session, company_id: int) -> dict:
-    # 分析入口优先基于 shareholder_structures 刷新 AUTO 控制关系结果，
-    # 让 control_relationships 尽量保持为最新的穿透分析快照。
-    if get_entity_by_company_id(db, company_id) is not None:
+def analyze_control_chain(
+    db: Session,
+    company_id: int,
+) -> dict:
+    return analyze_control_chain_with_options(db, company_id, refresh=False)
+
+
+
+def analyze_control_chain_with_options(
+    db: Session,
+    company_id: int,
+    *,
+    refresh: bool = False,
+) -> dict:
+    if refresh and get_entity_by_company_id(db, company_id) is not None:
         refresh_company_control_analysis(db, company_id)
 
     control_chain_data = get_company_control_chain_data(db, company_id)

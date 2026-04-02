@@ -27,11 +27,27 @@ RELATION_ROLE_VALUES = (
 )
 CONFIDENCE_LEVEL_VALUES = ("high", "medium", "low", "unknown")
 CONTROL_MODE_VALUES = ("numeric", "semantic", "mixed")
+CONTROL_TYPE_CANONICAL_VALUES = (
+    "equity_control",
+    "agreement_control",
+    "board_control",
+    "mixed_control",
+    "joint_control",
+    "significant_influence",
+)
 REVIEW_STATUS_VALUES = (
     "auto",
     "manual_confirmed",
     "manual_rejected",
     "needs_review",
+)
+ATTRIBUTION_TYPE_CANONICAL_VALUES = (
+    "equity_control",
+    "agreement_control",
+    "board_control",
+    "mixed_control",
+    "joint_control",
+    "fallback_incorporation",
 )
 COUNTRY_SOURCE_MODE_VALUES = (
     "control_chain_analysis",
@@ -152,6 +168,22 @@ _ORIGINAL_RELATION_TYPE_PATTERN = re.compile(
     r"original_control_type=([A-Za-z_]+)",
     flags=re.IGNORECASE,
 )
+CONTROL_TYPE_ALIAS_MAP = {
+    "direct_equity_control": "equity_control",
+    "indirect_equity_control": "equity_control",
+    "significant_equity": "significant_influence",
+    "voting_right_control": "agreement_control",
+    "nominee_control": "agreement_control",
+    "vie_control": "agreement_control",
+}
+ATTRIBUTION_TYPE_ALIAS_MAP = {
+    "direct_equity_control": "equity_control",
+    "indirect_equity_control": "equity_control",
+    "significant_equity": "equity_control",
+    "voting_right_control": "agreement_control",
+    "nominee_control": "agreement_control",
+    "vie_control": "agreement_control",
+}
 
 
 def _normalize_value(
@@ -216,6 +248,24 @@ def normalize_country_source_mode(value: str | None) -> str | None:
         allowed_values=COUNTRY_SOURCE_MODE_VALUES,
         field_name="source_mode",
     )
+
+
+def canonicalize_control_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    return CONTROL_TYPE_ALIAS_MAP.get(normalized, normalized)
+
+
+def canonicalize_attribution_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    return ATTRIBUTION_TYPE_ALIAS_MAP.get(normalized, normalized)
 
 
 def normalize_relationship_source_type(value: str | None) -> str | None:
@@ -384,6 +434,10 @@ def prepare_control_relationship_values(
             prepared[field] = getattr(existing, field)
 
     prepared.update(values)
+    prepared["control_type"] = (
+        canonicalize_control_type(prepared.get("control_type"))
+        or prepared.get("control_type")
+    )
     prepared["semantic_flags"] = serialize_json_text(prepared.get("semantic_flags"))
 
     control_mode = normalize_control_mode(prepared.get("control_mode"))
@@ -424,6 +478,10 @@ def prepare_country_attribution_values(
             prepared[field] = getattr(existing, field)
 
     prepared.update(values)
+    prepared["attribution_type"] = (
+        canonicalize_attribution_type(prepared.get("attribution_type"))
+        or prepared.get("attribution_type")
+    )
     prepared["source_mode"] = normalize_country_source_mode(
         prepared.get("source_mode")
     ) or infer_country_source_mode(

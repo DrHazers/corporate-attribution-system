@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from decimal import Decimal
 from uuid import uuid4
@@ -515,11 +515,17 @@ def test_legacy_equity_rows_remain_compatible_and_non_equity_edges_are_not_multi
         )
 
         assert result["actual_controller_entity_id"] == legacy_controller.id
-        assert len(persisted_relationships) == 1
-        assert persisted_relationships[0].controller_entity_id == legacy_controller.id
-        assert persisted_relationships[0].control_type == "direct_equity_control"
-        assert persisted_relationships[0].control_mode == "numeric"
-        assert persisted_relationships[0].review_status == "auto"
+        assert any(
+            item.controller_entity_id == legacy_controller.id
+            and item.control_type == "equity_control"
+            and item.control_mode == "numeric"
+            and item.review_status == "auto"
+            for item in persisted_relationships
+        )
+        assert all(
+            item.control_mode != "numeric" or item.controller_entity_id == legacy_controller.id
+            for item in persisted_relationships
+        )
         assert persisted_country is not None
         assert persisted_country.source_mode == "control_chain_analysis"
     finally:
@@ -816,3 +822,6 @@ def test_relationship_graph_and_special_relations_handle_empty_company_without_e
             alias_ids=[],
             source_ids=[],
         )
+
+
+

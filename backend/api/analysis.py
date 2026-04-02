@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.analysis.country_attribution_analysis import (
-    analyze_country_attribution_with_control_chain,
+    analyze_country_attribution_with_options,
 )
-from backend.analysis.control_chain import analyze_control_chain
+from backend.analysis.control_chain import analyze_control_chain_with_options
 from backend.analysis.ownership_graph import get_direct_upstream_entities
 from backend.crud.company import get_company_by_id
 from backend.crud.shareholder import get_shareholder_entity_by_id
@@ -26,6 +26,7 @@ def get_db():
 @router.get("/control-chain/{company_id}")
 def get_control_chain_analysis(
     company_id: int,
+    refresh: bool = False,
     db: Session = Depends(get_db),
 ):
     company = get_company_by_id(db, company_id)
@@ -35,7 +36,11 @@ def get_control_chain_analysis(
             detail="Company not found.",
         )
 
-    analysis_result = analyze_control_chain(db, company_id)
+    analysis_result = analyze_control_chain_with_options(
+        db,
+        company_id,
+        refresh=refresh,
+    )
     if analysis_result["controller_count"] == 0:
         return {
             "company_id": company_id,
@@ -51,6 +56,7 @@ def get_control_chain_analysis(
 @router.get("/country-attribution/{company_id}")
 def get_country_attribution_analysis(
     company_id: int,
+    refresh: bool = False,
     db: Session = Depends(get_db),
 ):
     company = get_company_by_id(db, company_id)
@@ -60,7 +66,11 @@ def get_country_attribution_analysis(
             detail="Company not found.",
         )
 
-    return analyze_country_attribution_with_control_chain(db, company_id)
+    return analyze_country_attribution_with_options(
+        db,
+        company_id,
+        refresh=refresh,
+    )
 
 
 @router.get("/entities/{entity_id}/upstream-shareholders")

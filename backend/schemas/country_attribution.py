@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from backend.shareholder_relations import (
+    canonicalize_attribution_type,
     COUNTRY_SOURCE_MODE_VALUES,
     normalize_country_source_mode,
 )
@@ -55,6 +56,11 @@ class CountryAttributionUpdate(CountryAttributionBase):
 
 class CountryAttributionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("attribution_type", check_fields=False)
+    @classmethod
+    def normalize_attribution_type_value(cls, value: str) -> str:
+        return canonicalize_attribution_type(value) or value
 
     id: int
     company_id: int

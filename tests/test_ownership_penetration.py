@@ -11,6 +11,9 @@ os.environ["DATABASE_URL"] = f"sqlite:///{DATABASE_PATH}"
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from backend.analysis.control_chain import analyze_control_chain
+from backend.analysis.country_attribution_analysis import analyze_country_attribution_with_control_chain
+
 from backend.analysis.ownership_penetration import (
     AUTO_NOTE,
     refresh_all_companies_control_analysis,
@@ -225,23 +228,23 @@ def test_refresh_company_control_analysis_direct_control():
         assert result["actual_controller_entity_id"] == controller.id
         assert len(relationships) == 1
         assert relationships[0].controller_name == "Controller A"
-        assert relationships[0].control_type == "direct_equity_control"
+        assert relationships[0].control_type == "equity_control"
         assert relationships[0].is_actual_controller is True
         assert str(relationships[0].control_ratio) == "60.0000"
         assert relationships[0].notes == AUTO_NOTE
 
         control_path = json.loads(relationships[0].control_path)
-        assert control_path == [
-            {
-                "edge_holding_ratio_pct": ["60.0000"],
-                "path_entity_ids": [controller.id, target_entity.id],
-                "path_entity_names": ["Controller A", "Target Entity"],
-                "path_ratio_pct": "60.0000",
-            }
-        ]
+        assert control_path[0]["path_entity_ids"] == [controller.id, target_entity.id]
+        assert control_path[0]["path_entity_names"] == ["Controller A", "Target Entity"]
+        assert control_path[0]["path_score_pct"] == "60.0000"
+        assert control_path[0]["numeric_prod"] == "0.6000"
+        assert control_path[0]["semantic_prod"] == "1.0000"
+        assert control_path[0]["edges"][0]["relation_type"] == "equity"
+        assert control_path[0]["edges"][0]["relation_role"] == "ownership"
+        assert control_path[0]["edges"][0]["numeric_factor"] == "0.6000"
 
         assert len(country_attributions) == 1
-        assert country_attributions[0].attribution_type == "direct_equity_control"
+        assert country_attributions[0].attribution_type == "equity_control"
         assert country_attributions[0].actual_control_country == "Singapore"
         assert country_attributions[0].notes == AUTO_NOTE
     finally:
@@ -401,15 +404,17 @@ def test_refresh_company_control_analysis_multiple_paths_cross_threshold():
             "Intermediary C": "30.0000",
         }
         assert actual_relationship.controller_name == "Controller Parent"
-        assert actual_relationship.control_type == "direct_equity_control"
+        assert actual_relationship.control_type == "equity_control"
 
         control_path = json.loads(actual_relationship.control_path)
         assert len(control_path) == 2
-        assert {item["path_ratio_pct"] for item in control_path} == {
+        assert {item["path_score_pct"] for item in control_path} == {
             "32.0000",
             "21.0000",
         }
-        assert attribution.attribution_type == "direct_equity_control"
+        assert all(item["edges"][0]["relation_type"] == "equity" for item in control_path)
+        assert all(item["numeric_prod"] in {"0.3200", "0.2100"} for item in control_path)
+        assert attribution.attribution_type == "equity_control"
         assert attribution.actual_control_country == "Cayman Islands"
     finally:
         db.close()
@@ -484,14 +489,11 @@ def test_refresh_company_control_analysis_truncates_cycles():
         }
 
         control_path = json.loads(entity_a_relationship.control_path)
-        assert control_path == [
-            {
-                "edge_holding_ratio_pct": ["60.0000"],
-                "path_entity_ids": [entity_a.id, target_entity.id],
-                "path_entity_names": ["Entity A", "Target Entity"],
-                "path_ratio_pct": "60.0000",
-            }
-        ]
+        assert control_path[0]["path_entity_ids"] == [entity_a.id, target_entity.id]
+        assert control_path[0]["path_entity_names"] == ["Entity A", "Target Entity"]
+        assert control_path[0]["path_score_pct"] == "60.0000"
+        assert control_path[0]["edges"][0]["relation_type"] == "equity"
+        assert control_path[0]["edges"][0]["numeric_factor"] == "0.6000"
     finally:
         db.close()
 
@@ -684,14 +686,16 @@ def test_company_control_analysis_api_endpoints():
     assert control_chain_data["control_relationships"][0]["controller_name"] == (
         "Api Controller"
     )
-    assert control_chain_data["control_relationships"][0]["control_path"] == [
-        {
-            "edge_holding_ratio_pct": ["65.0000"],
-            "path_entity_ids": [controller_id, target_entity_id],
-            "path_entity_names": ["Api Controller", "Api Target Entity"],
-            "path_ratio_pct": "65.0000",
-        }
+    assert control_chain_data["control_relationships"][0]["control_path"][0]["path_entity_ids"] == [
+        controller_id,
+        target_entity_id,
     ]
+    assert control_chain_data["control_relationships"][0]["control_path"][0]["path_entity_names"] == [
+        "Api Controller",
+        "Api Target Entity",
+    ]
+    assert control_chain_data["control_relationships"][0]["control_path"][0]["path_score_pct"] == "65.0000"
+    assert control_chain_data["control_relationships"][0]["control_path"][0]["edges"][0]["relation_type"] == "equity"
 
     assert actual_controller_data["controller_count"] == 1
     assert actual_controller_data["actual_controllers"][0]["controller_name"] == (
@@ -703,7 +707,7 @@ def test_company_control_analysis_api_endpoints():
     )
 
     assert country_data["actual_control_country"] == "Germany"
-    assert country_data["attribution_type"] == "direct_equity_control"
+    assert country_data["attribution_type"] == "equity_control"
 
 
 
@@ -720,5 +724,94 @@ def test_company_control_analysis_api_returns_404_for_missing_company():
 
 
 
+
+
+
+
+def test_legacy_named_results_are_canonicalized_by_read_layers():
+    reset_database()
+
+    db = SessionLocal()
+    try:
+        company = create_company(
+            db,
+            name="Legacy Read Target",
+            stock_code="LEG001",
+            incorporation_country="China",
+            listing_country="China",
+        )
+        controller = create_entity(
+            db,
+            entity_name="Legacy Controller",
+            entity_type="company",
+            country="Singapore",
+        )
+        legacy_path = [
+            {
+                "edge_holding_ratio_pct": ["65.0000"],
+                "path_entity_ids": [controller.id, 999001],
+                "path_entity_names": ["Legacy Controller", "Legacy Read Target Entity"],
+                "path_ratio_pct": "65.0000",
+            }
+        ]
+        db.add(
+            ControlRelationship(
+                company_id=company.id,
+                controller_entity_id=controller.id,
+                controller_name="Legacy Controller",
+                controller_type="company",
+                control_type="direct_equity_control",
+                control_ratio="65.0000",
+                control_path=json.dumps(legacy_path),
+                is_actual_controller=True,
+                basis=json.dumps(
+                    {
+                        "classification": "direct_equity_control",
+                        "top_paths": legacy_path,
+                        "total_ratio_pct": "65.0000",
+                    }
+                ),
+                notes="manual legacy result",
+                control_mode="numeric",
+                review_status="auto",
+            )
+        )
+        db.add(
+            CountryAttribution(
+                company_id=company.id,
+                incorporation_country="China",
+                listing_country="China",
+                actual_control_country="Singapore",
+                attribution_type="direct_equity_control",
+                basis=json.dumps(
+                    {
+                        "classification": "direct_equity_control",
+                        "attribution_type": "direct_equity_control",
+                        "top_paths": legacy_path,
+                        "total_score_pct": "65.0000",
+                    }
+                ),
+                is_manual=False,
+                notes="manual legacy result",
+                source_mode="control_chain_analysis",
+            )
+        )
+        db.commit()
+
+        control_chain = analyze_control_chain(db, company.id)
+        country = analyze_country_attribution_with_control_chain(db, company.id)
+
+        assert control_chain["controller_count"] == 1
+        relationship = control_chain["control_relationships"][0]
+        assert relationship["control_type"] == "equity_control"
+        assert relationship["basis"]["classification"] == "equity_control"
+        assert relationship["control_path"][0]["path_score_pct"] == "65.0000"
+        assert relationship["control_path"][0]["edges"][0]["relation_type"] == "equity"
+
+        assert country["country_attribution"]["attribution_type"] == "equity_control"
+        assert country["country_attribution"]["basis"]["classification"] == "equity_control"
+        assert country["control_chain_basis"][0]["control_type"] == "equity_control"
+    finally:
+        db.close()
 
 

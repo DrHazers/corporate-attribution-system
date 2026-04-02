@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from backend.shareholder_relations import (
+    canonicalize_control_type,
     CONTROL_MODE_VALUES,
     REVIEW_STATUS_VALUES,
     normalize_control_mode,
@@ -77,6 +78,11 @@ class ControlRelationshipUpdate(ControlRelationshipBase):
 
 class ControlRelationshipRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("control_type", check_fields=False)
+    @classmethod
+    def normalize_control_type_value(cls, value: str) -> str:
+        return canonicalize_control_type(value) or value
 
     id: int
     company_id: int

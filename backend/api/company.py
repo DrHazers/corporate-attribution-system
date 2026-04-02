@@ -48,6 +48,22 @@ def get_company_or_404(db: Session, company_id: int):
     return company
 
 
+def refresh_company_analysis_or_400(db: Session, company_id: int) -> dict:
+    if get_entity_by_company_id(db, company_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mapped shareholder entity not found for company.",
+        )
+
+    try:
+        return refresh_company_control_analysis(db, company_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
 @router.post("", response_model=CompanyRead, status_code=status.HTTP_201_CREATED)
 def create_company_endpoint(
     company_in: CompanyCreate,
@@ -102,27 +118,48 @@ def delete_company_endpoint(company_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{company_id}/control-chain")
-def get_company_control_chain(company_id: int, db: Session = Depends(get_db)):
+def get_company_control_chain(
+    company_id: int,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
     get_company_or_404(db, company_id)
-    if get_entity_by_company_id(db, company_id) is not None:
-        refresh_company_control_analysis(db, company_id)
+    if refresh:
+        refresh_company_analysis_or_400(db, company_id)
     return get_company_control_chain_data(db, company_id)
 
 
 @router.get("/{company_id}/actual-controller")
-def get_company_actual_controller(company_id: int, db: Session = Depends(get_db)):
+def get_company_actual_controller(
+    company_id: int,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
     get_company_or_404(db, company_id)
-    if get_entity_by_company_id(db, company_id) is not None:
-        refresh_company_control_analysis(db, company_id)
+    if refresh:
+        refresh_company_analysis_or_400(db, company_id)
     return get_company_actual_controller_data(db, company_id)
 
 
 @router.get("/{company_id}/country-attribution")
-def get_company_country_attribution(company_id: int, db: Session = Depends(get_db)):
+def get_company_country_attribution(
+    company_id: int,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
     get_company_or_404(db, company_id)
-    if get_entity_by_company_id(db, company_id) is not None:
-        refresh_company_control_analysis(db, company_id)
+    if refresh:
+        refresh_company_analysis_or_400(db, company_id)
     return get_company_country_attribution_data(db, company_id)
+
+
+@router.post("/{company_id}/analysis/refresh")
+def refresh_company_analysis_endpoint(
+    company_id: int,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    return refresh_company_analysis_or_400(db, company_id)
 
 
 @router.get("/{company_id}/relationship-graph")

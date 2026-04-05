@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from html import escape
 from pathlib import Path
+import sys
 import textwrap
 from typing import Any, Iterable
 
@@ -15,6 +16,10 @@ from pyvis.network import Network
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload, load_only
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from backend.analysis.control_chain import analyze_control_chain_with_options
 from backend.analysis.country_attribution_analysis import (
     analyze_country_attribution_with_options,
@@ -22,8 +27,6 @@ from backend.analysis.country_attribution_analysis import (
 from backend.database import SessionLocal
 from backend.models.shareholder import ShareholderEntity, ShareholderStructure
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_HTML_DIR = PROJECT_ROOT / "tests" / "output"
 LATEST_OUTPUT_HTML_PATH = OUTPUT_HTML_DIR / "control_graph.html"
 DEFAULT_MAX_DEPTH = 3

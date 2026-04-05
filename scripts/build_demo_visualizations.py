@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 from html import escape
@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from backend.analysis.ownership_penetration import refresh_company_control_analysis  # noqa: E402
 from backend.visualization.control_graph import (  # noqa: E402
     DEFAULT_MAX_DEPTH,
     build_control_graph_with_session,
@@ -106,6 +107,18 @@ def parse_args() -> argparse.Namespace:
         help="Optional sample category filter. Repeat for multiple categories.",
     )
     parser.add_argument(
+        "--company-id",
+        type=int,
+        action="append",
+        dest="company_ids",
+        help="Generate demo graph(s) for specific company_id values into the demo output directory.",
+    )
+    parser.add_argument(
+        "--skip-refresh",
+        action="store_true",
+        help="When using --company-id, skip recomputing and persisting analysis in the demo database.",
+    )
+    parser.add_argument(
         "--max-depth",
         type=int,
         default=DEFAULT_MAX_DEPTH,
@@ -144,6 +157,22 @@ def _sample_lookup(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return lookup
 
 
+def _sample_lookup_by_company_id(payload: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+    samples = payload.get("samples")
+    if not isinstance(samples, list):
+        return {}
+
+    lookup: dict[int, list[dict[str, Any]]] = {}
+    for sample in samples:
+        if not isinstance(sample, dict) or not sample.get("available"):
+            continue
+        company_id = sample.get("company_id")
+        if not isinstance(company_id, int):
+            continue
+        lookup.setdefault(company_id, []).append(sample)
+    return lookup
+
+
 def _query_company_by_name(db: Session, company_name: str) -> dict[str, Any] | None:
     row = db.execute(
         text(
@@ -155,6 +184,21 @@ def _query_company_by_name(db: Session, company_name: str) -> dict[str, Any] | N
             """
         ),
         {"company_name": company_name},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _query_company_by_id(db: Session, company_id: int) -> dict[str, Any] | None:
+    row = db.execute(
+        text(
+            """
+            SELECT id, name
+            FROM companies
+            WHERE id = :company_id
+            LIMIT 1
+            """
+        ),
+        {"company_id": company_id},
     ).mappings().first()
     return dict(row) if row is not None else None
 
@@ -199,8 +243,119 @@ def _resolve_sample_entry(
     }
 
 
+def _pick_company_focus_metadata(
+    company_id: int,
+    *,
+    company_samples: dict[int, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    sample_entries = company_samples.get(company_id) or []
+    if sample_entries:
+        sample = sample_entries[0]
+        label = sample.get("label") or sample.get("category") or f"Company {company_id}"
+        return {
+            "focus_label": str(label),
+            "focus_controller_name": sample.get("actual_controller_or_candidate"),
+            "focus_control_type": sample.get("control_type"),
+            "focus_semantic_flags": sample.get("semantic_flags") or [],
+            "metadata_source": "demo_analysis_samples.json",
+        }
+
+    return {
+        "focus_label": f"Company {company_id}",
+        "focus_controller_name": None,
+        "focus_control_type": None,
+        "focus_semantic_flags": [],
+        "metadata_source": "direct_company_id",
+    }
+
+
 def _build_output_filename(definition: dict[str, Any], company_name: str) -> str:
     return f"{definition['order']:03d}_{definition['filename_tag']}_{_slugify(company_name)}.html"
+
+
+def _build_company_output_filename(company_id: int, company_name: str) -> str:
+    return f"company_{company_id}_{_slugify(company_name)}.html"
+
+
+def _resolve_existing_company_ids(
+    db: Session,
+    company_ids: list[int],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    existing: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+
+    for company_id in company_ids:
+        company_row = _query_company_by_id(db, company_id)
+        if company_row is None:
+            missing.append(
+                {
+                    "category": f"company_{company_id}",
+                    "label": f"Company {company_id}",
+                    "reason": f"company_id={company_id} not found in demo database.",
+                }
+            )
+            continue
+        existing.append(company_row)
+
+    return existing, missing
+
+
+def _refresh_company_analyses(
+    db: Session,
+    *,
+    company_rows: list[dict[str, Any]],
+) -> list[int]:
+    refreshed_company_ids: list[int] = []
+    for company_row in company_rows:
+        company_id = int(company_row["id"])
+        refresh_company_control_analysis(db, company_id)
+        refreshed_company_ids.append(company_id)
+    return refreshed_company_ids
+
+
+def _build_specific_company_graphs(
+    db: Session,
+    *,
+    company_rows: list[dict[str, Any]],
+    output_dir: Path,
+    max_depth: int,
+    company_samples: dict[int, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    generated: list[dict[str, Any]] = []
+
+    for company_row in company_rows:
+        company_id = int(company_row["id"])
+        company_name = str(company_row["name"])
+        focus = _pick_company_focus_metadata(
+            company_id,
+            company_samples=company_samples,
+        )
+        file_name = _build_company_output_filename(company_id, company_name)
+        html_path = build_control_graph_with_session(
+            db,
+            company_id,
+            output_path=output_dir / file_name,
+            latest_output_path=None,
+            max_depth=max_depth,
+            focus_label=focus["focus_label"],
+            focus_controller_name=focus["focus_controller_name"],
+            focus_control_type=focus["focus_control_type"],
+            focus_semantic_flags=focus["focus_semantic_flags"],
+        )
+        generated.append(
+            {
+                "category": f"company_{company_id}",
+                "label": focus["focus_label"],
+                "company_id": company_id,
+                "company_name": company_name,
+                "focus_controller_name": focus.get("focus_controller_name"),
+                "file_name": file_name,
+                "html_path": str(html_path),
+                "metadata_source": focus["metadata_source"],
+            }
+        )
+
+    return generated
 
 
 def _write_index(
@@ -330,6 +485,8 @@ def build_demo_visualizations(
     samples_json_path: Path = DEFAULT_SAMPLES_JSON,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     selected_categories: list[str] | None = None,
+    selected_company_ids: list[int] | None = None,
+    refresh_selected_company_ids: bool = True,
     max_depth: int = DEFAULT_MAX_DEPTH,
 ) -> dict[str, Any]:
     database_path = Path(database_path).resolve()
@@ -337,7 +494,9 @@ def build_demo_visualizations(
     output_dir = Path(output_dir).resolve()
     payload = _load_json(samples_json_path)
     lookup = _sample_lookup(payload)
+    company_samples = _sample_lookup_by_company_id(payload)
     selected = set(selected_categories or [item["category"] for item in FIXED_DEMO_SAMPLES])
+    company_ids = sorted(set(selected_company_ids or []))
 
     engine = create_engine(
         f"sqlite:///{database_path}",
@@ -347,46 +506,64 @@ def build_demo_visualizations(
 
     generated: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
+    refreshed_company_ids: list[int] = []
 
     with session_factory() as db:
-        for definition in FIXED_DEMO_SAMPLES:
-            if definition["category"] not in selected:
-                continue
-            sample = _resolve_sample_entry(db, definition, lookup)
-            if not sample.get("available"):
-                missing.append(
+        if company_ids:
+            company_rows, company_missing = _resolve_existing_company_ids(db, company_ids)
+            missing.extend(company_missing)
+            if refresh_selected_company_ids and company_rows:
+                refreshed_company_ids.extend(
+                    _refresh_company_analyses(db, company_rows=company_rows)
+                )
+            generated.extend(
+                _build_specific_company_graphs(
+                    db,
+                    company_rows=company_rows,
+                    output_dir=output_dir,
+                    max_depth=max_depth,
+                    company_samples=company_samples,
+                )
+            )
+        else:
+            for definition in FIXED_DEMO_SAMPLES:
+                if definition["category"] not in selected:
+                    continue
+                sample = _resolve_sample_entry(db, definition, lookup)
+                if not sample.get("available"):
+                    missing.append(
+                        {
+                            "category": definition["category"],
+                            "label": definition["label"],
+                            "reason": sample["reason"],
+                        }
+                    )
+                    continue
+
+                file_name = _build_output_filename(definition, sample["company_name"])
+                html_path = build_control_graph_with_session(
+                    db,
+                    int(sample["company_id"]),
+                    output_path=output_dir / file_name,
+                    latest_output_path=None,
+                    max_depth=max_depth,
+                    focus_label=definition["label"],
+                    focus_controller_name=sample.get("focus_controller_name"),
+                    focus_control_type=sample.get("focus_control_type"),
+                    focus_semantic_flags=sample.get("focus_semantic_flags"),
+                )
+                generated.append(
                     {
                         "category": definition["category"],
                         "label": definition["label"],
-                        "reason": sample["reason"],
+                        "company_id": int(sample["company_id"]),
+                        "company_name": sample["company_name"],
+                        "focus_controller_name": sample.get("focus_controller_name"),
+                        "file_name": file_name,
+                        "html_path": str(html_path),
+                        "metadata_source": sample.get("metadata_source"),
                     }
                 )
-                continue
-
-            file_name = _build_output_filename(definition, sample["company_name"])
-            html_path = build_control_graph_with_session(
-                db,
-                int(sample["company_id"]),
-                output_path=output_dir / file_name,
-                latest_output_path=None,
-                max_depth=max_depth,
-                focus_label=definition["label"],
-                focus_controller_name=sample.get("focus_controller_name"),
-                focus_control_type=sample.get("focus_control_type"),
-                focus_semantic_flags=sample.get("focus_semantic_flags"),
-            )
-            generated.append(
-                {
-                    "category": definition["category"],
-                    "label": definition["label"],
-                    "company_id": int(sample["company_id"]),
-                    "company_name": sample["company_name"],
-                    "focus_controller_name": sample.get("focus_controller_name"),
-                    "file_name": file_name,
-                    "html_path": str(html_path),
-                    "metadata_source": sample.get("metadata_source"),
-                }
-            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     index_path = output_dir / "index.html"
@@ -404,6 +581,7 @@ def build_demo_visualizations(
         "index_path": str(index_path),
         "generated": generated,
         "missing": missing,
+        "refreshed_company_ids": refreshed_company_ids,
     }
 
 
@@ -414,6 +592,8 @@ def main() -> None:
         samples_json_path=Path(args.samples_json),
         output_dir=Path(args.output_dir),
         selected_categories=args.categories,
+        selected_company_ids=args.company_ids,
+        refresh_selected_company_ids=not args.skip_refresh,
         max_depth=args.max_depth,
     )
 
@@ -421,6 +601,8 @@ def main() -> None:
     print(f"Samples JSON: {result['samples_json_path']}")
     print(f"Output dir: {result['output_dir']}")
     print(f"Index: {result['index_path']}")
+    if result["refreshed_company_ids"]:
+        print(f"Refreshed company ids: {result['refreshed_company_ids']}")
     print(f"Generated: {len(result['generated'])}")
     for item in result["generated"]:
         print(f"  - {item['label']}: {item['company_name']} -> {item['html_path']}")

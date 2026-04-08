@@ -30,3 +30,9 @@ class Company(Base):
         back_populates="company",
         cascade="all, delete-orphan",
     )
+    business_segments = relationship(
+        "BusinessSegment",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        order_by="BusinessSegment.id.asc()",
+    )

@@ -15,7 +15,18 @@ from sqlalchemy import and_, create_engine, func, inspect, not_, or_
 from sqlalchemy.orm import Session, sessionmaker
 
 import backend.models  # noqa: F401
+from backend.analysis.control_inference import (
+    build_control_context,
+    infer_controllers,
+    unit_to_pct,
+)
 from backend.analysis.ownership_penetration import (
+    _build_unified_basis_payload,
+    _build_unified_country_basis_payload,
+    _control_type_from_candidate,
+    _pct_threshold_to_unit,
+    _semantic_flags_for_storage,
+    _serialize_unified_paths,
     _prepare_candidate_results,
     _quantize_pct,
     _serialize_decimal,
@@ -32,6 +43,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_NAME = "company_import_test.db"
 REPORT_OUTPUT_DIR = PROJECT_ROOT / "tests" / "output"
 RUN_ID_FORMAT = "%Y%m%d_%H%M%S"
+DEFAULT_ENGINE_MODE = "unified"
+SUPPORTED_ENGINE_MODES = ("unified", "legacy")
 CONTROL_MANUAL_STATUSES = (
     "manual_confirmed",
     "manual_rejected",
@@ -98,11 +111,17 @@ REQUIRED_TABLE_COLUMNS = {
         "source_mode",
     },
 }
-CORE_ANALYSIS_FUNCTIONS = [
+LEGACY_CORE_ANALYSIS_FUNCTIONS = [
     "backend.analysis.ownership_penetration.build_ownership_analysis_context",
     "backend.analysis.ownership_penetration._prepare_candidate_results",
     "backend.analysis.ownership_penetration._collect_candidate_paths",
     "backend.shareholder_relations.build_equity_relationship_clause",
+]
+UNIFIED_CORE_ANALYSIS_FUNCTIONS = [
+    "backend.analysis.control_inference.build_control_context",
+    "backend.analysis.control_inference.infer_controllers",
+    "backend.analysis.ownership_penetration._control_type_from_candidate",
+    "backend.analysis.ownership_penetration._serialize_unified_paths",
 ]
 
 
@@ -141,10 +160,11 @@ class RecomputePlan:
     def blocked_country_company_ids(self) -> set[int]:
         return self.country_manual_company_ids | self.country_uncertain_company_ids
 
-    def to_preview_dict(self) -> dict[str, Any]:
+    def to_preview_dict(self, *, engine_mode: str = DEFAULT_ENGINE_MODE) -> dict[str, Any]:
         return {
             "target_database_path": str(self.database_path),
             "selected_reason": self.selected_reason,
+            "engine_mode": engine_mode,
             "schema": {
                 "compatible": not self.schema_issues,
                 "issues": self.schema_issues,
@@ -231,9 +251,25 @@ class RecomputePlan:
                 "country_source_mode": self.country_source_mode_distribution,
                 "country_is_manual": self.country_manual_distribution,
             },
-            "core_analysis_functions": CORE_ANALYSIS_FUNCTIONS,
+            "core_analysis_functions": _core_analysis_functions(engine_mode),
             "anomalies": self.anomalies,
         }
+
+
+def _normalize_engine_mode(engine_mode: str | None) -> str:
+    normalized = (engine_mode or DEFAULT_ENGINE_MODE).strip().lower()
+    if normalized not in SUPPORTED_ENGINE_MODES:
+        raise ValueError(
+            f"Unsupported engine mode: {engine_mode}. Expected one of {SUPPORTED_ENGINE_MODES}."
+        )
+    return normalized
+
+
+def _core_analysis_functions(engine_mode: str) -> list[str]:
+    normalized = _normalize_engine_mode(engine_mode)
+    if normalized == "legacy":
+        return LEGACY_CORE_ANALYSIS_FUNCTIONS
+    return UNIFIED_CORE_ANALYSIS_FUNCTIONS
 
 
 def _sqlite_url(database_path: Path) -> str:
@@ -423,7 +459,12 @@ def _normalize_context_holding_ratios(context, *, holding_ratio_scale: str) -> N
             edge.holding_ratio = Decimal(edge.holding_ratio) * multiplier
 
 
-def _build_recompute_plan(database_path: str | None) -> RecomputePlan:
+def _build_recompute_plan(
+    database_path: str | None,
+    *,
+    engine_mode: str = DEFAULT_ENGINE_MODE,
+) -> RecomputePlan:
+    normalized_engine_mode = _normalize_engine_mode(engine_mode)
     resolved_path, selected_reason = _resolve_database_path(database_path)
     schema_issues, relevant_columns = _schema_issues_and_columns(resolved_path)
 
@@ -464,11 +505,14 @@ def _build_recompute_plan(database_path: str | None) -> RecomputePlan:
             country_uncertain_query = _country_uncertain_query(db)
 
             anomalies: list[str] = []
-            if holding_ratio_scale == "fraction_0_to_1":
+            if (
+                normalized_engine_mode == "legacy"
+                and holding_ratio_scale == "fraction_0_to_1"
+            ):
                 anomalies.append(
                     "Detected shareholder_structures.holding_ratio values in 0~1 scale. "
                     "The recompute task will normalize them to 0~100 in memory before "
-                    "calling the existing ownership-penetration algorithm."
+                    "calling the legacy ownership-penetration algorithm."
                 )
             if control_uncertain_query.count():
                 anomalies.append(
@@ -544,8 +588,16 @@ def _build_recompute_plan(database_path: str | None) -> RecomputePlan:
         engine.dispose()
 
 
-def preview_recompute(database_path: str) -> dict[str, Any]:
-    return _build_recompute_plan(database_path).to_preview_dict()
+def preview_recompute(
+    database_path: str,
+    *,
+    engine_mode: str = DEFAULT_ENGINE_MODE,
+) -> dict[str, Any]:
+    normalized_engine_mode = _normalize_engine_mode(engine_mode)
+    return _build_recompute_plan(
+        database_path,
+        engine_mode=normalized_engine_mode,
+    ).to_preview_dict(engine_mode=normalized_engine_mode)
 
 
 def _recompute_note(
@@ -553,11 +605,12 @@ def _recompute_note(
     run_id: str,
     generated_at: str,
     replaced_old_auto_results: bool,
+    analysis_method: str,
 ) -> str:
     return (
         "AUTO: generated by ownership penetration | "
         f"recompute_run={run_id} | operation=recompute | generated_at={generated_at} | "
-        "method=current algorithm recompute | "
+        f"method={analysis_method} | "
         f"replaced_old_auto_results={str(replaced_old_auto_results).lower()}"
     )
 
@@ -608,6 +661,56 @@ def _country_basis_payload(
             "method": "current algorithm recompute",
             "replaced_old_auto_results": replaced_old_auto_results,
         },
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _unified_control_basis_payload(
+    *,
+    result,
+    candidate,
+    context,
+    run_id: str,
+    generated_at: str,
+    replaced_old_auto_results: bool,
+) -> str:
+    payload = json.loads(
+        _build_unified_basis_payload(
+            result=result,
+            candidate=candidate,
+            context=context,
+        )
+    )
+    payload["audit"] = {
+        "operation": "recompute",
+        "run_id": run_id,
+        "generated_at": generated_at,
+        "method": "unified_control_inference_v1",
+        "replaced_old_auto_results": replaced_old_auto_results,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _unified_country_basis_payload(
+    *,
+    result,
+    context,
+    run_id: str,
+    generated_at: str,
+    replaced_old_auto_results: bool,
+) -> str:
+    payload = json.loads(
+        _build_unified_country_basis_payload(
+            result=result,
+            context=context,
+        )
+    )
+    payload["audit"] = {
+        "operation": "recompute",
+        "run_id": run_id,
+        "generated_at": generated_at,
+        "method": "unified_control_inference_v1",
+        "replaced_old_auto_results": replaced_old_auto_results,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -674,6 +777,7 @@ def _insert_control_rows(
                     run_id=run_id,
                     generated_at=generated_at,
                     replaced_old_auto_results=replaced_old_auto_results,
+                    analysis_method="ownership_penetration_legacy",
                 ),
                 control_mode="numeric",
                 semantic_flags=None,
@@ -713,12 +817,121 @@ def _insert_country_row(
                 run_id=run_id,
                 generated_at=generated_at,
                 replaced_old_auto_results=replaced_old_auto_results,
+                analysis_method="ownership_penetration_legacy",
             ),
             source_mode=(
                 "fallback_rule"
                 if attribution_type.startswith("fallback_")
                 else "control_chain_analysis"
             ),
+        )
+    )
+    return 1
+
+
+def _insert_control_rows_unified(
+    db: Session,
+    *,
+    result,
+    context,
+    run_id: str,
+    generated_at: str,
+    replaced_old_auto_results: bool,
+) -> int:
+    inserted = 0
+
+    for candidate in result.candidates:
+        controller_entity = context.entity_map[candidate.controller_entity_id]
+        is_actual_controller = (
+            result.actual_controller_entity_id is not None
+            and controller_entity.id == result.actual_controller_entity_id
+        )
+        semantic_flags = _semantic_flags_for_storage(candidate.semantic_flags)
+        review_status = (
+            "needs_review"
+            if semantic_flags and "needs_review" in semantic_flags
+            else "auto"
+        )
+
+        db.add(
+            ControlRelationship(
+                company_id=result.company.id,
+                controller_entity_id=controller_entity.id,
+                controller_name=controller_entity.entity_name,
+                controller_type=controller_entity.entity_type,
+                control_type=_control_type_from_candidate(candidate),
+                control_ratio=_quantize_pct(unit_to_pct(candidate.total_score)),
+                control_path=_serialize_unified_paths(
+                    candidate.path_states,
+                    context=context,
+                ),
+                is_actual_controller=is_actual_controller,
+                basis=_unified_control_basis_payload(
+                    result=result,
+                    candidate=candidate,
+                    context=context,
+                    run_id=run_id,
+                    generated_at=generated_at,
+                    replaced_old_auto_results=replaced_old_auto_results,
+                ),
+                notes=_recompute_note(
+                    run_id=run_id,
+                    generated_at=generated_at,
+                    replaced_old_auto_results=replaced_old_auto_results,
+                    analysis_method="unified_control_inference_v1",
+                ),
+                control_mode=candidate.control_mode,
+                semantic_flags=(
+                    json.dumps(semantic_flags, ensure_ascii=False, sort_keys=True)
+                    if semantic_flags is not None
+                    else None
+                ),
+                review_status=review_status,
+            )
+        )
+        inserted += 1
+    return inserted
+
+
+def _insert_country_row_unified(
+    db: Session,
+    *,
+    result,
+    context,
+    run_id: str,
+    generated_at: str,
+    replaced_old_auto_results: bool,
+) -> int:
+    attribution_type = result.attribution_type
+    if attribution_type.startswith("fallback_"):
+        source_mode = "fallback_rule"
+    elif attribution_type in {"mixed_control", "joint_control"}:
+        source_mode = "hybrid"
+    else:
+        source_mode = "control_chain_analysis"
+
+    db.add(
+        CountryAttribution(
+            company_id=result.company.id,
+            incorporation_country=result.company.incorporation_country,
+            listing_country=result.company.listing_country,
+            actual_control_country=result.actual_control_country,
+            attribution_type=attribution_type,
+            basis=_unified_country_basis_payload(
+                result=result,
+                context=context,
+                run_id=run_id,
+                generated_at=generated_at,
+                replaced_old_auto_results=replaced_old_auto_results,
+            ),
+            is_manual=False,
+            notes=_recompute_note(
+                run_id=run_id,
+                generated_at=generated_at,
+                replaced_old_auto_results=replaced_old_auto_results,
+                analysis_method="unified_control_inference_v1",
+            ),
+            source_mode=source_mode,
         )
     )
     return 1
@@ -932,64 +1145,142 @@ def _sample_company_ids(company_ids: list[int], *, run_id: str, limit: int = 3) 
     return sorted(rng.sample(company_ids, limit))
 
 
-def _build_sample_entry(context, company_id: int) -> dict[str, Any]:
+def _build_sample_entry(
+    context,
+    company_id: int,
+    *,
+    engine_mode: str = DEFAULT_ENGINE_MODE,
+) -> dict[str, Any]:
     company, target_entity = _company_from_context(context, company_id)
-    prepared_result = _prepare_candidate_results(
-        company=company,
-        target_entity=target_entity,
-        context=context,
-        max_depth=10,
-        min_path_ratio_pct=Decimal("0.01"),
-        majority_threshold_pct=Decimal("50.0"),
-        disclosure_threshold_pct=Decimal("25.0"),
-    )
+    normalized_engine_mode = _normalize_engine_mode(engine_mode)
+
+    if normalized_engine_mode == "legacy":
+        prepared_result = _prepare_candidate_results(
+            company=company,
+            target_entity=target_entity,
+            context=context,
+            max_depth=10,
+            min_path_ratio_pct=Decimal("0.01"),
+            majority_threshold_pct=Decimal("50.0"),
+            disclosure_threshold_pct=Decimal("25.0"),
+        )
+        unified_result = None
+    else:
+        unified_result = infer_controllers(
+            context,
+            company_id,
+            max_depth=10,
+            min_path_score=_pct_threshold_to_unit(Decimal("0.01")),
+            control_threshold=_pct_threshold_to_unit(Decimal("50.0")),
+            significant_threshold=Decimal("0.20"),
+            disclosure_threshold=_pct_threshold_to_unit(Decimal("25.0")),
+            aggregator="sum_cap",
+        )
+        prepared_result = None
 
     base_edges = []
-    for edge in context.incoming_map.get(target_entity.id, []):
-        controller_entity = context.entity_map.get(edge.from_entity_id)
-        base_edges.append(
-            {
-                "from_entity_id": edge.from_entity_id,
-                "from_entity_name": (
-                    controller_entity.entity_name if controller_entity is not None else None
-                ),
-                "holding_ratio_pct": (
-                    _serialize_decimal(edge.holding_ratio)
-                    if edge.holding_ratio is not None
-                    else None
-                ),
-                "relation_type": edge.relation_type,
-                "control_type": edge.control_type,
-            }
-        )
+    if normalized_engine_mode == "legacy":
+        for edge in context.incoming_map.get(target_entity.id, []):
+            controller_entity = context.entity_map.get(edge.from_entity_id)
+            base_edges.append(
+                {
+                    "from_entity_id": edge.from_entity_id,
+                    "from_entity_name": (
+                        controller_entity.entity_name if controller_entity is not None else None
+                    ),
+                    "holding_ratio_pct": (
+                        _serialize_decimal(edge.holding_ratio)
+                        if edge.holding_ratio is not None
+                        else None
+                    ),
+                    "relation_type": edge.relation_type,
+                    "control_type": edge.control_type,
+                }
+            )
+    else:
+        for factor in context.incoming_factor_map.get(target_entity.id, []):
+            controller_entity = context.entity_map.get(factor.from_entity_id)
+            base_edges.append(
+                {
+                    "from_entity_id": factor.from_entity_id,
+                    "from_entity_name": (
+                        controller_entity.entity_name if controller_entity is not None else None
+                    ),
+                    "holding_ratio_pct": _serialize_decimal(unit_to_pct(factor.numeric_factor))
+                    if factor.relation_type == "equity"
+                    else None,
+                    "relation_type": factor.relation_type,
+                    "control_type": factor.relation_type,
+                }
+            )
 
     control_chain = []
-    for candidate in prepared_result["candidate_results"][:3]:
-        paths = _safe_json_loads(_serialize_paths(candidate["paths"])) or []
-        control_chain.append(
-            {
-                "controller_entity_id": candidate["entity_id"],
-                "controller_name": candidate["entity"].entity_name,
-                "total_ratio_pct": _serialize_decimal(candidate["total_ratio_pct"]),
-                "path_count": len(candidate["paths"]),
-                "paths": paths[:2],
-                "is_actual_controller": (
-                    prepared_result["actual_controller"] is not None
-                    and candidate["entity_id"]
-                    == prepared_result["actual_controller"]["entity_id"]
-                ),
-            }
-        )
+    if normalized_engine_mode == "legacy":
+        for candidate in prepared_result["candidate_results"][:3]:
+            paths = _safe_json_loads(_serialize_paths(candidate["paths"])) or []
+            control_chain.append(
+                {
+                    "controller_entity_id": candidate["entity_id"],
+                    "controller_name": candidate["entity"].entity_name,
+                    "total_ratio_pct": _serialize_decimal(candidate["total_ratio_pct"]),
+                    "path_count": len(candidate["paths"]),
+                    "paths": paths[:2],
+                    "is_actual_controller": (
+                        prepared_result["actual_controller"] is not None
+                        and candidate["entity_id"]
+                        == prepared_result["actual_controller"]["entity_id"]
+                    ),
+                }
+            )
+    else:
+        for candidate in unified_result.candidates[:3]:
+            paths = _safe_json_loads(
+                _serialize_unified_paths(candidate.top_paths, context=context)
+            ) or []
+            control_chain.append(
+                {
+                    "controller_entity_id": candidate.controller_entity_id,
+                    "controller_name": context.entity_map[candidate.controller_entity_id].entity_name,
+                    "total_ratio_pct": _serialize_decimal(unit_to_pct(candidate.total_score)),
+                    "path_count": len(candidate.path_states),
+                    "paths": paths[:2],
+                    "is_actual_controller": (
+                        unified_result.actual_controller_entity_id is not None
+                        and candidate.controller_entity_id
+                        == unified_result.actual_controller_entity_id
+                    ),
+                }
+            )
 
     actual_controller = None
-    if prepared_result["actual_controller"] is not None:
-        actual_controller = {
-            "entity_id": prepared_result["actual_controller"]["entity_id"],
-            "entity_name": prepared_result["actual_controller"]["entity"].entity_name,
-            "total_ratio_pct": _serialize_decimal(
-                prepared_result["actual_controller"]["total_ratio_pct"]
+    if normalized_engine_mode == "legacy":
+        if prepared_result["actual_controller"] is not None:
+            actual_controller = {
+                "entity_id": prepared_result["actual_controller"]["entity_id"],
+                "entity_name": prepared_result["actual_controller"]["entity"].entity_name,
+                "total_ratio_pct": _serialize_decimal(
+                    prepared_result["actual_controller"]["total_ratio_pct"]
+                ),
+            }
+    elif unified_result.actual_controller_entity_id is not None:
+        winning_candidate = next(
+            (
+                candidate
+                for candidate in unified_result.candidates
+                if candidate.controller_entity_id == unified_result.actual_controller_entity_id
             ),
-        }
+            None,
+        )
+        if winning_candidate is not None:
+            actual_controller = {
+                "entity_id": winning_candidate.controller_entity_id,
+                "entity_name": context.entity_map[
+                    winning_candidate.controller_entity_id
+                ].entity_name,
+                "total_ratio_pct": _serialize_decimal(
+                    unit_to_pct(winning_candidate.total_score)
+                ),
+            }
 
     return {
         "company_id": company.id,
@@ -999,8 +1290,16 @@ def _build_sample_entry(context, company_id: int) -> dict[str, Any]:
         "control_chain": control_chain,
         "actual_controller": actual_controller,
         "country_attribution": {
-            "actual_control_country": prepared_result["actual_control_country"],
-            "attribution_type": prepared_result["attribution_type"],
+            "actual_control_country": (
+                prepared_result["actual_control_country"]
+                if normalized_engine_mode == "legacy"
+                else unified_result.actual_control_country
+            ),
+            "attribution_type": (
+                prepared_result["attribution_type"]
+                if normalized_engine_mode == "legacy"
+                else unified_result.attribution_type
+            ),
         },
     }
 
@@ -1204,8 +1503,16 @@ def _write_report(
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def run_recompute(database_path: str) -> dict[str, Any]:
-    plan = _build_recompute_plan(database_path)
+def run_recompute(
+    database_path: str,
+    *,
+    engine_mode: str = DEFAULT_ENGINE_MODE,
+) -> dict[str, Any]:
+    normalized_engine_mode = _normalize_engine_mode(engine_mode)
+    plan = _build_recompute_plan(
+        database_path,
+        engine_mode=normalized_engine_mode,
+    )
     if plan.schema_issues:
         raise RuntimeError(
             "Current database schema is incompatible with recompute task: "
@@ -1220,14 +1527,20 @@ def run_recompute(database_path: str) -> dict[str, Any]:
     read_engine, read_session_factory = _create_session_factory(plan.database_path)
     try:
         with read_session_factory() as read_db:
-            context = build_ownership_analysis_context(
-                read_db,
-                as_of=run_started_at.date(),
-            )
-            _normalize_context_holding_ratios(
-                context,
-                holding_ratio_scale=plan.holding_ratio_scale,
-            )
+            if normalized_engine_mode == "legacy":
+                context = build_ownership_analysis_context(
+                    read_db,
+                    as_of=run_started_at.date(),
+                )
+                _normalize_context_holding_ratios(
+                    context,
+                    holding_ratio_scale=plan.holding_ratio_scale,
+                )
+            else:
+                context = build_control_context(
+                    read_db,
+                    as_of=run_started_at.date(),
+                )
     finally:
         read_engine.dispose()
 
@@ -1248,16 +1561,30 @@ def run_recompute(database_path: str) -> dict[str, Any]:
 
         for company_id in company_ids:
             try:
-                company, target_entity = _company_from_context(context, company_id)
-                prepared_result = _prepare_candidate_results(
-                    company=company,
-                    target_entity=target_entity,
-                    context=context,
-                    max_depth=10,
-                    min_path_ratio_pct=Decimal("0.01"),
-                    majority_threshold_pct=Decimal("50.0"),
-                    disclosure_threshold_pct=Decimal("25.0"),
-                )
+                if normalized_engine_mode == "legacy":
+                    company, target_entity = _company_from_context(context, company_id)
+                    prepared_result = _prepare_candidate_results(
+                        company=company,
+                        target_entity=target_entity,
+                        context=context,
+                        max_depth=10,
+                        min_path_ratio_pct=Decimal("0.01"),
+                        majority_threshold_pct=Decimal("50.0"),
+                        disclosure_threshold_pct=Decimal("25.0"),
+                    )
+                    unified_result = None
+                else:
+                    unified_result = infer_controllers(
+                        context,
+                        company_id,
+                        max_depth=10,
+                        min_path_score=_pct_threshold_to_unit(Decimal("0.01")),
+                        control_threshold=_pct_threshold_to_unit(Decimal("50.0")),
+                        significant_threshold=Decimal("0.20"),
+                        disclosure_threshold=_pct_threshold_to_unit(Decimal("25.0")),
+                        aggregator="sum_cap",
+                    )
+                    prepared_result = None
 
                 deleted_control_for_company = 0
                 deleted_country_for_company = 0
@@ -1274,24 +1601,44 @@ def run_recompute(database_path: str) -> dict[str, Any]:
                         if company_id in plan.blocked_control_company_ids:
                             control_write_skipped = True
                         else:
-                            inserted_control_for_company = _insert_control_rows(
-                                db,
-                                prepared_result=prepared_result,
-                                run_id=run_id,
-                                generated_at=generated_at,
-                                replaced_old_auto_results=deleted_control_for_company > 0,
-                            )
+                            if normalized_engine_mode == "legacy":
+                                inserted_control_for_company = _insert_control_rows(
+                                    db,
+                                    prepared_result=prepared_result,
+                                    run_id=run_id,
+                                    generated_at=generated_at,
+                                    replaced_old_auto_results=deleted_control_for_company > 0,
+                                )
+                            else:
+                                inserted_control_for_company = _insert_control_rows_unified(
+                                    db,
+                                    result=unified_result,
+                                    context=context,
+                                    run_id=run_id,
+                                    generated_at=generated_at,
+                                    replaced_old_auto_results=deleted_control_for_company > 0,
+                                )
 
                         if company_id in plan.blocked_country_company_ids:
                             country_write_skipped = True
                         else:
-                            inserted_country_for_company = _insert_country_row(
-                                db,
-                                prepared_result=prepared_result,
-                                run_id=run_id,
-                                generated_at=generated_at,
-                                replaced_old_auto_results=deleted_country_for_company > 0,
-                            )
+                            if normalized_engine_mode == "legacy":
+                                inserted_country_for_company = _insert_country_row(
+                                    db,
+                                    prepared_result=prepared_result,
+                                    run_id=run_id,
+                                    generated_at=generated_at,
+                                    replaced_old_auto_results=deleted_country_for_company > 0,
+                                )
+                            else:
+                                inserted_country_for_company = _insert_country_row_unified(
+                                    db,
+                                    result=unified_result,
+                                    context=context,
+                                    run_id=run_id,
+                                    generated_at=generated_at,
+                                    replaced_old_auto_results=deleted_country_for_company > 0,
+                                )
 
                 deleted_control_rows += deleted_control_for_company
                 deleted_country_rows += deleted_country_for_company
@@ -1310,7 +1657,14 @@ def run_recompute(database_path: str) -> dict[str, Any]:
 
         validation = _collect_validation_summary(plan.database_path, run_id=run_id)
         sample_company_ids = _sample_company_ids(samples_source_company_ids, run_id=run_id)
-        samples = [_build_sample_entry(context, company_id) for company_id in sample_company_ids]
+        samples = [
+            _build_sample_entry(
+                context,
+                company_id,
+                engine_mode=normalized_engine_mode,
+            )
+            for company_id in sample_company_ids
+        ]
 
         anomalies = list(plan.anomalies)
         if validation["invalid_control_path_rows_overall"]:
@@ -1330,6 +1684,7 @@ def run_recompute(database_path: str) -> dict[str, Any]:
             "target_database_path": str(plan.database_path),
             "backup_database_path": str(backup_path),
             "selected_reason": plan.selected_reason,
+            "engine_mode": normalized_engine_mode,
             "ratio_scale": {
                 "holding_ratio_scale": plan.holding_ratio_scale,
                 "holding_ratio_min": plan.holding_ratio_min,
@@ -1361,7 +1716,7 @@ def run_recompute(database_path: str) -> dict[str, Any]:
                 "country_attributions": inserted_country_rows,
             },
             "validation": validation,
-            "core_analysis_functions": CORE_ANALYSIS_FUNCTIONS,
+            "core_analysis_functions": _core_analysis_functions(normalized_engine_mode),
             "samples": samples,
             "anomalies": anomalies,
             "report_path": str(report_path),
@@ -1390,12 +1745,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Actually back up the database and perform the recompute. Without this flag only preview is shown.",
     )
+    parser.add_argument(
+        "--engine",
+        default=DEFAULT_ENGINE_MODE,
+        choices=SUPPORTED_ENGINE_MODES,
+        help="Analysis engine used by preview/execute. Defaults to unified.",
+    )
     args = parser.parse_args(argv)
 
     if args.execute:
-        result = run_recompute(args.database_path)
+        result = run_recompute(args.database_path, engine_mode=args.engine)
     else:
-        result = preview_recompute(args.database_path)
+        result = preview_recompute(args.database_path, engine_mode=args.engine)
 
     _print_json(result)
     return 0

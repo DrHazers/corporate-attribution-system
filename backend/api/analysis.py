@@ -36,11 +36,17 @@ def get_control_chain_analysis(
             detail="Company not found.",
         )
 
-    analysis_result = analyze_control_chain_with_options(
-        db,
-        company_id,
-        refresh=refresh,
-    )
+    try:
+        analysis_result = analyze_control_chain_with_options(
+            db,
+            company_id,
+            refresh=refresh,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     if analysis_result["controller_count"] == 0:
         return {
             "company_id": company_id,
@@ -66,11 +72,17 @@ def get_country_attribution_analysis(
             detail="Company not found.",
         )
 
-    return analyze_country_attribution_with_options(
-        db,
-        company_id,
-        refresh=refresh,
-    )
+    try:
+        return analyze_country_attribution_with_options(
+            db,
+            company_id,
+            refresh=refresh,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/entities/{entity_id}/upstream-shareholders")

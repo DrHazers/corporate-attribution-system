@@ -262,33 +262,44 @@ def get_direct_upstream_shareholder_structures(
         .options(joinedload(ShareholderStructure.from_entity))
         .filter(ShareholderStructure.to_entity_id == target_entity_id)
         .filter(ShareholderStructure.is_current.is_(True))
+        .filter(ShareholderStructure.is_direct.is_(True))
         .order_by(desc(ShareholderStructure.holding_ratio), ShareholderStructure.id.asc())
         .all()
     )
 
 
+def _current_structure_filters(
+    *,
+    as_of: date | None = None,
+    direct_only: bool = False,
+) -> list[Any]:
+    today = as_of or date.today()
+    filters: list[Any] = [
+        ShareholderStructure.is_current.is_(True),
+        or_(
+            ShareholderStructure.effective_date.is_(None),
+            ShareholderStructure.effective_date <= today,
+        ),
+        or_(
+            ShareholderStructure.expiry_date.is_(None),
+            ShareholderStructure.expiry_date >= today,
+        ),
+    ]
+    if direct_only:
+        filters.append(ShareholderStructure.is_direct.is_(True))
+    return filters
+
+
 def get_current_incoming_relationships(
     db: Session,
     to_entity_id: int,
+    *,
+    direct_only: bool = False,
 ) -> list[ShareholderStructure]:
-    today = date.today()
-
     return (
         db.query(ShareholderStructure)
         .filter(ShareholderStructure.to_entity_id == to_entity_id)
-        .filter(ShareholderStructure.is_current.is_(True))
-        .filter(
-            or_(
-                ShareholderStructure.effective_date.is_(None),
-                ShareholderStructure.effective_date <= today,
-            )
-        )
-        .filter(
-            or_(
-                ShareholderStructure.expiry_date.is_(None),
-                ShareholderStructure.expiry_date >= today,
-            )
-        )
+        .filter(*_current_structure_filters(direct_only=direct_only))
         .order_by(ShareholderStructure.id.asc())
         .all()
     )
@@ -296,24 +307,12 @@ def get_current_incoming_relationships(
 
 def get_current_shareholder_structures(
     db: Session,
+    *,
+    direct_only: bool = False,
 ) -> list[ShareholderStructure]:
-    today = date.today()
-
     return (
         db.query(ShareholderStructure)
-        .filter(ShareholderStructure.is_current.is_(True))
-        .filter(
-            or_(
-                ShareholderStructure.effective_date.is_(None),
-                ShareholderStructure.effective_date <= today,
-            )
-        )
-        .filter(
-            or_(
-                ShareholderStructure.expiry_date.is_(None),
-                ShareholderStructure.expiry_date >= today,
-            )
-        )
+        .filter(*_current_structure_filters(direct_only=direct_only))
         .order_by(ShareholderStructure.id.asc())
         .all()
     )

@@ -293,6 +293,7 @@ def _edge_tooltip(
 def _current_structure_filters(as_of: date) -> list[Any]:
     return [
         ShareholderStructure.is_current.is_(True),
+        ShareholderStructure.is_direct.is_(True),
         or_(
             ShareholderStructure.effective_date.is_(None),
             ShareholderStructure.effective_date <= as_of,

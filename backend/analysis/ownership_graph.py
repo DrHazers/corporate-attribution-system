@@ -112,7 +112,7 @@ def _load_current_relationship_map(
     entity_map = _load_entity_map(db)
     incoming_map: dict[int, list[ShareholderStructure]] = defaultdict(list)
 
-    for relationship in get_current_shareholder_structures(db):
+    for relationship in get_current_shareholder_structures(db, direct_only=True):
         incoming_map[relationship.to_entity_id].append(relationship)
 
     for to_entity_id in incoming_map:
@@ -123,11 +123,7 @@ def _load_current_relationship_map(
 
 def build_ownership_graph_data(db: Session) -> dict:
     entity_map = _load_entity_map(db)
-    relationships = (
-        db.query(ShareholderStructure)
-        .order_by(ShareholderStructure.id.asc())
-        .all()
-    )
+    relationships = get_current_shareholder_structures(db, direct_only=True)
 
     serialized_edges = [
         _serialize_relationship(relationship, entity_map)
@@ -143,7 +139,7 @@ def build_ownership_graph_data(db: Session) -> dict:
 
 def build_ownership_graph(db: Session) -> OwnershipGraph:
     entities = db.query(ShareholderEntity).order_by(ShareholderEntity.id.asc()).all()
-    relationships = get_current_shareholder_structures(db)
+    relationships = get_current_shareholder_structures(db, direct_only=True)
 
     graph: OwnershipGraph = {entity.id: [] for entity in entities}
     for relationship in relationships:
@@ -163,7 +159,11 @@ def get_direct_upstream_entities(db: Session, target_entity_id: int) -> dict:
     entity_map = _load_entity_map(db)
     current_relationships = {
         relationship.from_entity_id: relationship
-        for relationship in get_current_incoming_relationships(db, target_entity_id)
+        for relationship in get_current_incoming_relationships(
+            db,
+            target_entity_id,
+            direct_only=True,
+        )
     }
 
     upstream_entities = []

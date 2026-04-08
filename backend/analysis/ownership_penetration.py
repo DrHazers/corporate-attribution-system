@@ -676,11 +676,7 @@ def _use_unified_control_engine() -> bool:
 
 
 def _allow_legacy_fallback() -> bool:
-    return os.getenv(DISABLE_LEGACY_FALLBACK_ENV, "").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-    }
+    return False
 
 
 def _pct_threshold_to_unit(value: Decimal) -> Decimal:
@@ -1032,8 +1028,7 @@ def refresh_company_control_analysis(
             return result
         except Exception:
             db.rollback()
-            if not _allow_legacy_fallback():
-                raise
+            raise
 
     legacy_context = build_ownership_analysis_context(db, as_of)
 

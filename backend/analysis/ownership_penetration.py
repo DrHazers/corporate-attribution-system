@@ -15,6 +15,12 @@ from backend.analysis.control_inference import (
     ControllerCandidate,
     ControlInferenceContext,
     ControlInferenceResult,
+    DEFAULT_AGGREGATOR,
+    DEFAULT_CONTROL_THRESHOLD,
+    DEFAULT_DISCLOSURE_THRESHOLD,
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MIN_PATH_SCORE,
+    DEFAULT_SIGNIFICANT_THRESHOLD,
     PathState,
     build_control_context,
     infer_controllers,
@@ -40,6 +46,9 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 HUNDRED = Decimal("100")
 PCT_QUANT = Decimal("0.0001")
+DEFAULT_MIN_PATH_RATIO_PCT = unit_to_pct(DEFAULT_MIN_PATH_SCORE)
+DEFAULT_MAJORITY_THRESHOLD_PCT = unit_to_pct(DEFAULT_CONTROL_THRESHOLD)
+DEFAULT_DISCLOSURE_THRESHOLD_PCT = unit_to_pct(DEFAULT_DISCLOSURE_THRESHOLD)
 UNIFIED_ENGINE_ENV = "CONTROL_INFERENCE_ENGINE"
 DISABLE_LEGACY_FALLBACK_ENV = "CONTROL_INFERENCE_DISABLE_LEGACY_FALLBACK"
 
@@ -988,9 +997,9 @@ def _refresh_company_control_analysis_with_unified_context(
         max_depth=max_depth,
         min_path_score=_pct_threshold_to_unit(min_path_ratio_pct),
         control_threshold=_pct_threshold_to_unit(majority_threshold_pct),
-        significant_threshold=Decimal("0.20"),
+        significant_threshold=DEFAULT_SIGNIFICANT_THRESHOLD,
         disclosure_threshold=_pct_threshold_to_unit(disclosure_threshold_pct),
-        aggregator="sum_cap",
+        aggregator=DEFAULT_AGGREGATOR,
     )
     return _apply_unified_company_analysis_records(
         db,
@@ -1003,10 +1012,10 @@ def refresh_company_control_analysis(
     db: Session,
     company_id: int,
     as_of: date | datetime | None = None,
-    max_depth: int = 10,
-    min_path_ratio_pct: Decimal = Decimal("0.01"),
-    majority_threshold_pct: Decimal = Decimal("50.0"),
-    disclosure_threshold_pct: Decimal = Decimal("25.0"),
+    max_depth: int = DEFAULT_MAX_DEPTH,
+    min_path_ratio_pct: Decimal = DEFAULT_MIN_PATH_RATIO_PCT,
+    majority_threshold_pct: Decimal = DEFAULT_MAJORITY_THRESHOLD_PCT,
+    disclosure_threshold_pct: Decimal = DEFAULT_DISCLOSURE_THRESHOLD_PCT,
 ) -> dict:
     if max_depth < 1:
         raise ValueError("max_depth must be at least 1.")
@@ -1087,20 +1096,20 @@ def refresh_all_companies_control_analysis(
                             db,
                             company_id,
                             context=context,
-                            max_depth=10,
-                            min_path_ratio_pct=Decimal("0.01"),
-                            majority_threshold_pct=Decimal("50.0"),
-                            disclosure_threshold_pct=Decimal("25.0"),
+                            max_depth=DEFAULT_MAX_DEPTH,
+                            min_path_ratio_pct=DEFAULT_MIN_PATH_RATIO_PCT,
+                            majority_threshold_pct=DEFAULT_MAJORITY_THRESHOLD_PCT,
+                            disclosure_threshold_pct=DEFAULT_DISCLOSURE_THRESHOLD_PCT,
                         )
                     else:
                         result = _refresh_company_control_analysis_with_context(
                             db,
                             company_id,
                             context=context,
-                            max_depth=10,
-                            min_path_ratio_pct=Decimal("0.01"),
-                            majority_threshold_pct=Decimal("50.0"),
-                            disclosure_threshold_pct=Decimal("25.0"),
+                            max_depth=DEFAULT_MAX_DEPTH,
+                            min_path_ratio_pct=DEFAULT_MIN_PATH_RATIO_PCT,
+                            majority_threshold_pct=DEFAULT_MAJORITY_THRESHOLD_PCT,
+                            disclosure_threshold_pct=DEFAULT_DISCLOSURE_THRESHOLD_PCT,
                         )
                 success_count += 1
                 batch_success_count += 1

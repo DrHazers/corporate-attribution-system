@@ -21,6 +21,12 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 HUNDRED = Decimal("100")
 PROB_QUANT = Decimal("0.0001")
+DEFAULT_MAX_DEPTH = 10
+DEFAULT_MIN_PATH_SCORE = Decimal("0.0001")
+DEFAULT_CONTROL_THRESHOLD = Decimal("0.5")
+DEFAULT_SIGNIFICANT_THRESHOLD = Decimal("0.2")
+DEFAULT_DISCLOSURE_THRESHOLD = DEFAULT_SIGNIFICANT_THRESHOLD
+DEFAULT_AGGREGATOR = "sum_cap"
 SUPPORTED_RELATION_TYPES = (
     "equity",
     "agreement",
@@ -924,12 +930,12 @@ def infer_controllers(
     context: ControlInferenceContext,
     company_id: int,
     *,
-    max_depth: int = 10,
-    min_path_score: Decimal = Decimal("0.0001"),
-    control_threshold: Decimal = Decimal("0.5"),
-    significant_threshold: Decimal = Decimal("0.2"),
-    disclosure_threshold: Decimal = Decimal("0.25"),
-    aggregator: str = "sum_cap",
+    max_depth: int = DEFAULT_MAX_DEPTH,
+    min_path_score: Decimal = DEFAULT_MIN_PATH_SCORE,
+    control_threshold: Decimal = DEFAULT_CONTROL_THRESHOLD,
+    significant_threshold: Decimal = DEFAULT_SIGNIFICANT_THRESHOLD,
+    disclosure_threshold: Decimal = DEFAULT_DISCLOSURE_THRESHOLD,
+    aggregator: str = DEFAULT_AGGREGATOR,
     top_path_limit: int = 5,
 ) -> ControlInferenceResult:
     company, target_entity = _resolve_company_and_target_entity(context, company_id)

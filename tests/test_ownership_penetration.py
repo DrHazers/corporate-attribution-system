@@ -299,6 +299,7 @@ def test_refresh_company_control_analysis_multilevel_below_threshold():
             db,
             company.id,
             min_path_ratio_pct=Decimal("15.0"),
+            disclosure_threshold_pct=Decimal("25.0"),
         )
 
         relationships = get_control_relationships(db, company.id)
@@ -813,5 +814,3 @@ def test_legacy_named_results_are_canonicalized_by_read_layers():
         assert country["control_chain_basis"][0]["control_type"] == "equity_control"
     finally:
         db.close()
-
-

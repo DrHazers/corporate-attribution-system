@@ -16,6 +16,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import backend.models  # noqa: F401
 from backend.analysis.control_inference import (
+    DEFAULT_AGGREGATOR,
+    DEFAULT_CONTROL_THRESHOLD,
+    DEFAULT_DISCLOSURE_THRESHOLD,
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MIN_PATH_SCORE,
+    DEFAULT_SIGNIFICANT_THRESHOLD,
     build_control_context,
     infer_controllers,
     unit_to_pct,
@@ -24,7 +30,6 @@ from backend.analysis.ownership_penetration import (
     _build_unified_basis_payload,
     _build_unified_country_basis_payload,
     _control_type_from_candidate,
-    _pct_threshold_to_unit,
     _semantic_flags_for_storage,
     _serialize_unified_paths,
     _prepare_candidate_results,
@@ -1159,22 +1164,22 @@ def _build_sample_entry(
             company=company,
             target_entity=target_entity,
             context=context,
-            max_depth=10,
-            min_path_ratio_pct=Decimal("0.01"),
-            majority_threshold_pct=Decimal("50.0"),
-            disclosure_threshold_pct=Decimal("25.0"),
+            max_depth=DEFAULT_MAX_DEPTH,
+            min_path_ratio_pct=unit_to_pct(DEFAULT_MIN_PATH_SCORE),
+            majority_threshold_pct=unit_to_pct(DEFAULT_CONTROL_THRESHOLD),
+            disclosure_threshold_pct=unit_to_pct(DEFAULT_DISCLOSURE_THRESHOLD),
         )
         unified_result = None
     else:
         unified_result = infer_controllers(
             context,
             company_id,
-            max_depth=10,
-            min_path_score=_pct_threshold_to_unit(Decimal("0.01")),
-            control_threshold=_pct_threshold_to_unit(Decimal("50.0")),
-            significant_threshold=Decimal("0.20"),
-            disclosure_threshold=_pct_threshold_to_unit(Decimal("25.0")),
-            aggregator="sum_cap",
+            max_depth=DEFAULT_MAX_DEPTH,
+            min_path_score=DEFAULT_MIN_PATH_SCORE,
+            control_threshold=DEFAULT_CONTROL_THRESHOLD,
+            significant_threshold=DEFAULT_SIGNIFICANT_THRESHOLD,
+            disclosure_threshold=DEFAULT_DISCLOSURE_THRESHOLD,
+            aggregator=DEFAULT_AGGREGATOR,
         )
         prepared_result = None
 
@@ -1567,22 +1572,22 @@ def run_recompute(
                         company=company,
                         target_entity=target_entity,
                         context=context,
-                        max_depth=10,
-                        min_path_ratio_pct=Decimal("0.01"),
-                        majority_threshold_pct=Decimal("50.0"),
-                        disclosure_threshold_pct=Decimal("25.0"),
+                        max_depth=DEFAULT_MAX_DEPTH,
+                        min_path_ratio_pct=unit_to_pct(DEFAULT_MIN_PATH_SCORE),
+                        majority_threshold_pct=unit_to_pct(DEFAULT_CONTROL_THRESHOLD),
+                        disclosure_threshold_pct=unit_to_pct(DEFAULT_DISCLOSURE_THRESHOLD),
                     )
                     unified_result = None
                 else:
                     unified_result = infer_controllers(
                         context,
                         company_id,
-                        max_depth=10,
-                        min_path_score=_pct_threshold_to_unit(Decimal("0.01")),
-                        control_threshold=_pct_threshold_to_unit(Decimal("50.0")),
-                        significant_threshold=Decimal("0.20"),
-                        disclosure_threshold=_pct_threshold_to_unit(Decimal("25.0")),
-                        aggregator="sum_cap",
+                        max_depth=DEFAULT_MAX_DEPTH,
+                        min_path_score=DEFAULT_MIN_PATH_SCORE,
+                        control_threshold=DEFAULT_CONTROL_THRESHOLD,
+                        significant_threshold=DEFAULT_SIGNIFICANT_THRESHOLD,
+                        disclosure_threshold=DEFAULT_DISCLOSURE_THRESHOLD,
+                        aggregator=DEFAULT_AGGREGATOR,
                     )
                     prepared_result = None
 

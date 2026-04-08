@@ -129,6 +129,119 @@ def test_run_recompute_defaults_to_unified_engine(tmp_path, monkeypatch):
             backup_path.unlink(missing_ok=True)
 
 
+def test_refresh_default_thresholds_persist_significant_influence_candidates(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("CONTROL_INFERENCE_ENGINE", raising=False)
+    monkeypatch.delenv("CONTROL_INFERENCE_DISABLE_LEGACY_FALLBACK", raising=False)
+
+    _, engine, session_factory = make_session_factory(
+        tmp_path,
+        "runtime_unification_significant_refresh.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="Significant Influence Refresh Target",
+                stock_code="SIR001",
+            )
+            target_entity = create_entity(
+                db,
+                entity_name="Significant Influence Refresh Target Entity",
+                company_id=company.id,
+            )
+            candidate = create_entity(
+                db,
+                entity_name="Twenty Percent Holder",
+                country="Singapore",
+            )
+            create_structure(
+                db,
+                from_entity_id=candidate.id,
+                to_entity_id=target_entity.id,
+                relation_type="equity",
+                holding_ratio="20.0000",
+            )
+            db.commit()
+
+            refresh_result = refresh_company_control_analysis(db, company.id)
+            relationships = fetch_control_relationships(db, company.id)
+            attribution = fetch_country_attribution(db, company.id)
+
+            assert refresh_result["engine"] == "unified_control_inference_v1"
+            assert refresh_result["control_relationship_count"] == 1
+            assert refresh_result["actual_controller_entity_id"] is None
+            assert len(relationships) == 1
+            assert relationships[0].control_type == "significant_influence"
+            assert relationships[0].control_mode == "numeric"
+            assert json.loads(relationships[0].basis)["classification"] == "significant_influence"
+            assert attribution is not None
+            assert attribution.attribution_type == "fallback_incorporation"
+            assert json.loads(attribution.basis)["analysis"] == "unified_control_inference_v1"
+    finally:
+        engine.dispose()
+
+
+def test_run_recompute_default_thresholds_persist_significant_influence_candidates(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("CONTROL_INFERENCE_ENGINE", raising=False)
+    monkeypatch.delenv("CONTROL_INFERENCE_DISABLE_LEGACY_FALLBACK", raising=False)
+
+    database_path, engine, session_factory = make_session_factory(
+        tmp_path,
+        "runtime_unification_significant_recompute.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="Significant Influence Recompute Target",
+                stock_code="SIC001",
+            )
+            company_id = company.id
+            target_entity = create_entity(
+                db,
+                entity_name="Significant Influence Recompute Target Entity",
+                company_id=company.id,
+            )
+            candidate = create_entity(
+                db,
+                entity_name="Twenty Percent Recompute Holder",
+                country="Singapore",
+            )
+            create_structure(
+                db,
+                from_entity_id=candidate.id,
+                to_entity_id=target_entity.id,
+                relation_type="equity",
+                holding_ratio="20.0000",
+            )
+            db.commit()
+
+        summary = run_recompute(str(database_path))
+
+        assert summary["engine_mode"] == "unified"
+
+        with session_factory() as db:
+            relationships = fetch_control_relationships(db, company_id)
+            attribution = fetch_country_attribution(db, company_id)
+
+            assert len(relationships) == 1
+            assert relationships[0].control_type == "significant_influence"
+            assert relationships[0].control_mode == "numeric"
+            assert json.loads(relationships[0].basis)["classification"] == "significant_influence"
+            assert attribution is not None
+            assert attribution.attribution_type == "fallback_incorporation"
+    finally:
+        engine.dispose()
+        for backup_path in tmp_path.glob("*_before_recompute_*.db"):
+            backup_path.unlink(missing_ok=True)
+
+
 def test_graph_layers_use_the_same_analysis_eligible_edge_filters(tmp_path):
     _, engine, session_factory = make_session_factory(
         tmp_path,

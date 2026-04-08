@@ -1,174 +1,203 @@
 # Corporate Attribution System
 
-## 项目简介
-Corporate Attribution System 是一个面向产业研究的企业国别归属与业务结构征订系统。系统基于全球上市公司基础数据，对企业的注册地、上市地和实际控制地进行区分，并通过股权结构分析、控制关系识别和业务线标注，形成研究导向的企业归属与产业结构数据体系。
+## 项目定位
+这是一个面向产业研究的企业控制链、国别归属与产业分析系统。
 
----
+当前项目的后端重点已经不是普通 CRUD，而是围绕以下主线组织：
 
-## 项目背景
-在全球资本市场中，企业的注册地、上市地和实际控制地常常不一致。仅依据注册地或上市地统计企业国别，容易扭曲真实的产业格局。
+- 基于企业控制网络进行控制链分析
+- 输出实际控制人与国别归属结果
+- 将分析结果写回数据库，供图展示和后续产业分析模块复用
+- 为答辩展示提供稳定、一致、可解释的分析闭环
 
-与此同时，企业的业务结构也在持续变化，传统单一行业标签难以满足产业研究需求。因此，需要构建一个兼顾控制关系分析、业务结构识别和人工征订的研究型系统。
+当前默认分析主链路已经统一为 `unified control inference`，旧版 legacy 股权路径仍保留，但不再是默认运行方式。
 
----
+## 当前已实现能力
 
-## 项目目标
-本项目旨在实现一个研究导向的企业分析系统，支持：
+### 1. 基础数据与主体建模
+- 企业基础信息管理：`companies`
+- 主体建模：`shareholder_entities`
+- 原始关系建模：`shareholder_structures`
+- 控制分析结果存储：`control_relationships`
+- 国别归属结果存储：`country_attributions`
 
-- 企业基础信息管理  
-- 多层股权结构记录  
-- 控制关系识别与股权穿透分析  
-- 企业实际国别归属判定  
-- 企业业务线标注  
-- 人工征订与版本日志记录  
-- 后续扩展大模型辅助业务线识别与解释生成  
+### 2. 控制分析能力
+- 多层控制链分析
+- 实际控制人识别
+- 国别归属推断
+- 控制分析结果写回数据库
+- 支持股权边与语义控制边混合判断
+- 支持 `agreement`、`board_control`、`voting_right`、`nominee`、`vie` 等关系类型参与 unified 分析
 
----
+### 3. 展示与演示支撑
+- 控制链结果读取接口
+- 国别归属读取接口
+- 控制链图展示支撑
+- 基于 `NetworkX + PyVis` 生成 HTML 图的后端能力
+- 批量演示数据与图构建脚本
 
-## 技术栈
+### 4. 当前默认算法事实
+- 默认主链路：`backend/analysis/control_inference.py`
+- 默认分析入口仍以 `company_id` 为核心
+- `shareholder_structures` 是核心原始事实来源
+- `control_relationships` / `country_attributions` 是分析结果表，不是底层事实来源
+- 当前开发数据库仍为 SQLite
 
-- Python  
-- FastAPI  
-- SQLAlchemy  
-- SQLite（开发阶段）/ PostgreSQL（正式阶段）  
-- NetworkX（规划中）  
-- 可选：OpenAI API  
+## 当前核心数据模型
 
----
+### 原始事实层
+- `companies`：研究对象公司主表
+- `shareholder_entities`：控制网络中的主体节点
+- `shareholder_structures`：主体之间的原始关系边，是控制分析的基础输入
 
-## 当前开发范围
+### 结果层
+- `control_relationships`：控制链分析结果
+- `country_attributions`：国别归属分析结果
 
-当前阶段重点实现：
+可以把当前系统理解为：
 
-1. 企业基础信息管理  
-2. 股权结构管理  
-3. 实际控制关系识别  
-4. 国别归属判定  
-5. 业务线标注（规划中）  
-6. 征订日志记录（规划中）  
+1. 先维护公司、主体和原始关系
+2. 再基于 `company_id` 定位目标实体
+3. 用 unified 引擎完成控制分析
+4. 将结果写回结果表
+5. 最后由接口与图展示模块读取这些结果
 
-当前阶段暂不实现：
+## 当前系统运行方式
 
-- 全球所有企业实时更新  
-- 大规模图数据库平台  
-- 全自动复杂金融结构识别（如 VIE / 红筹结构）  
-- 全自动年报解析  
+### 默认分析闭环
+当前最稳定、最适合展示和答辩的运行方式是：
 
----
+1. 输入 `company_id`
+2. 调用 refresh 入口触发重算
+3. unified 引擎基于 `shareholder_structures` 计算控制链、实际控制人与国别归属
+4. 写回 `control_relationships` / `country_attributions`
+5. 读接口和图展示模块读取预计算结果
+
+### refresh 与读取的区别
+- `refresh` 入口会真正重算并写回结果
+- 普通 GET 读取接口默认只是读库，不会自动重算
+- 图展示层默认依赖预计算结果，而不是在展示时临时重跑算法
+
+### 当前主要分析入口
+当前仓库真正稳定支持的分析入口是 `company_id`。
+
+如果上层未来要做“公司名搜索”，也应先完成：
+
+1. 公司查询
+2. 名称到 `company_id` 的映射
+3. 再进入当前分析主链路
+
+不应绕开 `company_id` 直接另起一套分析逻辑。
+
+## 关键接口
+
+只列当前最关键、最稳定的接口：
+
+### 重算入口
+- `POST /companies/{company_id}/analysis/refresh`
+
+### 读取控制链结果
+- `GET /analysis/control-chain/{company_id}`
+- `GET /companies/{company_id}/control-chain`
+
+### 读取国别归属结果
+- `GET /analysis/country-attribution/{company_id}`
+- `GET /companies/{company_id}/country-attribution`
+
+### 图展示相关读取
+- `GET /companies/{company_id}/relationship-graph`
+- 后端图构建模块：`backend/visualization/control_graph.py`
+
+说明：
+
+- `GET ...?refresh=true` 可以兼容触发重算
+- 常规展示建议仍以显式 refresh 后再读取结果为主
+
+## 快速开始
+
+### 1. 安装依赖
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 2. 启动后端
+```powershell
+.\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
+```
+
+### 3. 运行测试
+```powershell
+.\venv\Scripts\python.exe -m pytest
+```
+
+### 4. 常用脚本
+- `scripts/import_raw_dataset.py`：导入原始数据
+- `scripts/build_demo_analysis_db.py`：构建演示分析数据库
+- `scripts/build_demo_visualizations.py`：批量生成演示图
 
 ## 项目结构
 
 ```text
 .
-├── backend/                # 后端服务代码
-│   ├── analysis/           # 控制链分析代码
-│   ├── api/                # FastAPI 路由层
-│   ├── crud/               # 数据库操作层（CRUD）
-│   ├── models/             # SQLAlchemy ORM 模型
-│   ├── schemas/            # Pydantic 数据结构
-│   ├── database.py         # 数据库连接与会话管理
-│   └── main.py             # FastAPI 应用入口
-│
-├── tests/                  # 测试代码
-│   ├── test_company_api.py
-│   ├── test_shareholder_api.py
-│   ├── test_country_attribution_api.py
-│   └── test_control_chain_api.py
-│
-├── docs/                   # 开发文档与 AI 协作规则
-│   ├── ai_rules.md
-│   └── todo.md
-│
-├── data/                   # 样例数据与导入数据
-│
-├── PRD.md                  # 产品需求文档
-└── README.md               # 项目总说明
+├─ backend/
+│  ├─ analysis/           # 控制分析、控制链读取、国别归属分析
+│  ├─ api/                # FastAPI 路由
+│  ├─ crud/               # 基础数据库查询与写入
+│  ├─ models/             # SQLAlchemy ORM 模型
+│  ├─ schemas/            # Pydantic schema
+│  ├─ tasks/              # 批量重算、离线任务
+│  ├─ visualization/      # 控制链图展示支撑
+│  ├─ database.py         # 数据库初始化与会话管理
+│  ├─ shareholder_relations.py
+│  └─ main.py             # FastAPI 应用入口
+├─ docs/                  # 项目说明、算法规则、协作规则
+├─ scripts/               # 数据导入、演示构建脚本
+├─ tests/                 # 测试与演示输出
+├─ data/                  # 项目数据与样例数据
+├─ company.db             # 当前开发期 SQLite 数据库
+├─ PRD.md
+└─ README.md
 ```
 
----
+## 当前开发进度
 
-## 当前开发进度（重要）
+当前项目已经完成从“早期数据管理后端”向“控制分析结果驱动的研究系统”收口，当前状态可以概括为：
 
-当前项目已完成**第一阶段基础后端开发**，并具备稳定运行能力及初步分析能力。
+- unified control inference 已成为默认主链路
+- refresh、批量重算、图展示相关读取的默认参数已统一
+- 图层过滤规则已经与分析口径核对
+- 默认运行时更强调结果一致、展示一致、答辩可解释
 
-### 已实现模块
+这意味着项目当前更适合进入下一阶段：
 
-#### 1. Company（企业基础信息）
-- 企业基本信息管理  
-- 标准 CRUD 接口  
+1. 公司查询与分析入口整理
+2. 股权链路图展示优化
+3. 产业分析模块接入与整合
+4. 最终展示闭环打通
 
-#### 2. Shareholder（股权结构）
-- 多股东结构建模  
-- 支持企业与股东关系记录  
+## 当前项目边界
 
-#### 3. Control Relationship（控制关系）
-- 企业控制关系建模  
-- 支持记录控制主体、控制方式、控制路径及控制依据  
-- 支持标记实际控制人  
+当前阶段明确暂不重点做：
 
-#### 4. Country Attribution（国别归属）
-- 注册地 / 上市地 / 实际控制地建模  
-- 支持人工归属标注  
-- 为后续自动判定预留扩展  
+- PostgreSQL 正式迁移
+- 复杂前端工程化
+- 全自动复杂金融结构识别的进一步扩展
+- 大模型深度接入主控制判别主链路
+- 再次大规模重构核心控制算法
 
----
+这些内容不是永久不做，而是不是当前最优先的毕设推进方向。
 
-### 已实现分析能力（阶段性成果）
+## 当前阶段的协作原则
 
-#### 控制链分析（Control Chain Analysis）
-- 基于 `control_relationship` 数据实现第一版控制链分析  
-- 可返回企业控制主体、控制方式及控制路径  
-- 提供分析接口：
+如果要继续开发，优先遵循以下事实：
 
-  - `GET /analysis/control-chain/{company_id}`  
+- 先保证分析结果一致，再增加功能
+- 先围绕 `company_id -> refresh -> 结果读取 -> 图展示` 做闭环
+- 不要把 `control_relationships` 当作底层事实来源
+- 不要绕开 unified 默认主链路另起一套分析逻辑
+- 新增展示或产业分析能力时，优先复用当前预计算结果
 
-- 为后续“实际控制主体识别”和“国别归属判定”提供基础  
-
----
-
-### 已实现系统能力
-
-- FastAPI 服务可正常运行  
-- RESTful API 结构已建立  
-- SQLAlchemy ORM 数据建模完成  
-- SQLite 数据库存储  
-- 测试体系已建立（统一使用 `test.db`）  
-- 所有核心模块 CRUD 已通过测试  
-- 分析接口与业务数据模型已打通  
-
----
-
-## 当前阶段说明
-
-当前系统已从“数据管理系统”演进为“具备初步分析能力的研究系统”。
-
-后续将重点推进：
-
-- 控制链多层穿透分析  
-- 实际控制主体自动识别  
-- 国别归属自动推断逻辑  
-- 业务线（Business Segment）模块  
-- 征订日志与版本管理  
-
----
-## 当前股权数据模型说明（实体图版本）
-
-当前项目的股权网络结构已升级为“主体（Entity）+ 关系（Ownership Edge）”模型：
-
-- `companies`：公司基础信息表，继续存储公司静态信息
-- `shareholder_entities`：独立主体表，统一表示自然人、公司、基金、机构、政府等节点
-- `shareholder_structures`：主体到主体的持股关系表，表示 `from_entity_id -> to_entity_id` 的有向边
-- `control_relationships`：控制关系结果表，属于分析结果层，可选关联 `controller_entity_id`
-- `country_attributions`：国别归属结果表，继续作为归属判断结果存储层
-
-这套结构的意义是：
-
-- 原始图数据来自 `shareholder_entities + shareholder_structures`
-- 后续可基于这些数据构建 NetworkX 有向图
-- `control_relationships` 继续保留，但定位为“分析结果/派生结果”，不再作为底层图数据源
-
-开发阶段如果需要从旧结构迁移到新结构，可使用：
-
-```powershell
-.\venv\Scripts\python.exe -m scripts.migrate_to_entity_graph_model
-```
+## 相关文档
+- `docs/current_algorithm_rules.md`：当前控制分析规则的真实实现说明
+- `docs/algorithm_runtime_cleanup.md`：最近一轮算法运行时收口后的默认行为说明
+- `docs/codex_rules.md`：当前阶段的开发协作约束

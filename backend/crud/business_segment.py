@@ -1,3 +1,4 @@
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from backend.crud.annotation_log import create_annotation_log, serialize_model_snapshot
@@ -46,6 +47,17 @@ def get_business_segment_by_id(
     )
 
 
+def _business_segment_query(
+    db: Session,
+    *,
+    with_classifications: bool = False,
+):
+    query = db.query(BusinessSegment)
+    if with_classifications:
+        query = query.options(joinedload(BusinessSegment.classifications))
+    return query
+
+
 def get_business_segments_by_company_id(
     db: Session,
     *,
@@ -53,15 +65,50 @@ def get_business_segments_by_company_id(
     include_inactive: bool = False,
     with_classifications: bool = False,
 ) -> list[BusinessSegment]:
-    query = db.query(BusinessSegment)
-    if with_classifications:
-        query = query.options(joinedload(BusinessSegment.classifications))
-
-    query = query.filter(BusinessSegment.company_id == company_id)
+    query = _business_segment_query(
+        db,
+        with_classifications=with_classifications,
+    ).filter(BusinessSegment.company_id == company_id)
     if not include_inactive:
         query = query.filter(BusinessSegment.is_current.is_(True))
 
     return query.order_by(BusinessSegment.id.asc()).all()
+
+
+def get_business_segments_by_company_id_and_period(
+    db: Session,
+    *,
+    company_id: int,
+    reporting_period: str,
+    include_inactive: bool = True,
+    with_classifications: bool = False,
+) -> list[BusinessSegment]:
+    query = _business_segment_query(
+        db,
+        with_classifications=with_classifications,
+    ).filter(BusinessSegment.company_id == company_id)
+
+    query = query.filter(func.trim(BusinessSegment.reporting_period) == reporting_period.strip())
+    if not include_inactive:
+        query = query.filter(BusinessSegment.is_current.is_(True))
+
+    return query.order_by(BusinessSegment.id.asc()).all()
+
+
+def get_company_reporting_periods(
+    db: Session,
+    *,
+    company_id: int,
+) -> list[str]:
+    rows = (
+        db.query(func.trim(BusinessSegment.reporting_period))
+        .filter(BusinessSegment.company_id == company_id)
+        .filter(BusinessSegment.reporting_period.is_not(None))
+        .filter(func.trim(BusinessSegment.reporting_period) != "")
+        .distinct()
+        .all()
+    )
+    return [row[0] for row in rows]
 
 
 def update_business_segment(

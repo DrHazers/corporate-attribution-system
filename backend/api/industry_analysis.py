@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from backend.analysis.industry_analysis import (
+    analyze_industry_structure_change,
     build_business_segment_detail,
     get_company_analysis_summary,
     get_company_industry_analysis,
@@ -35,6 +36,7 @@ from backend.schemas.business_segment_classification import (
 from backend.schemas.industry_analysis import (
     BusinessSegmentDetailRead,
     CompanyAnalysisSummaryRead,
+    IndustryAnalysisChangeResult,
     IndustryAnalysisRead,
 )
 
@@ -258,14 +260,59 @@ def delete_business_segment_classification_endpoint(
 def get_company_industry_analysis_endpoint(
     company_id: int,
     include_inactive: bool = Query(default=False),
+    reporting_period: str | None = Query(default=None),
+    include_history: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
     get_company_or_404(db, company_id)
-    return get_company_industry_analysis(
-        db,
-        company_id,
-        include_inactive=include_inactive,
-    )
+    try:
+        return get_company_industry_analysis(
+            db,
+            company_id,
+            include_inactive=include_inactive,
+            reporting_period=reporting_period,
+            include_history=include_history,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/companies/{company_id}/industry-analysis/change",
+    response_model=IndustryAnalysisChangeResult,
+)
+def get_company_industry_analysis_change_endpoint(
+    company_id: int,
+    current_period: str = Query(...),
+    previous_period: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    try:
+        return analyze_industry_structure_change(
+            company_id=company_id,
+            current_period=current_period,
+            previous_period=previous_period,
+            session=db,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(

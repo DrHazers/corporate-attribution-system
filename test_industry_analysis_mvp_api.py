@@ -12,6 +12,7 @@ import backend.api.control_relationship as control_relationship_api
 import backend.api.country_attribution as country_attribution_api
 import backend.api.industry_analysis as industry_analysis_api
 import backend.main as main_module
+from backend.analysis.industry_analysis import analyze_industry_structure_change
 from backend.database import Base, ensure_sqlite_schema
 from backend.main import app
 from backend.models.annotation_log import AnnotationLog
@@ -359,6 +360,331 @@ def test_industry_analysis_summary_endpoint_aggregates_segments_and_labels(indus
     }
     assert len(payload["segments"]) == 3
     assert payload["segments"][0]["classifications"]
+    assert payload["selected_reporting_period"] == "2025"
+    assert payload["available_reporting_periods"] == ["2025"]
+    assert payload["latest_reporting_period"] == "2025"
+    assert payload["data_completeness"]["has_primary_segment"] is True
+    assert payload["data_completeness"]["has_classifications"] is True
+    assert payload["data_completeness"]["has_revenue_ratio"] is True
+    assert payload["data_completeness"]["has_manual_adjustment"] is True
+    assert payload["structure_flags"]["is_multi_segment"] is True
+    assert payload["structure_flags"]["has_emerging_segment"] is True
+    assert payload["structure_flags"]["has_secondary_segment"] is True
+    assert payload["structure_flags"]["has_primary_industry_mapping"] is True
+    assert payload["history"] == []
+
+
+def test_industry_analysis_endpoint_supports_reporting_period_and_history(industry_client):
+    client, _ = industry_client
+    company = create_company(client, stock_code="PER001")
+
+    segment_2024_primary = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Consumer Devices",
+        segment_type="primary",
+        revenue_ratio="62.0000",
+        reporting_period="2024",
+        is_current=False,
+    )
+    segment_2024_secondary = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Smart Accessories",
+        segment_type="secondary",
+        revenue_ratio="18.0000",
+        reporting_period="2024",
+        is_current=False,
+    )
+    segment_2025_primary = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Cloud Infrastructure",
+        segment_type="primary",
+        revenue_ratio="58.0000",
+        reporting_period="2025",
+    )
+    segment_2025_secondary = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Digital Payments",
+        segment_type="secondary",
+        revenue_ratio="22.0000",
+        reporting_period="2025",
+    )
+    segment_2025_emerging = create_business_segment(
+        client,
+        company["id"],
+        segment_name="AI Robotics",
+        segment_type="emerging",
+        revenue_ratio="6.0000",
+        reporting_period="2025",
+    )
+
+    create_classification(
+        client,
+        segment_2024_primary["id"],
+        level_1="Consumer Discretionary",
+        level_2="Consumer Electronics",
+        level_3="Smart Devices",
+        is_primary=True,
+    )
+    create_classification(
+        client,
+        segment_2024_secondary["id"],
+        level_1="Consumer Discretionary",
+        level_2="Accessories",
+        level_3="Wearables",
+    )
+    create_classification(
+        client,
+        segment_2025_primary["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Cloud Infrastructure",
+        is_primary=True,
+    )
+    create_classification(
+        client,
+        segment_2025_secondary["id"],
+        level_1="Financials",
+        level_2="Fintech",
+        level_3="Digital Payments",
+    )
+    create_classification(
+        client,
+        segment_2025_emerging["id"],
+        level_1="Industrials",
+        level_2="Robotics",
+        level_3="Autonomous Systems",
+    )
+
+    latest_response = client.get(f"/companies/{company['id']}/industry-analysis")
+    assert latest_response.status_code == 200
+    latest_payload = latest_response.json()
+
+    assert latest_payload["selected_reporting_period"] == "2025"
+    assert latest_payload["latest_reporting_period"] == "2025"
+    assert latest_payload["available_reporting_periods"] == ["2025", "2024"]
+    assert latest_payload["business_segment_count"] == 3
+    assert latest_payload["primary_industries"] == [
+        "Information Technology > Software > Cloud Infrastructure"
+    ]
+    assert latest_payload["structure_flags"]["has_emerging_segment"] is True
+    assert latest_payload["structure_flags"]["has_secondary_segment"] is True
+    assert latest_payload["structure_flags"]["is_multi_segment"] is True
+
+    history_response = client.get(
+        f"/companies/{company['id']}/industry-analysis?include_history=true"
+    )
+    assert history_response.status_code == 200
+    history_payload = history_response.json()
+
+    assert len(history_payload["history"]) == 1
+    assert history_payload["history"][0] == {
+        "reporting_period": "2024",
+        "business_segment_count": 2,
+        "primary_industries": [
+            "Consumer Discretionary > Consumer Electronics > Smart Devices"
+        ],
+        "primary_segments_count": 1,
+        "emerging_segments_count": 0,
+    }
+
+    period_response = client.get(
+        f"/companies/{company['id']}/industry-analysis?reporting_period=2024"
+    )
+    assert period_response.status_code == 200
+    period_payload = period_response.json()
+
+    assert period_payload["selected_reporting_period"] == "2024"
+    assert period_payload["business_segment_count"] == 2
+    assert {segment["reporting_period"] for segment in period_payload["segments"]} == {
+        "2024"
+    }
+    assert period_payload["primary_industries"] == [
+        "Consumer Discretionary > Consumer Electronics > Smart Devices"
+    ]
+
+
+def test_industry_structure_change_analysis_detects_period_changes(industry_client):
+    client, session_factory = industry_client
+    company = create_company(client, stock_code="CHG001")
+
+    previous_primary = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Consumer Devices",
+        segment_type="primary",
+        revenue_ratio="65.0000",
+        reporting_period="2024",
+        is_current=False,
+    )
+    previous_secondary = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Digital Payments",
+        segment_type="secondary",
+        revenue_ratio="20.0000",
+        reporting_period="2024",
+        is_current=False,
+    )
+    previous_emerging = create_business_segment(
+        client,
+        company["id"],
+        segment_name="XR Labs",
+        segment_type="emerging",
+        revenue_ratio="4.0000",
+        reporting_period="2024",
+        is_current=False,
+    )
+    current_primary = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Cloud Infrastructure",
+        segment_type="primary",
+        revenue_ratio="57.0000",
+        reporting_period="2025",
+    )
+    current_promoted = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Digital Payments",
+        segment_type="primary",
+        revenue_ratio="28.0000",
+        reporting_period="2025",
+    )
+    current_emerging = create_business_segment(
+        client,
+        company["id"],
+        segment_name="AI Robotics",
+        segment_type="emerging",
+        revenue_ratio="7.0000",
+        reporting_period="2025",
+    )
+
+    create_classification(
+        client,
+        previous_primary["id"],
+        level_1="Consumer Discretionary",
+        level_2="Consumer Electronics",
+        level_3="Smart Devices",
+        is_primary=True,
+    )
+    create_classification(
+        client,
+        previous_emerging["id"],
+        level_1="Communication Services",
+        level_2="Immersive Technology",
+        level_3="XR Platforms",
+    )
+    create_classification(
+        client,
+        current_primary["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Cloud Infrastructure",
+        is_primary=True,
+    )
+    create_classification(
+        client,
+        current_emerging["id"],
+        level_1="Industrials",
+        level_2="Robotics",
+        level_3="Autonomous Systems",
+    )
+
+    response = client.get(
+        (
+            f"/companies/{company['id']}/industry-analysis/change"
+            "?current_period=2025&previous_period=2024"
+        )
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["company_id"] == company["id"]
+    assert payload["current_period"] == "2025"
+    assert payload["previous_period"] == "2024"
+    assert payload["primary_industry_changed"] is True
+    assert payload["previous_primary_industries"] == [
+        "Consumer Discretionary > Consumer Electronics > Smart Devices"
+    ]
+    assert payload["current_primary_industries"] == [
+        "Information Technology > Software > Cloud Infrastructure"
+    ]
+    assert {item["segment_name"] for item in payload["new_segments"]} == {
+        "Cloud Infrastructure",
+        "AI Robotics",
+    }
+    assert {item["segment_name"] for item in payload["removed_segments"]} == {
+        "Consumer Devices",
+        "XR Labs",
+    }
+    assert [item["segment_name"] for item in payload["new_emerging_segments"]] == [
+        "AI Robotics"
+    ]
+    assert [item["segment_name"] for item in payload["removed_emerging_segments"]] == [
+        "XR Labs"
+    ]
+    assert [item["segment_name"] for item in payload["promoted_to_primary"]] == [
+        "Digital Payments"
+    ]
+    assert payload["promoted_to_primary"][0]["previous_segment_type"] == "secondary"
+    assert payload["promoted_to_primary"][0]["current_segment_type"] == "primary"
+    assert payload["promoted_to_primary"][0]["previous_classification_labels"] == []
+    assert payload["promoted_to_primary"][0]["current_classification_labels"] == []
+    assert "Primary industry shifted from" in payload["change_summary"]
+    assert "Digital Payments moved from secondary to primary" in payload["change_summary"]
+
+    with session_factory() as db:
+        direct_result = analyze_industry_structure_change(
+            company_id=company["id"],
+            current_period="2025",
+            previous_period="2024",
+            session=db,
+        )
+        assert direct_result["promoted_to_primary"][0]["segment_name"] == "Digital Payments"
+        assert direct_result["promoted_to_primary"][0]["current_classification_labels"] == []
+
+
+def test_industry_structure_change_endpoint_returns_clear_errors(industry_client):
+    client, _ = industry_client
+    company = create_company(client, stock_code="ERR001")
+
+    segment = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Only Current",
+        segment_type="primary",
+        reporting_period="2025",
+    )
+    create_classification(
+        client,
+        segment["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Only Current",
+        is_primary=True,
+    )
+
+    same_period_response = client.get(
+        (
+            f"/companies/{company['id']}/industry-analysis/change"
+            "?current_period=2025&previous_period=2025"
+        )
+    )
+    assert same_period_response.status_code == 400
+    assert "must be different" in same_period_response.json()["detail"]
+
+    missing_period_response = client.get(
+        (
+            f"/companies/{company['id']}/industry-analysis/change"
+            "?current_period=2025&previous_period=2024"
+        )
+    )
+    assert missing_period_response.status_code == 404
+    assert "2024" in missing_period_response.json()["detail"]
 
 
 def test_analysis_summary_endpoint_reads_existing_results_without_refresh(industry_client):
@@ -430,6 +756,9 @@ def test_analysis_summary_endpoint_reads_existing_results_without_refresh(indust
     assert payload["industry_analysis"]["primary_industries"] == [
         "Information Technology > Software > Cloud Services"
     ]
+    assert payload["industry_analysis"]["selected_reporting_period"] == "2025"
+    assert payload["industry_analysis"]["available_reporting_periods"] == ["2025"]
+    assert payload["industry_analysis"]["latest_reporting_period"] == "2025"
 
 
 def test_annotation_logs_capture_segment_and_classification_changes(industry_client):

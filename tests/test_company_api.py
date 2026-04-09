@@ -191,6 +191,48 @@ class CompanyApiTestCase(unittest.TestCase):
         self.assertEqual(status_code, 404)
         self.assertEqual(response_data["detail"], "Company not found.")
 
+    def test_relationship_graph_empty_state_is_frontend_friendly(self):
+        create_payload = {
+            "name": "Demo Graph Company",
+            "stock_code": "GRAPH-001",
+            "incorporation_country": "China",
+            "listing_country": "China",
+            "headquarters": "Shanghai",
+            "description": "用于关系图空状态验证",
+        }
+
+        status_code, created_company = self.request_json(
+            "POST",
+            "/companies",
+            create_payload,
+        )
+        self.assertEqual(status_code, 201)
+
+        graph_status, graph_payload = self.request_json(
+            "GET",
+            f"/companies/{created_company['id']}/relationship-graph",
+        )
+        self.assertEqual(graph_status, 200)
+        self.assertEqual(
+            graph_payload["message"],
+            "Mapped shareholder entity not found for company.",
+        )
+        self.assertEqual(graph_payload["target_company"]["id"], created_company["id"])
+        self.assertEqual(graph_payload["target_company"]["stock_code"], "GRAPH-001")
+        self.assertIsNone(graph_payload["target_entity_id"])
+        self.assertEqual(graph_payload["node_count"], 0)
+        self.assertEqual(graph_payload["edge_count"], 0)
+        self.assertEqual(graph_payload["nodes"], [])
+        self.assertEqual(graph_payload["edges"], [])
+
+    def test_company_scoped_validation_errors_return_400(self):
+        status_code, response_data = self.request_json(
+            "GET",
+            "/companies/not-an-int/relationship-graph",
+        )
+        self.assertEqual(status_code, 400)
+        self.assertIn("path.company_id", response_data["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,8 +4,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TypeAlias
 
+from sqlalchemy import text
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATABASE_PATH = PROJECT_ROOT / "test.db"
+DATABASE_PATH = PROJECT_ROOT / "test_build_ownership_graph.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{DATABASE_PATH}"
 
 from sqlalchemy.orm import Session
@@ -260,5 +262,55 @@ def test_build_ownership_graph_direction_is_correct():
         assert readable_graph["下游公司"] == [("上游股东", "51.0000")]
         assert readable_graph["上游股东"] == []
         assert readable_graph["上游股东"] != [("下游公司", "51.0000")]
+    finally:
+        db.close()
+
+
+def test_build_ownership_graph_accepts_sqlite_datetime_text_dates():
+    reset_database()
+
+    db = SessionLocal()
+    try:
+        parent_entity = create_entity(db, "日期格式股东", "company")
+        target_entity = create_entity(db, "日期格式目标公司", "company")
+        relationship = create_relationship(
+            db,
+            from_entity_id=parent_entity.id,
+            to_entity_id=target_entity.id,
+            holding_ratio="28.0000",
+            effective_date=date.today() - timedelta(days=10),
+            expiry_date=date.today() + timedelta(days=10),
+        )
+
+        db.execute(
+            text(
+                """
+                UPDATE shareholder_structures
+                SET effective_date = :effective_date,
+                    expiry_date = :expiry_date
+                WHERE id = :structure_id
+                """
+            ),
+            {
+                "effective_date": (
+                    date.today() - timedelta(days=10)
+                ).isoformat()
+                + " 00:00:00",
+                "expiry_date": (
+                    date.today() + timedelta(days=10)
+                ).isoformat()
+                + " 00:00:00",
+                "structure_id": relationship.id,
+            },
+        )
+        db.commit()
+
+        readable_graph = build_readable_graph(db)
+        expected_graph = {
+            "日期格式股东": [],
+            "日期格式目标公司": [("日期格式股东", "28.0000")],
+        }
+
+        assert readable_graph == expected_graph
     finally:
         db.close()

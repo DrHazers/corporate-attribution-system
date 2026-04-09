@@ -82,23 +82,105 @@ class IndustryStructureFlags(BaseModel):
     has_primary_industry_mapping: bool
 
 
+class IndustryQualitySummary(BaseModel):
+    duplicate_segment_count: int
+    segments_without_classification_count: int
+    primary_segments_without_classification_count: int
+    has_conflicting_primary_classification: bool
+
+
 class IndustryAnalysisRead(BaseModel):
-    company_id: int
-    selected_reporting_period: str | None = None
-    available_reporting_periods: list[str] = Field(default_factory=list)
-    latest_reporting_period: str | None = None
-    business_segment_count: int
+    company_id: int = Field(description="Requested company id.")
+    selected_reporting_period: str | None = Field(
+        default=None,
+        description="Reporting period selected by the backend for this payload.",
+    )
+    available_reporting_periods: list[str] = Field(
+        default_factory=list,
+        description="Available reporting periods sorted by descending recency.",
+    )
+    latest_reporting_period: str | None = Field(
+        default=None,
+        description="Latest reporting period available for the company.",
+    )
+    business_segment_count: int = Field(
+        description="Number of business segments included in the selected snapshot."
+    )
     primary_segments: list[BusinessSegmentHeadlineRead]
     secondary_segments: list[BusinessSegmentHeadlineRead]
     emerging_segments: list[BusinessSegmentHeadlineRead]
     other_segments: list[BusinessSegmentHeadlineRead]
-    primary_industries: list[str]
-    all_industry_labels: list[str]
-    has_manual_adjustment: bool
-    data_completeness: IndustryDataCompleteness
-    structure_flags: IndustryStructureFlags
+    primary_industries: list[str] = Field(
+        description="Primary industry labels inferred from primary classifications or primary segments."
+    )
+    all_industry_labels: list[str] = Field(
+        description="All unique industry labels linked to the selected segment set."
+    )
+    has_manual_adjustment: bool = Field(
+        description="Whether any classification in the selected snapshot has a manual review status."
+    )
+    data_completeness: IndustryDataCompleteness = Field(
+        description="Frontend-friendly completeness indicators for the selected snapshot."
+    )
+    structure_flags: IndustryStructureFlags = Field(
+        description="Frontend-friendly structure flags derived from the selected snapshot."
+    )
+    quality_warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-blocking data-quality warnings suitable for UI hint banners or logs.",
+    )
+    quality_summary: IndustryQualitySummary = Field(
+        description="Structured data-quality counters for the selected snapshot."
+    )
     segments: list[BusinessSegmentDetailRead]
-    history: list[IndustryAnalysisHistoryItem] = Field(default_factory=list)
+    history: list[IndustryAnalysisHistoryItem] = Field(
+        default_factory=list,
+        description="Compact history items for other reporting periods when include_history=true.",
+    )
+
+
+class IndustryAnalysisPeriodsResponse(BaseModel):
+    company_id: int = Field(description="Requested company id.")
+    available_reporting_periods: list[str] = Field(
+        default_factory=list,
+        description="Available reporting periods sorted by descending recency.",
+    )
+    latest_reporting_period: str | None = Field(
+        default=None,
+        description="Latest reporting period available for the company.",
+    )
+    current_reporting_period: str | None = Field(
+        default=None,
+        description="Reporting period the backend would select by default for industry-analysis.",
+    )
+    period_count: int = Field(description="Number of unique reporting periods available.")
+
+
+class IndustryAnalysisQualityResponse(BaseModel):
+    company_id: int = Field(description="Requested company id.")
+    selected_reporting_period: str | None = Field(
+        default=None,
+        description="Reporting period evaluated by the quality checker.",
+    )
+    has_primary_segment: bool = Field(
+        description="Whether the selected snapshot contains at least one primary segment."
+    )
+    has_classifications: bool = Field(
+        description="Whether at least one classification mapping exists in the selected snapshot."
+    )
+    duplicate_segment_names: list[str] = Field(default_factory=list)
+    segments_without_classifications: list[str] = Field(default_factory=list)
+    primary_segments_without_classifications: list[str] = Field(default_factory=list)
+    segments_with_multiple_primary_classifications: list[str] = Field(
+        default_factory=list
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-blocking warnings suitable for logs, QA panels, or UI hint banners.",
+    )
+    quality_summary: IndustryQualitySummary = Field(
+        description="Structured counters summarizing the quality scan result."
+    )
 
 
 class IndustryChangeSegmentItem(BaseModel):
@@ -120,19 +202,48 @@ class IndustrySegmentTransitionRead(BaseModel):
 
 
 class IndustryAnalysisChangeResult(BaseModel):
-    company_id: int
-    current_period: str
-    previous_period: str
+    company_id: int = Field(description="Requested company id.")
+    current_period: str = Field(description="Current reporting period used in the comparison.")
+    previous_period: str = Field(description="Previous reporting period used in the comparison.")
     new_segments: list[IndustryChangeSegmentItem]
     removed_segments: list[IndustryChangeSegmentItem]
     promoted_to_primary: list[IndustrySegmentTransitionRead]
     demoted_from_primary: list[IndustrySegmentTransitionRead]
     new_emerging_segments: list[IndustryChangeSegmentItem]
     removed_emerging_segments: list[IndustryChangeSegmentItem]
-    primary_industry_changed: bool
-    previous_primary_industries: list[str]
-    current_primary_industries: list[str]
-    change_summary: str
+    primary_industry_changed: bool = Field(
+        description="Whether the set of primary industry labels changed between the two periods."
+    )
+    previous_primary_industries: list[str] = Field(
+        description="Primary industry labels inferred for the previous reporting period."
+    )
+    current_primary_industries: list[str] = Field(
+        description="Primary industry labels inferred for the current reporting period."
+    )
+    change_summary: str = Field(
+        description="Frontend-ready plain-text summary of the detected structure changes."
+    )
+
+
+class AnnotationLogEntryRead(BaseModel):
+    id: int
+    target_type: str
+    target_id: int
+    action_type: str
+    old_value: Any = None
+    new_value: Any = None
+    reason: str | None = None
+    operator: str | None = None
+    created_at: datetime
+
+
+class AnnotationLogListResponse(BaseModel):
+    target_type: str
+    target_id: int
+    segment: BusinessSegmentDetailRead | None = None
+    classification: BusinessSegmentClassificationSummaryRead | None = None
+    annotation_logs: list[AnnotationLogEntryRead] = Field(default_factory=list)
+    total_count: int
 
 
 class ControlRelationshipSummaryRead(BaseModel):
@@ -171,7 +282,15 @@ class CountryAttributionSummaryRead(BaseModel):
 
 
 class CompanyAnalysisSummaryRead(BaseModel):
-    company: CompanyRead
-    control_analysis: ControlAnalysisSummaryRead
-    country_attribution: CountryAttributionSummaryRead
-    industry_analysis: IndustryAnalysisRead
+    company: CompanyRead = Field(
+        description="Company master data for the page header and basic profile section."
+    )
+    control_analysis: ControlAnalysisSummaryRead = Field(
+        description="Current persisted control analysis snapshot."
+    )
+    country_attribution: CountryAttributionSummaryRead = Field(
+        description="Current persisted country-attribution snapshot."
+    )
+    industry_analysis: IndustryAnalysisRead = Field(
+        description="Current default industry-analysis snapshot with quality hints."
+    )

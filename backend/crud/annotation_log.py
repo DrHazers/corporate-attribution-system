@@ -33,6 +33,15 @@ def serialize_model_snapshot(instance: Any | None) -> str | None:
     )
 
 
+def deserialize_model_snapshot(payload: str | None) -> Any | None:
+    if payload is None:
+        return None
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return payload
+
+
 def create_annotation_log(
     db: Session,
     *,

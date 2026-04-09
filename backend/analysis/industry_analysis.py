@@ -8,14 +8,26 @@ from sqlalchemy.orm import Session
 
 from backend.analysis.control_chain import analyze_control_chain_with_options
 from backend.analysis.ownership_penetration import get_company_country_attribution_data
+from backend.crud.annotation_log import (
+    deserialize_model_snapshot,
+    get_annotation_logs_by_target,
+)
 from backend.crud.business_segment import (
+    get_business_segment_by_id,
     get_business_segments_by_company_id,
     get_business_segments_by_company_id_and_period,
     get_company_reporting_periods,
 )
+from backend.crud.business_segment_classification import (
+    get_business_segment_classification_by_id,
+)
 from backend.crud.company import get_company_by_id
+from backend.models.annotation_log import AnnotationLog
 from backend.models.business_segment import BusinessSegment
 from backend.models.business_segment_classification import BusinessSegmentClassification
+from backend.schemas.business_segment_classification import (
+    build_industry_label_from_levels,
+)
 from backend.schemas.company import CompanyRead
 
 
@@ -85,7 +97,14 @@ def _reporting_period_sort_key(period: str | None) -> tuple[int, int, int, int, 
     numeric_parts = [int(item) for item in re.findall(r"\d+", upper_value)[:4]]
     while len(numeric_parts) < 4:
         numeric_parts.append(0)
-    return (1, numeric_parts[0], numeric_parts[1], numeric_parts[2], numeric_parts[3], upper_value)
+    return (
+        1,
+        numeric_parts[0],
+        numeric_parts[1],
+        numeric_parts[2],
+        numeric_parts[3],
+        upper_value,
+    )
 
 
 def _sort_reporting_periods(periods: list[str]) -> list[str]:
@@ -102,22 +121,26 @@ def _sort_reporting_periods(periods: list[str]) -> list[str]:
     return sorted(unique_periods, key=_reporting_period_sort_key, reverse=True)
 
 
+def _unique_preserving_order(values: list[str]) -> list[str]:
+    unique_values: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    return unique_values
+
+
 def _build_industry_label(
     classification: BusinessSegmentClassification,
 ) -> str | None:
-    levels = [
-        value.strip()
-        for value in [
-            classification.level_1,
-            classification.level_2,
-            classification.level_3,
-            classification.level_4,
-        ]
-        if value and value.strip()
-    ]
-    if not levels:
-        return None
-    return " > ".join(levels)
+    return build_industry_label_from_levels(
+        level_1=classification.level_1,
+        level_2=classification.level_2,
+        level_3=classification.level_3,
+        level_4=classification.level_4,
+    )
 
 
 def build_classification_summary(
@@ -208,52 +231,6 @@ def _build_business_segment_headline(
     }
 
 
-def _build_change_segment_item(
-    record: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "segment_name": record["segment_name"],
-        "segment_type": record["segment_type"],
-        "classification_labels": list(record["classification_labels"]),
-        "reporting_period": record["reporting_period"],
-        "is_current": record["is_current"],
-    }
-
-
-def _build_change_transition_item(
-    *,
-    current_record: dict[str, Any],
-    previous_record: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "segment_name": current_record["segment_name"],
-        "previous_segment_type": previous_record["segment_type"],
-        "current_segment_type": current_record["segment_type"],
-        "previous_classification_labels": list(previous_record["classification_labels"]),
-        "current_classification_labels": list(current_record["classification_labels"]),
-        "previous_reporting_period": previous_record["reporting_period"],
-        "current_reporting_period": current_record["reporting_period"],
-    }
-
-
-def _extract_primary_industries_from_records(
-    records: list[dict[str, Any]],
-) -> list[str]:
-    primary_industries: list[str] = []
-    fallback_primary_industries: list[str] = []
-
-    for record in records:
-        for label in record["primary_industries"]:
-            if label not in primary_industries:
-                primary_industries.append(label)
-        if record["segment_type"] == "primary":
-            for label in record["classification_labels"]:
-                if label not in fallback_primary_industries:
-                    fallback_primary_industries.append(label)
-
-    return primary_industries or fallback_primary_industries
-
-
 def _select_effective_segments(
     segments: list[BusinessSegment],
     *,
@@ -305,6 +282,163 @@ def _segments_for_reporting_period(
         for segment in all_segments
         if _normalize_reporting_period(segment.reporting_period) == reporting_period
     ]
+
+
+def _resolve_industry_analysis_context(
+    db: Session,
+    company_id: int,
+    *,
+    reporting_period: str | None = None,
+    with_classifications: bool = True,
+) -> dict[str, Any]:
+    normalized_reporting_period = _normalize_reporting_period(reporting_period)
+    if reporting_period is not None and normalized_reporting_period is None:
+        raise ValueError("reporting_period must not be blank.")
+
+    all_segments = get_business_segments_by_company_id(
+        db,
+        company_id=company_id,
+        include_inactive=True,
+        with_classifications=with_classifications,
+    )
+    available_reporting_periods = _sort_reporting_periods(
+        get_company_reporting_periods(
+            db,
+            company_id=company_id,
+        )
+    )
+    latest_reporting_period = (
+        available_reporting_periods[0] if available_reporting_periods else None
+    )
+
+    if normalized_reporting_period is not None:
+        selected_reporting_period = normalized_reporting_period
+        selected_candidates = _segments_for_reporting_period(
+            all_segments,
+            normalized_reporting_period,
+        )
+        if not selected_candidates:
+            raise LookupError(
+                f"Industry analysis data not found for reporting_period '{normalized_reporting_period}'."
+            )
+    else:
+        selected_reporting_period = _select_default_reporting_period(
+            all_segments,
+            available_reporting_periods,
+        )
+        selected_candidates = _segments_for_reporting_period(
+            all_segments,
+            selected_reporting_period,
+        )
+
+    return {
+        "all_segments": all_segments,
+        "available_reporting_periods": available_reporting_periods,
+        "latest_reporting_period": latest_reporting_period,
+        "selected_reporting_period": selected_reporting_period,
+        "selected_candidates": selected_candidates,
+    }
+
+
+def _segment_names_by_condition(
+    segments: list[BusinessSegment],
+    predicate,
+) -> list[str]:
+    return _unique_preserving_order(
+        [segment.segment_name for segment in segments if predicate(segment)]
+    )
+
+
+def _duplicate_segment_names(
+    segments: list[BusinessSegment],
+) -> list[str]:
+    names_by_key: dict[str, list[str]] = defaultdict(list)
+    for segment in segments:
+        names_by_key[_normalize_text(segment.segment_name)].append(segment.segment_name)
+
+    duplicate_names: list[str] = []
+    for normalized_name, original_names in names_by_key.items():
+        if not normalized_name or len(original_names) < 2:
+            continue
+        duplicate_names.append(original_names[0])
+    return _unique_preserving_order(duplicate_names)
+
+
+def _build_quality_assessment(
+    *,
+    company_id: int,
+    selected_reporting_period: str | None,
+    segments: list[BusinessSegment],
+) -> dict[str, Any]:
+    duplicate_segment_names = _duplicate_segment_names(segments)
+    segments_without_classifications = _segment_names_by_condition(
+        segments,
+        lambda segment: not segment.classifications,
+    )
+    primary_segments_without_classifications = _segment_names_by_condition(
+        segments,
+        lambda segment: segment.segment_type == "primary" and not segment.classifications,
+    )
+    segments_with_multiple_primary_classifications = _segment_names_by_condition(
+        segments,
+        lambda segment: sum(1 for item in segment.classifications if item.is_primary) > 1,
+    )
+
+    has_primary_segment = any(segment.segment_type == "primary" for segment in segments)
+    has_classifications = any(segment.classifications for segment in segments)
+    has_conflicting_primary_classification = bool(
+        segments_with_multiple_primary_classifications
+    )
+
+    warnings: list[str] = []
+    if not segments:
+        warnings.append("No business segments found for the selected reporting period.")
+    if not has_primary_segment:
+        warnings.append("No primary segment found for selected reporting period.")
+    if segments_without_classifications:
+        warnings.append(
+            f"{len(segments_without_classifications)} segment(s) do not have classification mappings."
+        )
+    if primary_segments_without_classifications:
+        warnings.append(
+            f"{len(primary_segments_without_classifications)} primary segment(s) do not have classification mappings."
+        )
+    if duplicate_segment_names:
+        warnings.append(
+            "Duplicate segment names detected: "
+            + ", ".join(duplicate_segment_names)
+        )
+    if has_conflicting_primary_classification:
+        warnings.append(
+            "Conflicting primary classifications detected for: "
+            + ", ".join(segments_with_multiple_primary_classifications)
+        )
+
+    return {
+        "company_id": company_id,
+        "selected_reporting_period": selected_reporting_period,
+        "has_primary_segment": has_primary_segment,
+        "has_classifications": has_classifications,
+        "duplicate_segment_names": duplicate_segment_names,
+        "segments_without_classifications": segments_without_classifications,
+        "primary_segments_without_classifications": primary_segments_without_classifications,
+        "segments_with_multiple_primary_classifications": (
+            segments_with_multiple_primary_classifications
+        ),
+        "warnings": warnings,
+        "quality_summary": {
+            "duplicate_segment_count": len(duplicate_segment_names),
+            "segments_without_classification_count": len(
+                segments_without_classifications
+            ),
+            "primary_segments_without_classification_count": len(
+                primary_segments_without_classifications
+            ),
+            "has_conflicting_primary_classification": (
+                has_conflicting_primary_classification
+            ),
+        },
+    }
 
 
 def _build_history_item(
@@ -384,6 +518,12 @@ def _build_industry_analysis_payload(
                 fallback_primary_industries.append(label)
 
     resolved_primary_industries = primary_industries or fallback_primary_industries
+    quality_assessment = _build_quality_assessment(
+        company_id=company_id,
+        selected_reporting_period=selected_reporting_period,
+        segments=segments,
+    )
+
     return {
         "company_id": company_id,
         "selected_reporting_period": selected_reporting_period,
@@ -409,6 +549,8 @@ def _build_industry_analysis_payload(
             "has_secondary_segment": bool(categorized_segments["secondary"]),
             "has_primary_industry_mapping": bool(resolved_primary_industries),
         },
+        "quality_warnings": quality_assessment["warnings"],
+        "quality_summary": quality_assessment["quality_summary"],
         "segments": detailed_segments,
         "history": history_items,
     }
@@ -422,57 +564,27 @@ def get_company_industry_analysis(
     reporting_period: str | None = None,
     include_history: bool = False,
 ) -> dict[str, Any]:
-    normalized_reporting_period = _normalize_reporting_period(reporting_period)
-    if reporting_period is not None and normalized_reporting_period is None:
-        raise ValueError("reporting_period must not be blank.")
-
-    all_segments = get_business_segments_by_company_id(
+    context = _resolve_industry_analysis_context(
         db,
-        company_id=company_id,
-        include_inactive=True,
+        company_id,
+        reporting_period=reporting_period,
         with_classifications=True,
     )
-    available_reporting_periods = _sort_reporting_periods(
-        get_company_reporting_periods(
-            db,
-            company_id=company_id,
-        )
-    )
-    latest_reporting_period = (
-        available_reporting_periods[0] if available_reporting_periods else None
-    )
-
-    if normalized_reporting_period is not None:
-        selected_reporting_period = normalized_reporting_period
-        selected_candidates = _segments_for_reporting_period(
-            all_segments,
-            normalized_reporting_period,
-        )
-        if not selected_candidates:
-            raise LookupError(
-                f"Industry analysis data not found for reporting_period '{normalized_reporting_period}'."
-            )
-    else:
-        selected_reporting_period = _select_default_reporting_period(
-            all_segments,
-            available_reporting_periods,
-        )
-        selected_candidates = _segments_for_reporting_period(
-            all_segments,
-            selected_reporting_period,
-        )
 
     selected_segments = _select_effective_segments(
-        selected_candidates,
+        context["selected_candidates"],
         include_inactive=include_inactive,
     )
 
     history_items: list[dict[str, Any]] = []
     if include_history:
-        for history_period in available_reporting_periods:
-            if history_period == selected_reporting_period:
+        for history_period in context["available_reporting_periods"]:
+            if history_period == context["selected_reporting_period"]:
                 continue
-            period_segments = _segments_for_reporting_period(all_segments, history_period)
+            period_segments = _segments_for_reporting_period(
+                context["all_segments"],
+                history_period,
+            )
             if not period_segments:
                 continue
             history_items.append(
@@ -486,11 +598,158 @@ def get_company_industry_analysis(
     return _build_industry_analysis_payload(
         company_id=company_id,
         segments=selected_segments,
-        selected_reporting_period=selected_reporting_period,
-        available_reporting_periods=available_reporting_periods,
-        latest_reporting_period=latest_reporting_period,
+        selected_reporting_period=context["selected_reporting_period"],
+        available_reporting_periods=context["available_reporting_periods"],
+        latest_reporting_period=context["latest_reporting_period"],
         history_items=history_items,
     )
+
+
+def get_company_industry_analysis_periods(
+    db: Session,
+    company_id: int,
+) -> dict[str, Any]:
+    context = _resolve_industry_analysis_context(
+        db,
+        company_id,
+        with_classifications=False,
+    )
+    return {
+        "company_id": company_id,
+        "available_reporting_periods": context["available_reporting_periods"],
+        "latest_reporting_period": context["latest_reporting_period"],
+        "current_reporting_period": context["selected_reporting_period"],
+        "period_count": len(context["available_reporting_periods"]),
+    }
+
+
+def get_company_industry_analysis_quality(
+    db: Session,
+    company_id: int,
+    *,
+    reporting_period: str | None = None,
+) -> dict[str, Any]:
+    context = _resolve_industry_analysis_context(
+        db,
+        company_id,
+        reporting_period=reporting_period,
+        with_classifications=True,
+    )
+    selected_segments = _select_effective_segments(
+        context["selected_candidates"],
+        include_inactive=False,
+    )
+    return _build_quality_assessment(
+        company_id=company_id,
+        selected_reporting_period=context["selected_reporting_period"],
+        segments=selected_segments,
+    )
+
+
+def _serialize_annotation_log(log: AnnotationLog) -> dict[str, Any]:
+    return {
+        "id": log.id,
+        "target_type": log.target_type,
+        "target_id": log.target_id,
+        "action_type": log.action_type,
+        "old_value": deserialize_model_snapshot(log.old_value),
+        "new_value": deserialize_model_snapshot(log.new_value),
+        "reason": log.reason,
+        "operator": log.operator,
+        "created_at": log.created_at,
+    }
+
+
+def get_business_segment_annotation_logs(
+    db: Session,
+    segment_id: int,
+) -> dict[str, Any]:
+    segment = get_business_segment_by_id(db, segment_id)
+    if segment is None:
+        raise LookupError("Business segment not found.")
+
+    logs = get_annotation_logs_by_target(
+        db,
+        target_type="business_segment",
+        target_id=segment_id,
+    )
+    return {
+        "target_type": "business_segment",
+        "target_id": segment_id,
+        "segment": build_business_segment_detail(segment),
+        "classification": None,
+        "annotation_logs": [_serialize_annotation_log(log) for log in logs],
+        "total_count": len(logs),
+    }
+
+
+def get_business_segment_classification_annotation_logs(
+    db: Session,
+    classification_id: int,
+) -> dict[str, Any]:
+    classification = get_business_segment_classification_by_id(db, classification_id)
+    if classification is None:
+        raise LookupError("Business segment classification not found.")
+
+    logs = get_annotation_logs_by_target(
+        db,
+        target_type="business_segment_classification",
+        target_id=classification_id,
+    )
+    return {
+        "target_type": "business_segment_classification",
+        "target_id": classification_id,
+        "segment": None,
+        "classification": build_classification_summary(classification),
+        "annotation_logs": [_serialize_annotation_log(log) for log in logs],
+        "total_count": len(logs),
+    }
+
+
+def _build_change_segment_item(
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "segment_name": record["segment_name"],
+        "segment_type": record["segment_type"],
+        "classification_labels": list(record["classification_labels"]),
+        "reporting_period": record["reporting_period"],
+        "is_current": record["is_current"],
+    }
+
+
+def _build_change_transition_item(
+    *,
+    current_record: dict[str, Any],
+    previous_record: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "segment_name": current_record["segment_name"],
+        "previous_segment_type": previous_record["segment_type"],
+        "current_segment_type": current_record["segment_type"],
+        "previous_classification_labels": list(previous_record["classification_labels"]),
+        "current_classification_labels": list(current_record["classification_labels"]),
+        "previous_reporting_period": previous_record["reporting_period"],
+        "current_reporting_period": current_record["reporting_period"],
+    }
+
+
+def _extract_primary_industries_from_records(
+    records: list[dict[str, Any]],
+) -> list[str]:
+    primary_industries: list[str] = []
+    fallback_primary_industries: list[str] = []
+
+    for record in records:
+        for label in record["primary_industries"]:
+            if label not in primary_industries:
+                primary_industries.append(label)
+        if record["segment_type"] == "primary":
+            for label in record["classification_labels"]:
+                if label not in fallback_primary_industries:
+                    fallback_primary_industries.append(label)
+
+    return primary_industries or fallback_primary_industries
 
 
 def _segment_record(segment: BusinessSegment) -> dict[str, Any]:
@@ -549,7 +808,9 @@ def _match_records(
     for current_record in current_records:
         candidate_indices = [
             previous_index
-            for previous_index in previous_buckets.get(current_record["segment_name_key"], [])
+            for previous_index in previous_buckets.get(
+                current_record["segment_name_key"], []
+            )
             if previous_index not in matched_previous_indices
         ]
         if not candidate_indices:
@@ -717,7 +978,9 @@ def analyze_industry_structure_change(
     ]
 
     new_segments = [_build_change_segment_item(record) for record in unmatched_current]
-    removed_segments = [_build_change_segment_item(record) for record in unmatched_previous]
+    removed_segments = [
+        _build_change_segment_item(record) for record in unmatched_previous
+    ]
     new_emerging_segments = [
         _build_change_segment_item(record)
         for record in unmatched_current
@@ -730,7 +993,9 @@ def analyze_industry_structure_change(
     ]
 
     current_primary_industries = _extract_primary_industries_from_records(current_records)
-    previous_primary_industries = _extract_primary_industries_from_records(previous_records)
+    previous_primary_industries = _extract_primary_industries_from_records(
+        previous_records
+    )
     primary_industry_changed = set(current_primary_industries) != set(
         previous_primary_industries
     )

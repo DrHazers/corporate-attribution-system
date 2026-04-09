@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
 
 from backend.analysis.ownership_graph import (
@@ -21,10 +23,56 @@ from backend.crud.company import (
 )
 from backend.crud.shareholder import get_entity_by_company_id
 from backend.database import SessionLocal
-from backend.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
+from backend.schemas.common import ApiErrorResponse
+from backend.schemas.company import (
+    CompanyCreate,
+    CompanyRead,
+    CompanyRelationshipGraphRead,
+    CompanyUpdate,
+)
+
+COMMON_COMPANY_ERROR_RESPONSES = {
+    400: {
+        "model": ApiErrorResponse,
+        "description": "Bad request. Parameters failed validation or business validation.",
+    },
+    404: {
+        "model": ApiErrorResponse,
+        "description": "Requested company or company-scoped resource was not found.",
+    },
+    422: {
+        "model": ApiErrorResponse,
+        "description": "Reserved by FastAPI OpenAPI generation. Runtime validation errors are normalized to HTTP 400 by the company router.",
+    },
+}
 
 
-router = APIRouter(prefix="/companies", tags=["companies"])
+def _format_validation_error_detail(exc: RequestValidationError) -> str:
+    parts: list[str] = []
+    for error in exc.errors():
+        location = ".".join(str(item) for item in error.get("loc", []))
+        message = error.get("msg") or "Invalid request value."
+        parts.append(f"{location}: {message}" if location else message)
+    return "; ".join(parts) or "Invalid request payload."
+
+
+class CompanyRoute(APIRoute):
+    def get_route_handler(self):
+        original_route_handler = super().get_route_handler()
+
+        async def custom_route_handler(request: Request):
+            try:
+                return await original_route_handler(request)
+            except RequestValidationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=_format_validation_error_detail(exc),
+                ) from exc
+
+        return custom_route_handler
+
+
+router = APIRouter(prefix="/companies", tags=["companies"], route_class=CompanyRoute)
 
 
 def get_db():
@@ -162,7 +210,19 @@ def refresh_company_analysis_endpoint(
     return refresh_company_analysis_or_400(db, company_id)
 
 
-@router.get("/{company_id}/relationship-graph")
+@router.get(
+    "/{company_id}/relationship-graph",
+    response_model=CompanyRelationshipGraphRead,
+    summary="Get company relationship graph",
+    description=(
+        "Return the current ownership and semantic-control graph rooted at the "
+        "mapped shareholder entity for the requested company. The endpoint "
+        "returns HTTP 200 with stable empty lists when the company exists but "
+        "no graph data can be assembled."
+    ),
+    response_description="Relationship graph payload ready for frontend graph rendering.",
+    responses=COMMON_COMPANY_ERROR_RESPONSES,
+)
 def get_company_relationship_graph(
     company_id: int,
     db: Session = Depends(get_db),

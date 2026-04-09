@@ -1,11 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
 
 from backend.analysis.industry_analysis import (
     analyze_industry_structure_change,
     build_business_segment_detail,
+    get_business_segment_annotation_logs,
+    get_business_segment_classification_annotation_logs,
     get_company_analysis_summary,
     get_company_industry_analysis,
+    get_company_industry_analysis_periods,
+    get_company_industry_analysis_quality,
 )
 from backend.crud.business_segment import (
     create_business_segment,
@@ -33,15 +39,60 @@ from backend.schemas.business_segment_classification import (
     BusinessSegmentClassificationRead,
     BusinessSegmentClassificationUpdate,
 )
+from backend.schemas.common import ApiErrorResponse
 from backend.schemas.industry_analysis import (
+    AnnotationLogListResponse,
     BusinessSegmentDetailRead,
     CompanyAnalysisSummaryRead,
     IndustryAnalysisChangeResult,
+    IndustryAnalysisPeriodsResponse,
+    IndustryAnalysisQualityResponse,
     IndustryAnalysisRead,
 )
 
 
-router = APIRouter(tags=["industry-analysis"])
+COMMON_INDUSTRY_ERROR_RESPONSES = {
+    400: {
+        "model": ApiErrorResponse,
+        "description": "Bad request. Parameters failed validation or business validation.",
+    },
+    404: {
+        "model": ApiErrorResponse,
+        "description": "Requested company, reporting period, segment, or classification was not found.",
+    },
+    422: {
+        "model": ApiErrorResponse,
+        "description": "Reserved by FastAPI OpenAPI generation. Runtime validation errors are normalized to HTTP 400 by the industry-analysis router.",
+    },
+}
+
+
+def _format_validation_error_detail(exc: RequestValidationError) -> str:
+    parts: list[str] = []
+    for error in exc.errors():
+        location = ".".join(str(item) for item in error.get("loc", []))
+        message = error.get("msg") or "Invalid request value."
+        parts.append(f"{location}: {message}" if location else message)
+    return "; ".join(parts) or "Invalid request payload."
+
+
+class IndustryAnalysisRoute(APIRoute):
+    def get_route_handler(self):
+        original_route_handler = super().get_route_handler()
+
+        async def custom_route_handler(request: Request):
+            try:
+                return await original_route_handler(request)
+            except RequestValidationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=_format_validation_error_detail(exc),
+                ) from exc
+
+        return custom_route_handler
+
+
+router = APIRouter(tags=["industry-analysis"], route_class=IndustryAnalysisRoute)
 
 
 def get_db():
@@ -98,13 +149,19 @@ def create_business_segment_endpoint(
     db: Session = Depends(get_db),
 ):
     get_company_or_404(db, company_id)
-    return create_business_segment(
-        db,
-        company_id=company_id,
-        business_segment_in=business_segment_in,
-        reason=reason,
-        operator=operator,
-    )
+    try:
+        return create_business_segment(
+            db,
+            company_id=company_id,
+            business_segment_in=business_segment_in,
+            reason=reason,
+            operator=operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(
@@ -148,13 +205,19 @@ def update_business_segment_endpoint(
     db: Session = Depends(get_db),
 ):
     business_segment = get_business_segment_or_404(db, segment_id)
-    return update_business_segment(
-        db,
-        business_segment,
-        business_segment_in,
-        reason=reason,
-        operator=operator,
-    )
+    try:
+        return update_business_segment(
+            db,
+            business_segment,
+            business_segment_in,
+            reason=reason,
+            operator=operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.delete(
@@ -189,13 +252,19 @@ def create_business_segment_classification_endpoint(
     db: Session = Depends(get_db),
 ):
     get_business_segment_or_404(db, segment_id)
-    return create_business_segment_classification(
-        db,
-        business_segment_id=segment_id,
-        classification_in=classification_in,
-        reason=reason,
-        operator=operator,
-    )
+    try:
+        return create_business_segment_classification(
+            db,
+            business_segment_id=segment_id,
+            classification_in=classification_in,
+            reason=reason,
+            operator=operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(
@@ -225,13 +294,19 @@ def update_business_segment_classification_endpoint(
     db: Session = Depends(get_db),
 ):
     classification = get_business_segment_classification_or_404(db, classification_id)
-    return update_business_segment_classification(
-        db,
-        classification,
-        classification_in,
-        reason=reason,
-        operator=operator,
-    )
+    try:
+        return update_business_segment_classification(
+            db,
+            classification,
+            classification_in,
+            reason=reason,
+            operator=operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.delete(
@@ -256,6 +331,14 @@ def delete_business_segment_classification_endpoint(
 @router.get(
     "/companies/{company_id}/industry-analysis",
     response_model=IndustryAnalysisRead,
+    summary="Get company industry analysis",
+    description=(
+        "Return the frontend-ready industry analysis payload for the requested "
+        "company. Supports selecting a reporting period and optionally appending "
+        "compact history items for other available periods."
+    ),
+    response_description="Industry analysis payload with summaries, segments, flags, and quality hints.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
 )
 def get_company_industry_analysis_endpoint(
     company_id: int,
@@ -286,8 +369,75 @@ def get_company_industry_analysis_endpoint(
 
 
 @router.get(
+    "/companies/{company_id}/industry-analysis/periods",
+    response_model=IndustryAnalysisPeriodsResponse,
+    summary="List company industry reporting periods",
+    description=(
+        "Return the available reporting periods for the company's industry "
+        "analysis data, ordered by descending recency using the module's "
+        "default reporting-period sort rule."
+    ),
+    response_description="Reporting-period overview for period selector components.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def get_company_industry_analysis_periods_endpoint(
+    company_id: int,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    return get_company_industry_analysis_periods(
+        db,
+        company_id,
+    )
+
+
+@router.get(
+    "/companies/{company_id}/industry-analysis/quality",
+    response_model=IndustryAnalysisQualityResponse,
+    summary="Get company industry data quality",
+    description=(
+        "Return non-blocking data-quality checks for the selected reporting "
+        "period, including duplicate segment names, missing classifications, "
+        "and conflicting primary classifications."
+    ),
+    response_description="Industry-analysis quality payload with warnings and structured counters.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def get_company_industry_analysis_quality_endpoint(
+    company_id: int,
+    reporting_period: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    try:
+        return get_company_industry_analysis_quality(
+            db,
+            company_id,
+            reporting_period=reporting_period,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
     "/companies/{company_id}/industry-analysis/change",
     response_model=IndustryAnalysisChangeResult,
+    summary="Compare industry structure across two reporting periods",
+    description=(
+        "Compare two reporting periods for the same company and return segment "
+        "adds/removals, primary-industry changes, and simple structure-change "
+        "summaries. This is a pure read endpoint and does not write to the database."
+    ),
+    response_description="Industry structure change payload for history comparison views.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
 )
 def get_company_industry_analysis_change_endpoint(
     company_id: int,
@@ -316,8 +466,56 @@ def get_company_industry_analysis_change_endpoint(
 
 
 @router.get(
+    "/business-segments/{segment_id}/annotation-logs",
+    response_model=AnnotationLogListResponse,
+)
+def get_business_segment_annotation_logs_endpoint(
+    segment_id: int,
+    db: Session = Depends(get_db),
+):
+    try:
+        return get_business_segment_annotation_logs(
+            db,
+            segment_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/business-segment-classifications/{classification_id}/annotation-logs",
+    response_model=AnnotationLogListResponse,
+)
+def get_business_segment_classification_annotation_logs_endpoint(
+    classification_id: int,
+    db: Session = Depends(get_db),
+):
+    try:
+        return get_business_segment_classification_annotation_logs(
+            db,
+            classification_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
     "/companies/{company_id}/analysis/summary",
     response_model=CompanyAnalysisSummaryRead,
+    summary="Get company analysis summary",
+    description=(
+        "Recommended frontend entry endpoint for the company detail first screen. "
+        "It bundles company master data, control analysis, country attribution, "
+        "and the current default industry-analysis snapshot in one response."
+    ),
+    response_description="Combined summary payload for first-screen frontend rendering.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
 )
 def get_company_analysis_summary_endpoint(
     company_id: int,

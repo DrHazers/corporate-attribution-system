@@ -108,12 +108,14 @@ def create_classification(
     client: TestClient,
     segment_id: int,
     *,
+    standard_system: str = "GICS",
     level_1: str,
     level_2: str | None = None,
     level_3: str | None = None,
     level_4: str | None = None,
     is_primary: bool = False,
     review_status: str = "auto",
+    mapping_basis: str | None = "Mapped from annual report segment disclosure.",
 ) -> dict:
     response = client.post(
         (
@@ -121,13 +123,13 @@ def create_classification(
             "?reason=classification_seed&operator=pytest"
         ),
         json={
-            "standard_system": "GICS",
+            "standard_system": standard_system,
             "level_1": level_1,
             "level_2": level_2,
             "level_3": level_3,
             "level_4": level_4,
             "is_primary": is_primary,
-            "mapping_basis": "Mapped from annual report segment disclosure.",
+            "mapping_basis": mapping_basis,
             "review_status": review_status,
         },
     )
@@ -273,6 +275,139 @@ def test_business_segment_classifications_crud_flow(industry_client):
         ]
 
 
+def test_business_segment_write_validation_and_normalization(industry_client):
+    client, _ = industry_client
+    company = create_company(client, stock_code="VAL001")
+
+    create_response = client.post(
+        f"/companies/{company['id']}/business-segments?reason=seed&operator=pytest",
+        json={
+            "segment_name": "  Cloud   Platform  ",
+            "segment_type": " Primary ",
+            "revenue_ratio": "88.5000",
+            "profit_ratio": "35.0000",
+            "description": "   ",
+            "source": "   manual   input   ",
+            "reporting_period": " 2025 ",
+            "is_current": True,
+            "confidence": "0.9500",
+        },
+    )
+    assert create_response.status_code == 201
+    created_payload = create_response.json()
+
+    assert created_payload["segment_name"] == "Cloud Platform"
+    assert created_payload["segment_type"] == "primary"
+    assert created_payload["description"] is None
+    assert created_payload["source"] == "manual input"
+    assert created_payload["reporting_period"] == "2025"
+
+    update_response = client.put(
+        f"/business-segments/{created_payload['id']}?reason=normalize&operator=pytest",
+        json={
+            "segment_name": "  Cloud   Platform   Core  ",
+            "description": "  Managed   services   ",
+            "source": "   ",
+        },
+    )
+    assert update_response.status_code == 200
+    updated_payload = update_response.json()
+    assert updated_payload["segment_name"] == "Cloud Platform Core"
+    assert updated_payload["description"] == "Managed services"
+    assert updated_payload["source"] is None
+
+    invalid_segment_type_response = client.post(
+        f"/companies/{company['id']}/business-segments",
+        json={
+            "segment_name": "Invalid Segment",
+            "segment_type": "invalid_type",
+            "reporting_period": "2025",
+            "is_current": True,
+        },
+    )
+    assert invalid_segment_type_response.status_code == 400
+    assert "Unsupported segment_type" in invalid_segment_type_response.json()["detail"]
+
+    invalid_ratio_response = client.post(
+        f"/companies/{company['id']}/business-segments",
+        json={
+            "segment_name": "Bad Ratio",
+            "segment_type": "primary",
+            "revenue_ratio": "120.0000",
+            "reporting_period": "2025",
+            "is_current": True,
+        },
+    )
+    assert invalid_ratio_response.status_code == 400
+    assert "between 0 and 100" in invalid_ratio_response.json()["detail"]
+
+    blank_name_response = client.post(
+        f"/companies/{company['id']}/business-segments",
+        json={
+            "segment_name": "   ",
+            "segment_type": "primary",
+            "reporting_period": "2025",
+            "is_current": True,
+        },
+    )
+    assert blank_name_response.status_code == 400
+    assert "segment_name" in blank_name_response.json()["detail"]
+
+
+def test_business_segment_classification_normalization_and_industry_label_consistency(
+    industry_client,
+):
+    client, _ = industry_client
+    company = create_company(client, stock_code="VAL002")
+    segment = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Cloud Data",
+        segment_type="primary",
+        revenue_ratio="45.0000",
+    )
+
+    create_response = client.post(
+        (
+            f"/business-segments/{segment['id']}/classifications"
+            "?reason=seed&operator=pytest"
+        ),
+        json={
+            "standard_system": "   ",
+            "level_1": "  Information   Technology  ",
+            "level_2": " ",
+            "level_3": "  Cloud   Platforms  ",
+            "level_4": "",
+            "is_primary": True,
+            "mapping_basis": "   ",
+            "review_status": " AUTO ",
+        },
+    )
+    assert create_response.status_code == 201
+    classification_payload = create_response.json()
+
+    assert classification_payload["standard_system"] == "GICS"
+    assert classification_payload["level_1"] == "Information Technology"
+    assert classification_payload["level_2"] is None
+    assert classification_payload["level_3"] == "Cloud Platforms"
+    assert classification_payload["level_4"] is None
+    assert classification_payload["mapping_basis"] is None
+    assert classification_payload["review_status"] == "auto"
+    assert (
+        classification_payload["industry_label"]
+        == "Information Technology > Cloud Platforms"
+    )
+
+    detail_response = client.get(f"/business-segments/{segment['id']}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    detail_classification = detail_payload["classifications"][0]
+    assert (
+        detail_classification["industry_label"]
+        == "Information Technology > Cloud Platforms"
+    )
+
+
 def test_industry_analysis_summary_endpoint_aggregates_segments_and_labels(industry_client):
     client, _ = industry_client
     company = create_company(client, stock_code="SUM001")
@@ -372,6 +507,116 @@ def test_industry_analysis_summary_endpoint_aggregates_segments_and_labels(indus
     assert payload["structure_flags"]["has_secondary_segment"] is True
     assert payload["structure_flags"]["has_primary_industry_mapping"] is True
     assert payload["history"] == []
+    assert payload["quality_warnings"] == []
+    assert payload["quality_summary"]["duplicate_segment_count"] == 0
+    assert payload["quality_summary"]["segments_without_classification_count"] == 0
+    assert (
+        payload["quality_summary"]["has_conflicting_primary_classification"] is False
+    )
+
+
+def test_industry_analysis_periods_and_quality_endpoints(industry_client):
+    client, _ = industry_client
+    company = create_company(client, stock_code="QLT001")
+
+    duplicate_a = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Cloud Platform",
+        segment_type="secondary",
+        revenue_ratio="20.0000",
+    )
+    duplicate_b = create_business_segment(
+        client,
+        company["id"],
+        segment_name="  Cloud   Platform  ",
+        segment_type="secondary",
+        revenue_ratio="18.0000",
+    )
+    create_business_segment(
+        client,
+        company["id"],
+        segment_name="AI Lab",
+        segment_type="emerging",
+        revenue_ratio="5.0000",
+    )
+
+    create_classification(
+        client,
+        duplicate_b["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Cloud Platforms",
+        is_primary=True,
+    )
+    create_classification(
+        client,
+        duplicate_b["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Managed Services",
+        is_primary=True,
+    )
+
+    periods_response = client.get(
+        f"/companies/{company['id']}/industry-analysis/periods"
+    )
+    assert periods_response.status_code == 200
+    periods_payload = periods_response.json()
+    assert periods_payload == {
+        "company_id": company["id"],
+        "available_reporting_periods": ["2025"],
+        "latest_reporting_period": "2025",
+        "current_reporting_period": "2025",
+        "period_count": 1,
+    }
+
+    quality_response = client.get(
+        f"/companies/{company['id']}/industry-analysis/quality"
+    )
+    assert quality_response.status_code == 200
+    quality_payload = quality_response.json()
+
+    assert quality_payload["company_id"] == company["id"]
+    assert quality_payload["selected_reporting_period"] == "2025"
+    assert quality_payload["has_primary_segment"] is False
+    assert quality_payload["has_classifications"] is True
+    assert quality_payload["duplicate_segment_names"] == ["Cloud Platform"]
+    assert quality_payload["segments_without_classifications"] == [
+        "Cloud Platform",
+        "AI Lab",
+    ]
+    assert quality_payload["primary_segments_without_classifications"] == []
+    assert quality_payload["segments_with_multiple_primary_classifications"] == [
+        "Cloud Platform"
+    ]
+    assert any(
+        "No primary segment found" in warning
+        for warning in quality_payload["warnings"]
+    )
+    assert any(
+        "Duplicate segment names detected" in warning
+        for warning in quality_payload["warnings"]
+    )
+    assert quality_payload["quality_summary"]["duplicate_segment_count"] == 1
+    assert (
+        quality_payload["quality_summary"]["segments_without_classification_count"]
+        == 2
+    )
+    assert (
+        quality_payload["quality_summary"]["primary_segments_without_classification_count"]
+        == 0
+    )
+    assert (
+        quality_payload["quality_summary"]["has_conflicting_primary_classification"]
+        is True
+    )
+
+    analysis_response = client.get(f"/companies/{company['id']}/industry-analysis")
+    assert analysis_response.status_code == 200
+    analysis_payload = analysis_response.json()
+    assert analysis_payload["quality_summary"] == quality_payload["quality_summary"]
+    assert analysis_payload["quality_warnings"] == quality_payload["warnings"]
 
 
 def test_industry_analysis_endpoint_supports_reporting_period_and_history(industry_client):
@@ -759,6 +1004,8 @@ def test_analysis_summary_endpoint_reads_existing_results_without_refresh(indust
     assert payload["industry_analysis"]["selected_reporting_period"] == "2025"
     assert payload["industry_analysis"]["available_reporting_periods"] == ["2025"]
     assert payload["industry_analysis"]["latest_reporting_period"] == "2025"
+    assert payload["industry_analysis"]["quality_warnings"] == []
+    assert payload["industry_analysis"]["quality_summary"]["duplicate_segment_count"] == 0
 
 
 def test_annotation_logs_capture_segment_and_classification_changes(industry_client):
@@ -834,3 +1081,98 @@ def test_annotation_logs_capture_segment_and_classification_changes(industry_cli
         assert segment_new_value["description"] == "Updated after manual analyst review."
         assert classification_new_value["review_status"] == "manual_adjusted"
         assert classification_new_value["level_4"] == "Data Warehousing"
+
+
+def test_annotation_log_query_endpoints_return_filtered_results(industry_client):
+    client, _ = industry_client
+    company = create_company(client, stock_code="LOG002")
+    segment = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Observability Platform",
+        segment_type="primary",
+        revenue_ratio="33.0000",
+    )
+    other_segment = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Other Segment",
+        segment_type="secondary",
+        revenue_ratio="10.0000",
+    )
+
+    segment_update_response = client.put(
+        f"/business-segments/{segment['id']}?reason=rename&operator=alice",
+        json={
+            "description": "  Updated   platform  ",
+        },
+    )
+    assert segment_update_response.status_code == 200
+
+    classification = create_classification(
+        client,
+        segment["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Observability",
+        is_primary=True,
+    )
+    other_classification = create_classification(
+        client,
+        other_segment["id"],
+        level_1="Financials",
+        level_2="Fintech",
+        level_3="Payments",
+    )
+    classification_update_response = client.put(
+        (
+            f"/business-segment-classifications/{classification['id']}"
+            "?reason=review&operator=bob"
+        ),
+        json={
+            "level_4": "Monitoring Tools",
+            "review_status": "manual_adjusted",
+        },
+    )
+    assert classification_update_response.status_code == 200
+
+    segment_logs_response = client.get(
+        f"/business-segments/{segment['id']}/annotation-logs"
+    )
+    assert segment_logs_response.status_code == 200
+    segment_logs_payload = segment_logs_response.json()
+    assert segment_logs_payload["target_type"] == "business_segment"
+    assert segment_logs_payload["target_id"] == segment["id"]
+    assert segment_logs_payload["total_count"] == 2
+    assert segment_logs_payload["segment"]["id"] == segment["id"]
+    assert [item["action_type"] for item in segment_logs_payload["annotation_logs"]] == [
+        "create",
+        "update",
+    ]
+    assert isinstance(segment_logs_payload["annotation_logs"][1]["old_value"], dict)
+    assert segment_logs_payload["classification"] is None
+
+    classification_logs_response = client.get(
+        f"/business-segment-classifications/{classification['id']}/annotation-logs"
+    )
+    assert classification_logs_response.status_code == 200
+    classification_logs_payload = classification_logs_response.json()
+    assert classification_logs_payload["target_type"] == (
+        "business_segment_classification"
+    )
+    assert classification_logs_payload["target_id"] == classification["id"]
+    assert classification_logs_payload["total_count"] == 2
+    assert classification_logs_payload["classification"]["id"] == classification["id"]
+    assert classification_logs_payload["classification"]["industry_label"] == (
+        "Information Technology > Software > Observability > Monitoring Tools"
+    )
+    assert [
+        item["action_type"] for item in classification_logs_payload["annotation_logs"]
+    ] == ["create", "manual_override"]
+    assert classification_logs_payload["segment"] is None
+
+    other_classification_logs_response = client.get(
+        f"/business-segment-classifications/{other_classification['id']}/annotation-logs"
+    )
+    assert other_classification_logs_response.status_code == 200
+    assert other_classification_logs_response.json()["total_count"] == 1

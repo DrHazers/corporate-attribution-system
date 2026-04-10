@@ -1,5 +1,20 @@
 # Corporate Attribution System
 
+## 演示数据库约定
+
+前后端联调、截图和最终演示请统一使用：
+
+```powershell
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry.db'
+.\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
+```
+
+说明：
+- 不设置 `DATABASE_URL` 时，后端会按 `backend/database.py` 的默认配置连接项目根目录下的 `company.db`。
+- 前端演示推荐固定连接 `company_test_analysis_industry.db`，这份库覆盖控制链、国别归属、产业分析、多报告期和质量提示等演示场景。
+- HTML 验证图、前端 API、手工数据库查询应尽量使用同一份数据库，避免出现“图里有结果、前端接口看不到”或记录 ID 不一致的排查噪音。
+- 这里仅是运行环境约定，不改变 unified control inference、refresh 主链路或任何表结构。
+
 ## 项目定位
 这是一个面向产业研究的企业控制链、国别归属与产业分析系统。
 
@@ -122,6 +137,7 @@
 
 ### 2. 启动后端
 ```powershell
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry.db'
 .\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
 ```
 

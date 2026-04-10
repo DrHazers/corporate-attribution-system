@@ -33,12 +33,6 @@ function formatConfidence(value) {
   return numeric.toFixed(2)
 }
 
-function formatClassificationLabels(row) {
-  return row?.classification_labels?.length
-    ? row.classification_labels.join(' ｜ ')
-    : '暂无'
-}
-
 function getReviewStatuses(row) {
   const statuses = [...new Set((row?.classifications || []).map((item) => item.review_status).filter(Boolean))]
   return statuses
@@ -96,9 +90,17 @@ function segmentTagType(segmentType) {
       <el-table-column prop="reporting_period" label="Reporting Period" min-width="140" />
       <el-table-column label="Classification Labels" min-width="320">
         <template #default="{ row }">
-          <div class="table-text table-multi-line">
-            {{ formatClassificationLabels(row) }}
+          <div v-if="row?.classification_labels?.length" class="tag-cloud business-classification-tags">
+            <el-tag
+              v-for="label in row.classification_labels"
+              :key="label"
+              effect="plain"
+              type="success"
+            >
+              {{ label }}
+            </el-tag>
           </div>
+          <span v-else class="table-text table-text--muted">暂无</span>
         </template>
       </el-table-column>
       <el-table-column label="Review Status" min-width="180">
@@ -124,3 +126,14 @@ function segmentTagType(segmentType) {
     </el-table>
   </el-card>
 </template>
+
+<style scoped>
+.business-classification-tags :deep(.el-tag) {
+  height: auto;
+  min-height: 26px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  white-space: normal;
+  line-height: 1.35;
+}
+</style>

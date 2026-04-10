@@ -80,13 +80,13 @@ const overviewItems = computed(() => [
 <style scoped>
 .overview-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .overview-grid__item {
-  padding: 16px 18px;
-  border-radius: 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
   background: rgba(249, 251, 254, 0.9);
   border: 1px solid rgba(31, 59, 87, 0.08);
 }
@@ -99,16 +99,21 @@ const overviewItems = computed(() => [
 }
 
 .overview-grid__value {
-  margin-top: 10px;
+  margin-top: 6px;
   color: var(--brand-ink);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
-  line-height: 1.6;
+  line-height: 1.45;
   word-break: break-word;
 }
 
 .overview-warning {
-  margin-top: 18px;
+  margin-top: 12px;
+}
+
+:deep(.el-card__body) {
+  padding-top: 18px;
+  padding-bottom: 18px;
 }
 
 @media (max-width: 1200px) {

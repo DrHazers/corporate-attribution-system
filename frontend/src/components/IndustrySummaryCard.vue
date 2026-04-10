@@ -27,16 +27,16 @@ const metrics = computed(() => [
     value: props.industryAnalysis?.primary_industries?.[0] || '未识别',
   },
   {
-    label: '全部产业标签数量',
-    value: allIndustryLabels.value.length,
+    label: '当前报告期',
+    value: props.industryAnalysis?.selected_reporting_period || '暂无',
   },
   {
     label: '是否人工修订',
     value: props.industryAnalysis?.has_manual_adjustment ? '是' : '否',
   },
   {
-    label: '当前报告期',
-    value: props.industryAnalysis?.selected_reporting_period || '暂无',
+    label: '质量 warnings',
+    value: qualityWarnings.value.length,
   },
 ])
 </script>
@@ -82,7 +82,10 @@ const metrics = computed(() => [
     </div>
 
     <div class="industry-tags">
-      <h3>产业分类标签</h3>
+      <div class="industry-tags__title">
+        <h3>产业分类标签</h3>
+        <span>{{ allIndustryLabels.length }} 个标签</span>
+      </div>
       <div v-if="allIndustryLabels.length" class="tag-cloud">
         <el-tag
           v-for="label in allIndustryLabels"
@@ -114,7 +117,7 @@ const metrics = computed(() => [
 <style scoped>
 .industry-metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -172,8 +175,47 @@ const metrics = computed(() => [
   margin-top: 18px;
 }
 
+.industry-tags {
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.industry-tags__title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.industry-tags__title h3 {
+  margin-bottom: 0;
+}
+
+.industry-tags__title span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.industry-tags :deep(.el-tag) {
+  height: auto;
+  min-height: 26px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  white-space: normal;
+  line-height: 1.35;
+}
+
 .industry-quality__alert + .industry-quality__alert {
   margin-top: 10px;
+}
+
+@media (max-width: 1200px) {
+  .industry-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 640px) {

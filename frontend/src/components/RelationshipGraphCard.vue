@@ -24,6 +24,14 @@ const props = defineProps({
       message: '',
     }),
   },
+  controlAnalysis: {
+    type: Object,
+    default: () => ({}),
+  },
+  countryAttribution: {
+    type: Object,
+    default: () => ({}),
+  },
   actualControllerEntityId: {
     type: [Number, String, null],
     default: null,
@@ -41,21 +49,25 @@ const renderError = ref('')
 
 const adaptedGraph = computed(() =>
   buildRelationshipGraphModel(props.graphData, {
+    controlAnalysis: props.controlAnalysis,
+    countryAttribution: props.countryAttribution,
     actualControllerEntityId: props.actualControllerEntityId,
   }),
 )
 
 const fallbackNodeNames = computed(() =>
-  adaptedGraph.value.nodes.slice(0, 8).map((node) => node.name),
+  adaptedGraph.value.nodes.slice(0, 10).map((node) => node.name),
 )
+
+const dataWarnings = computed(() => adaptedGraph.value.dataWarnings || [])
 
 function buildChartOption(model) {
   return {
-    animationDuration: 900,
+    animationDuration: 700,
     animationEasingUpdate: 'quinticInOut',
     tooltip: {
       confine: true,
-      backgroundColor: 'rgba(24, 34, 44, 0.92)',
+      backgroundColor: 'rgba(24, 34, 44, 0.94)',
       borderWidth: 0,
       textStyle: {
         color: '#f7f9fb',
@@ -72,35 +84,43 @@ function buildChartOption(model) {
     series: [
       {
         type: 'graph',
-        layout: 'force',
+        layout: 'none',
+        left: 4,
+        right: 4,
+        top: 4,
+        bottom: 4,
         roam: true,
-        draggable: true,
+        zoom: model.layoutMeta?.preferredZoom ?? 0.9,
+        scaleLimit: {
+          min: model.layoutMeta?.scaleMin ?? 0.24,
+          max: 3,
+        },
+        draggable: false,
         focusNodeAdjacency: true,
         selectedMode: false,
-        symbol: 'circle',
         data: model.nodes,
         links: model.links,
         categories: model.categories,
-        edgeSymbol: ['circle', 'arrow'],
-        edgeSymbolSize: [4, 10],
-        force: {
-          repulsion: Math.max(320, model.nodeCount * 10),
-          gravity: 0.08,
-          edgeLength: [110, 220],
-          friction: 0.08,
+        edgeSymbol: ['none', 'arrow'],
+        edgeSymbolSize: [0, 9],
+        edgeLabel: {
+          show: false,
         },
         label: {
           show: true,
-          position: 'right',
-          distance: 8,
+          position: 'top',
+          distance: 7,
           fontSize: 11,
           color: '#24384d',
-          width: 120,
+          width: 132,
           overflow: 'truncate',
           formatter: ({ data }) => data.displayLabel,
         },
+        labelLayout: {
+          hideOverlap: true,
+        },
         lineStyle: {
-          opacity: 0.82,
+          opacity: 0.76,
         },
         emphasis: {
           focus: 'adjacency',
@@ -133,9 +153,7 @@ async function renderChart() {
   await nextTick()
 
   if (!adaptedGraph.value.hasData || renderError.value) {
-    if (chartInstance.value) {
-      chartInstance.value.clear()
-    }
+    chartInstance.value?.clear()
     return
   }
 
@@ -158,12 +176,14 @@ function handleResize() {
 }
 
 onMounted(() => {
-  resizeObserver.value = new ResizeObserver(() => {
-    handleResize()
-  })
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver.value = new ResizeObserver(() => {
+      handleResize()
+    })
 
-  if (chartRef.value) {
-    resizeObserver.value.observe(chartRef.value)
+    if (chartRef.value) {
+      resizeObserver.value.observe(chartRef.value)
+    }
   }
 
   window.addEventListener('resize', handleResize)
@@ -180,12 +200,27 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [props.graphData, props.actualControllerEntityId],
+  () => [
+    props.graphData,
+    props.actualControllerEntityId,
+    props.controlAnalysis,
+    props.countryAttribution,
+  ],
   () => {
     renderError.value = ''
     void renderChart()
   },
   { deep: true },
+)
+
+watch(
+  dataWarnings,
+  (warnings) => {
+    warnings.forEach((warning) => {
+      console.warn(`[RelationshipGraphCard] ${warning}`)
+    })
+  },
+  { immediate: true },
 )
 </script>
 
@@ -194,28 +229,10 @@ watch(
     <div class="relationship-graph-card__header">
       <div>
         <h3>控制链图</h3>
-        <p>基于 <code>relationship-graph</code> 接口返回的节点与边数据生成。</p>
+        <p>
+          图中仅显示主体名称；详细实体、比例和路径信息通过 hover 查看。
+        </p>
       </div>
-      <div class="relationship-graph-card__stats">
-        <div class="graph-stat">
-          <span>目标主体</span>
-          <strong>{{ adaptedGraph.targetCompanyName }}</strong>
-        </div>
-        <div class="graph-stat">
-          <span>节点数</span>
-          <strong>{{ adaptedGraph.nodeCount }}</strong>
-        </div>
-        <div class="graph-stat">
-          <span>边数</span>
-          <strong>{{ adaptedGraph.edgeCount }}</strong>
-        </div>
-      </div>
-    </div>
-
-    <div class="relationship-graph-card__legend">
-      <el-tag effect="dark" color="#23577a">蓝色：目标公司</el-tag>
-      <el-tag effect="dark" color="#b14d3f">红色：实际控制人</el-tag>
-      <el-tag effect="plain" color="#8d9cab">灰蓝：其他主体</el-tag>
     </div>
 
     <el-alert
@@ -228,7 +245,17 @@ watch(
     />
 
     <el-alert
-      v-else-if="adaptedGraph.message && !adaptedGraph.hasData"
+      v-for="warning in dataWarnings"
+      :key="warning"
+      class="relationship-graph-card__alert"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="warning"
+    />
+
+    <el-alert
+      v-if="!graphError && adaptedGraph.message && !adaptedGraph.hasData"
       class="relationship-graph-card__alert"
       type="info"
       :closable="false"
@@ -245,35 +272,100 @@ watch(
       :title="`图组件渲染失败：${renderError}`"
     />
 
-    <div v-if="adaptedGraph.hasData && !renderError" ref="chartRef" class="relationship-graph-card__canvas" />
+    <div class="relationship-graph-card__main">
+      <div class="relationship-graph-card__stage">
+        <div
+          v-if="adaptedGraph.hasData && !renderError"
+          ref="chartRef"
+          class="relationship-graph-card__canvas"
+        />
 
-    <div v-else-if="adaptedGraph.hasData" class="relationship-graph-card__fallback">
-      <p class="relationship-graph-card__fallback-text">
-        已拿到关系图数据，但浏览器图形渲染失败，当前降级展示部分节点名称：
-      </p>
-      <div class="tag-cloud">
-        <el-tag
-          v-for="nodeName in fallbackNodeNames"
-          :key="nodeName"
-          effect="plain"
-          type="info"
-        >
-          {{ nodeName }}
-        </el-tag>
+        <div v-else-if="adaptedGraph.hasData" class="relationship-graph-card__fallback">
+          <p class="relationship-graph-card__fallback-text">
+            已拿到关系图数据，但浏览器图形渲染失败，当前降级展示部分节点名称：
+          </p>
+          <div class="tag-cloud">
+            <el-tag
+              v-for="nodeName in fallbackNodeNames"
+              :key="nodeName"
+              effect="plain"
+              type="info"
+            >
+              {{ nodeName }}
+            </el-tag>
+          </div>
+        </div>
+
+        <el-empty
+          v-else
+          description="当前企业暂无可展示的关系图数据"
+          :image-size="88"
+        />
       </div>
-    </div>
 
-    <el-empty
-      v-else
-      description="当前企业暂无可展示的关系图数据"
-      :image-size="88"
-    />
+      <aside class="relationship-graph-card__legend" aria-label="control graph legend">
+        <div class="legend-section">
+          <h4>节点颜色 / 主体类型</h4>
+          <div
+            v-for="item in adaptedGraph.legend.entityTypes"
+            :key="item.key"
+            class="legend-row"
+          >
+            <span class="legend-dot" :style="{ backgroundColor: item.color }" />
+            <div>
+              <strong>{{ item.name }}</strong>
+              <span>{{ item.label }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="legend-section">
+          <h4>节点角色</h4>
+          <div
+            v-for="item in adaptedGraph.legend.roles"
+            :key="item.key"
+            class="legend-row"
+          >
+            <span class="legend-role-ring" :style="{ borderColor: item.color }" />
+            <div>
+              <strong>{{ item.label }}</strong>
+              <span>{{ item.description }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="legend-section">
+          <h4>边类型</h4>
+          <div
+            v-for="item in adaptedGraph.legend.edgeTypes"
+            :key="item.key"
+            class="legend-row"
+          >
+            <span
+              class="legend-line"
+              :style="{ borderTopColor: item.color, borderTopStyle: item.lineType }"
+            />
+            <div>
+              <strong>{{ item.label }}</strong>
+              <span>{{ item.description }}</span>
+            </div>
+          </div>
+          <div class="legend-row">
+            <span class="legend-line legend-line--key" />
+            <div>
+              <strong>key path</strong>
+              <span>关键控制路径高亮</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .relationship-graph-card {
-  padding: 18px;
+  padding: 14px;
   border-radius: 18px;
   border: 1px solid rgba(31, 59, 87, 0.1);
   background:
@@ -299,58 +391,36 @@ watch(
   font-size: 13px;
 }
 
-.relationship-graph-card__stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(90px, 1fr));
-  gap: 10px;
-  min-width: min(100%, 360px);
-}
-
-.graph-stat {
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(248, 250, 253, 0.92);
-  border: 1px solid rgba(31, 59, 87, 0.08);
-}
-
-.graph-stat span {
-  display: block;
-  margin-bottom: 8px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.graph-stat strong {
-  display: block;
-  color: var(--brand-ink);
-  font-size: 14px;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.relationship-graph-card__legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
-}
-
 .relationship-graph-card__alert {
   margin-top: 14px;
 }
 
+.relationship-graph-card__main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 208px;
+  gap: 10px;
+  margin-top: 16px;
+  align-items: stretch;
+}
+
+.relationship-graph-card__stage {
+  min-width: 0;
+  min-height: clamp(660px, 72vh, 800px);
+  border-radius: 18px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background:
+    radial-gradient(circle at 50% 8%, rgba(35, 87, 122, 0.08), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 250, 253, 0.92));
+  overflow: hidden;
+}
+
 .relationship-graph-card__canvas {
   width: 100%;
-  height: 460px;
-  margin-top: 16px;
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at top, rgba(35, 87, 122, 0.06), transparent 38%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(247, 250, 253, 0.88));
+  height: clamp(660px, 72vh, 800px);
 }
 
 .relationship-graph-card__fallback {
-  margin-top: 16px;
+  margin: 18px;
   padding: 18px;
   border-radius: 16px;
   border: 1px dashed rgba(31, 59, 87, 0.2);
@@ -362,23 +432,107 @@ watch(
   color: var(--text-secondary);
 }
 
-@media (max-width: 900px) {
-  .relationship-graph-card__header {
-    flex-direction: column;
-  }
-
-  .relationship-graph-card__stats {
-    width: 100%;
-  }
+.relationship-graph-card__legend {
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(31, 59, 87, 0.1);
+  background: rgba(255, 255, 255, 0.82);
 }
 
-@media (max-width: 640px) {
-  .relationship-graph-card__stats {
+.legend-section + .legend-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(31, 59, 87, 0.08);
+}
+
+.legend-section h4 {
+  margin: 0 0 10px;
+  color: var(--brand-ink);
+  font-size: 14px;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
+}
+
+.legend-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 28px;
+}
+
+.legend-row + .legend-row {
+  margin-top: 8px;
+}
+
+.legend-row strong {
+  display: block;
+  color: #25364a;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.legend-row span:last-child {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.legend-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.86), 0 0 0 3px rgba(31, 59, 87, 0.08);
+}
+
+.legend-role-ring {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 4px solid;
+  background: rgba(248, 250, 252, 0.96);
+}
+
+.legend-line {
+  width: 26px;
+  border-top-width: 3px;
+  border-top-style: solid;
+}
+
+.legend-line--key {
+  border-top-color: #be123c;
+  border-top-width: 4px;
+}
+
+@media (max-width: 1180px) {
+  .relationship-graph-card__main {
     grid-template-columns: 1fr;
   }
 
+  .relationship-graph-card__legend {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .legend-section + .legend-section {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .relationship-graph-card__legend {
+    grid-template-columns: 1fr;
+  }
+
+  .relationship-graph-card__stage {
+    min-height: 420px;
+  }
+
   .relationship-graph-card__canvas {
-    height: 380px;
+    height: 420px;
   }
 }
 </style>

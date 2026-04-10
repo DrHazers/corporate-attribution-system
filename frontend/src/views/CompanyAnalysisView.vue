@@ -213,7 +213,7 @@ const currentSummaryNote = computed(() => {
           :industry-analysis="industryAnalysis"
         />
 
-        <div class="two-column-grid">
+        <div class="analysis-report">
           <ControlSummaryCard
             :company="company"
             :control-analysis="controlAnalysis"
@@ -221,11 +221,11 @@ const currentSummaryNote = computed(() => {
             :relationship-graph="relationshipGraph || buildEmptyGraphState(resolvedCompanyId)"
             :graph-error="sectionErrors.graph"
           />
-          <IndustrySummaryCard :industry-analysis="industryAnalysis" />
-        </div>
 
-        <div class="details-stack">
           <ControlRelationsTable :relationships="controlRelationships" :loading="loading" />
+
+          <IndustrySummaryCard :industry-analysis="industryAnalysis" />
+
           <BusinessSegmentsTable :segments="businessSegments" :loading="loading" />
         </div>
       </div>

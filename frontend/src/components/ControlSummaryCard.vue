@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import ControlStructureDiagram from '@/components/ControlStructureDiagram.vue'
 import ControlStructurePlaceholder from '@/components/ControlStructurePlaceholder.vue'
 
-const ENABLE_REBUILT_CONTROL_STRUCTURE_DIAGRAM = false
+const ENABLE_REBUILT_CONTROL_STRUCTURE_DIAGRAM = true
 
 const props = defineProps({
   company: {
@@ -84,7 +84,7 @@ const recognitionStatus = computed(() =>
       <div class="section-heading">
         <div>
           <h2>控制链与国别归属</h2>
-          <p>上半区域预留新版控制结构示意图位置，下半区域保留控制分析摘要与国别归属说明。</p>
+          <p>上半区域展示新版控制结构示意图，下半区域保留控制分析摘要与国别归属说明。</p>
         </div>
       </div>
     </template>
@@ -171,13 +171,12 @@ const recognitionStatus = computed(() =>
 
     <ControlStructureDiagram
       v-if="ENABLE_REBUILT_CONTROL_STRUCTURE_DIAGRAM"
-      class="control-graph-wide"
       :company="company"
       :control-analysis="controlAnalysis"
       :country-attribution="countryAttribution"
       :relationship-graph="relationshipGraph"
     />
-    <ControlStructurePlaceholder v-else class="control-graph-wide" />
+    <ControlStructurePlaceholder v-else />
   </el-card>
 </template>
 

@@ -1,20 +1,18 @@
-const EMPTY_TEXT = '暂无'
+const EMPTY_TEXT = 'N/A'
 
 export const CONTROL_STRUCTURE_DISPLAY_CONFIG = {
-  simpleMaxRelationshipCount: 6,
-  simpleMaxNodeCount: 9,
-  maxSupportControllers: 8,
-  maxComplexSupportControllers: 6,
+  maxAutoExpandedKeyPathDepth: 8,
 }
 
 const ENTITY_TYPES = ['company', 'person', 'fund', 'government', 'other']
 const SEMANTIC_RELATION_TYPES = new Set([
   'agreement',
+  'agreement_control',
   'board_control',
   'voting_right',
   'nominee',
   'vie',
-  'agreement_control',
+  'vie_control',
   'mixed_control',
   'joint_control',
 ])
@@ -70,17 +68,32 @@ function normalizeRelationType(value) {
   return normalized
 }
 
-function relationTypeOf(relationship) {
-  return normalizeRelationType(relationship?.control_type)
+function isSemanticRelationType(value) {
+  return SEMANTIC_RELATION_TYPES.has(normalizeRelationType(value))
 }
 
-function isSemanticRelationship(relationship) {
-  return SEMANTIC_RELATION_TYPES.has(relationTypeOf(relationship))
+function ratioFromValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+  const numeric = Number(value)
+  return Number.isNaN(numeric) ? null : numeric
 }
 
-function ratioScore(relationship) {
-  const numeric = Number(relationship?.control_ratio)
-  return Number.isNaN(numeric) ? -1 : numeric
+function normalizedRatioForComparison(value) {
+  const numeric = ratioFromValue(value)
+  if (numeric === null) {
+    return -1
+  }
+  return numeric > 1 ? numeric / 100 : numeric
+}
+
+function ratioFromEdge(edge = {}) {
+  return (
+    ratioFromValue(edge?.holding_ratio) ??
+    ratioFromValue(edge?.control_ratio) ??
+    ratioFromValue(edge?.numeric_factor)
+  )
 }
 
 function buildEntityLookup(relationshipGraph = {}) {
@@ -95,9 +108,10 @@ function buildEntityLookup(relationshipGraph = {}) {
 
     lookup.set(key, {
       id: key,
-      name: node.name || node.entity_name || `Entity ${key}`,
-      entityType: normalizeEntityType(node.entity_type),
-      country: node.country || null,
+      name: safeText(node?.name || node?.entity_name, `Entity ${key}`),
+      entityType: normalizeEntityType(node?.entity_type),
+      country: node?.country || null,
+      raw: node,
     })
   })
 
@@ -126,13 +140,12 @@ function pickFocusedRelationship(controlAnalysis = {}, actualController = null) 
   return relationships[0] || null
 }
 
-function relationshipKey(relationship) {
-  return [
-    relationship?.controller_entity_id ?? relationship?.controller_name ?? '',
-    relationship?.control_type ?? '',
-    relationship?.control_ratio ?? '',
-    relationship?.is_actual_controller ? 'actual' : 'candidate',
-  ].join('|')
+function pickSummaryRelationship(controlAnalysis = {}, actualController = null) {
+  return actualController || pickFocusedRelationship(controlAnalysis, actualController)
+}
+
+function getControlPaths(relationship) {
+  return Array.isArray(relationship?.control_path) ? relationship.control_path : []
 }
 
 function controllerStep(relationship, fallbackIndex = 0) {
@@ -144,17 +157,20 @@ function controllerStep(relationship, fallbackIndex = 0) {
     id,
     name: safeText(relationship?.controller_name, `Controller ${fallbackIndex + 1}`),
     entityType: normalizeEntityType(relationship?.controller_type),
+    country: relationship?.country || null,
   }
 }
 
 function targetStep({ company = {}, relationshipGraph = {}, pathItem = null }) {
   const pathIds = Array.isArray(pathItem?.path_entity_ids) ? pathItem.path_entity_ids : []
   const pathNames = Array.isArray(pathItem?.path_entity_names) ? pathItem.path_entity_names : []
+
   const id =
     toKey(relationshipGraph?.target_entity_id) ||
     toKey(pathIds[pathIds.length - 1]) ||
     toKey(company?.target_entity_id) ||
-    `target:${company?.id ?? company?.name ?? 'company'}`
+    toKey(company?.id) ||
+    'target-company'
 
   return {
     id,
@@ -166,10 +182,6 @@ function targetStep({ company = {}, relationshipGraph = {}, pathItem = null }) {
     entityType: 'company',
     country: company?.incorporation_country || null,
   }
-}
-
-function getControlPaths(relationship) {
-  return Array.isArray(relationship?.control_path) ? relationship.control_path : []
 }
 
 function buildPathSteps(pathItem, { entityLookup, controller, target }) {
@@ -243,101 +255,421 @@ function relationshipPath(relationship, context, fallbackIndex = 0) {
   }
 }
 
-function sortRelationships(left, right) {
-  if (Boolean(left?.is_actual_controller) !== Boolean(right?.is_actual_controller)) {
-    return left?.is_actual_controller ? -1 : 1
+function fallbackPathFromCountryAttribution(countryAttribution = {}, entityLookup, target) {
+  const basis = countryAttribution?.basis || {}
+  const topPaths = Array.isArray(basis?.top_paths) ? basis.top_paths : []
+  const pathItem = topPaths[0]
+  const controllerId = toKey(basis?.actual_controller_entity_id)
+
+  if (!pathItem || !controllerId) {
+    return []
   }
-  if (isSemanticRelationship(left) !== isSemanticRelationship(right)) {
-    return isSemanticRelationship(left) ? -1 : 1
+
+  const lookup = entityLookup.get(controllerId)
+  const controller = {
+    id: controllerId,
+    name: basis?.top_candidates?.[0]?.controller_name || lookup?.name || `Entity ${controllerId}`,
+    entityType: lookup?.entityType || 'other',
+    country: lookup?.country || null,
   }
-  const ratioDelta = ratioScore(right) - ratioScore(left)
-  if (ratioDelta !== 0) {
-    return ratioDelta
-  }
-  return safeText(left?.controller_name, '').localeCompare(safeText(right?.controller_name, ''))
+
+  return normalizePathDirection(
+    buildPathSteps(pathItem, {
+      entityLookup,
+      controller,
+      target,
+    }),
+    { controller, target },
+  )
 }
 
-function selectSupportRelationships({ relationships, primaryRelationship, mainPathIds, config }) {
-  const primaryKey = relationshipKey(primaryRelationship)
-  const candidates = relationships
-    .filter((relationship) => relationshipKey(relationship) !== primaryKey)
-    .filter((relationship) => !mainPathIds.has(toKey(relationship?.controller_entity_id)))
-    .sort(sortRelationships)
+function pairKey(sourceId, targetId) {
+  return `${toKey(sourceId)}->${toKey(targetId)}`
+}
 
-  const simpleMode =
-    relationships.length <= config.simpleMaxRelationshipCount ||
-    mainPathIds.size + candidates.length <= config.simpleMaxNodeCount
-  if (simpleMode) {
-    return {
-      mode: 'simple',
-      relationships: candidates.slice(0, config.maxSupportControllers),
-      omittedCount: Math.max(0, candidates.length - config.maxSupportControllers),
+function edgePriority(edge = {}) {
+  let score = 0
+  if (edge.isPrimary) {
+    score += 100
+  }
+  if (edge.isKeyPath) {
+    score += 30
+  }
+  if (isSemanticRelationType(edge.relationType)) {
+    score += 10
+  }
+  if (!edge.isVirtual) {
+    score += 2
+  }
+  score += normalizedRatioForComparison(edge.controlRatio)
+  return score
+}
+
+function mergeUniqueStrings(left = [], right = []) {
+  return Array.from(new Set([...left, ...right].filter(Boolean)))
+}
+
+function addCanonicalNode(nodeMap, nodeLike, extra = {}) {
+  const id = toKey(nodeLike?.id)
+  if (!id) {
+    return
+  }
+
+  const existing = nodeMap.get(id)
+  const next = {
+    id,
+    name: safeText(nodeLike?.name, existing?.name || `Entity ${id}`),
+    entityType: normalizeEntityType(nodeLike?.entityType || existing?.entityType),
+    country: nodeLike?.country || existing?.country || null,
+    isActualController: Boolean(extra.isActualController || existing?.isActualController),
+    isFocused: Boolean(extra.isFocused || existing?.isFocused),
+    isDirectUpstream: Boolean(extra.isDirectUpstream || existing?.isDirectUpstream),
+    isSecondLayerCandidate: Boolean(extra.isSecondLayerCandidate || existing?.isSecondLayerCandidate),
+    isKeyPath: Boolean(extra.isKeyPath || existing?.isKeyPath),
+    keyPathIndex:
+      extra.keyPathIndex ?? existing?.keyPathIndex ?? (extra.isKeyPath ? Number.MAX_SAFE_INTEGER : null),
+    bestDownstreamRatio:
+      extra.bestDownstreamRatio ?? existing?.bestDownstreamRatio ?? null,
+    role: extra.role || existing?.role || 'support',
+  }
+
+  if (existing) {
+    if (
+      existing.keyPathIndex !== null &&
+      next.keyPathIndex !== null &&
+      existing.keyPathIndex < next.keyPathIndex
+    ) {
+      next.keyPathIndex = existing.keyPathIndex
+    }
+
+    if (normalizedRatioForComparison(existing.bestDownstreamRatio) > normalizedRatioForComparison(next.bestDownstreamRatio)) {
+      next.bestDownstreamRatio = existing.bestDownstreamRatio
+    }
+
+    if (existing.role === 'target' || existing.role === 'actualController') {
+      next.role = existing.role
+    }
+    if (extra.role === 'target' || extra.role === 'actualController') {
+      next.role = extra.role
     }
   }
 
-  const forced = candidates.filter(isSemanticRelationship)
-  const forcedKeys = new Set(forced.map(relationshipKey))
-  const ordinary = candidates.filter((relationship) => !forcedKeys.has(relationshipKey(relationship)))
-  const limit = Math.max(0, config.maxComplexSupportControllers - forced.length)
-  const selected = [...forced, ...ordinary.slice(0, limit)]
-
-  return {
-    mode: 'complex',
-    relationships: selected,
-    omittedCount: Math.max(0, candidates.length - selected.length),
+  if (next.isActualController) {
+    next.role = 'actualController'
+  } else if (next.role !== 'target' && next.isFocused) {
+    next.role = 'focused'
+  } else if (next.role !== 'target' && next.role !== 'actualController' && next.isDirectUpstream) {
+    next.role = 'direct'
   }
+
+  nodeMap.set(id, next)
 }
 
-function makeNode({ step, role, relationship = null, isMainPath = false }) {
-  return {
-    id: toKey(step.id),
-    name: safeText(step.name, '未命名主体'),
-    entityType: normalizeEntityType(step.entityType),
-    country: step.country || null,
-    role,
-    isMainPath,
-    relationshipKey: relationship ? relationshipKey(relationship) : null,
-    controlType: relationship?.control_type || null,
-    controlRatio: relationship?.control_ratio ?? null,
+function addCanonicalEdge(edgeMap, edgeLike = {}) {
+  const source = toKey(edgeLike?.source)
+  const target = toKey(edgeLike?.target)
+  if (!source || !target) {
+    return
   }
+
+  const key = pairKey(source, target)
+  const candidate = {
+    id: edgeLike?.id || key,
+    source,
+    target,
+    relationType: normalizeRelationType(edgeLike?.relationType),
+    relationTypes: Array.isArray(edgeLike?.relationTypes)
+      ? edgeLike.relationTypes.map((item) => normalizeRelationType(item))
+      : [normalizeRelationType(edgeLike?.relationType)],
+    controlRatio: edgeLike?.controlRatio ?? null,
+    isKeyPath: Boolean(edgeLike?.isKeyPath),
+    isPrimary: Boolean(edgeLike?.isPrimary),
+    isVirtual: Boolean(edgeLike?.isVirtual),
+    origin: edgeLike?.origin || 'graph',
+  }
+
+  const existing = edgeMap.get(key)
+  if (!existing) {
+    edgeMap.set(key, candidate)
+    return
+  }
+
+  const merged = edgePriority(candidate) > edgePriority(existing) ? { ...existing, ...candidate } : { ...candidate, ...existing }
+  merged.id = existing.id || candidate.id || key
+  merged.isKeyPath = existing.isKeyPath || candidate.isKeyPath
+  merged.isPrimary = existing.isPrimary || candidate.isPrimary
+  merged.isVirtual = existing.isVirtual && candidate.isVirtual
+  merged.relationTypes = mergeUniqueStrings(existing.relationTypes, candidate.relationTypes)
+  merged.relationType =
+    edgePriority(candidate) > edgePriority(existing) ? candidate.relationType : existing.relationType
+
+  if (
+    normalizedRatioForComparison(candidate.controlRatio) >
+    normalizedRatioForComparison(existing.controlRatio)
+  ) {
+    merged.controlRatio = candidate.controlRatio
+  } else {
+    merged.controlRatio = existing.controlRatio
+  }
+
+  edgeMap.set(key, merged)
 }
 
-function makeEdge({
-  source,
-  target,
-  relationship = null,
-  relationType = null,
-  isKeyPath = false,
-  isPrimary = false,
-  idPrefix = 'edge',
+function addGraphNodes(nodeMap, entityLookup) {
+  entityLookup.forEach((entity) => {
+    addCanonicalNode(nodeMap, entity)
+  })
+}
+
+function addGraphEdges(edgeMap, relationshipGraph = {}) {
+  const edges = Array.isArray(relationshipGraph?.edges) ? relationshipGraph.edges : []
+
+  edges.forEach((edge, index) => {
+    addCanonicalEdge(edgeMap, {
+      id: toKey(edge?.structure_id) || toKey(edge?.id) || `graph:${index}`,
+      source: edge?.from_entity_id,
+      target: edge?.to_entity_id,
+      relationType: edge?.relation_type || edge?.control_type,
+      controlRatio: ratioFromEdge(edge),
+      isVirtual: false,
+      origin: 'graph',
+    })
+  })
+}
+
+function applyRelationshipPaths({
+  relationships,
+  context,
+  nodeMap,
+  edgeMap,
+  actualControllerId,
+  focusedControllerId,
+  keyPathPairKeys,
+  keyPathNodeIndex,
 }) {
-  const type = normalizeRelationType(relationType || relationship?.control_type)
+  relationships.forEach((relationship, index) => {
+    const path = relationshipPath(relationship, context, index)
+    const relationshipControllerId = toKey(relationship?.controller_entity_id)
+    const isActualRelationship = actualControllerId && sameId(relationshipControllerId, actualControllerId)
+    const isFocusedRelationship = focusedControllerId && sameId(relationshipControllerId, focusedControllerId)
+    const pathEdges = Array.isArray(path?.pathItem?.edges) ? path.pathItem.edges : []
+
+    path.steps.forEach((step, stepIndex) => {
+      addCanonicalNode(nodeMap, step, {
+        isActualController: isActualRelationship && stepIndex === 0,
+        isFocused: isFocusedRelationship && stepIndex === 0,
+        isKeyPath: keyPathNodeIndex.has(toKey(step.id)),
+        keyPathIndex: keyPathNodeIndex.get(toKey(step.id)) ?? null,
+      })
+    })
+
+    path.steps.forEach((step, stepIndex) => {
+      const nextStep = path.steps[stepIndex + 1]
+      if (!nextStep) {
+        return
+      }
+
+      const edgePayload = pathEdges[stepIndex] || null
+      const source = toKey(step.id)
+      const target = toKey(nextStep.id)
+      addCanonicalEdge(edgeMap, {
+        id: pairKey(source, target),
+        source,
+        target,
+        relationType: edgePayload?.relation_type || edgePayload?.control_type || relationship?.control_type,
+        controlRatio:
+          ratioFromEdge(edgePayload) ??
+          ratioFromValue(relationship?.control_ratio),
+        isKeyPath: keyPathPairKeys.has(pairKey(source, target)),
+        isPrimary: isActualRelationship && keyPathPairKeys.has(pairKey(source, target)),
+        isVirtual: !edgePayload,
+        origin: edgePayload ? 'control-path-edge' : 'control-path-virtual',
+      })
+    })
+  })
+}
+
+function buildIncomingEdgeMap(edges = []) {
+  const incoming = new Map()
+  edges.forEach((edge) => {
+    const target = toKey(edge.target)
+    if (!target) {
+      return
+    }
+    if (!incoming.has(target)) {
+      incoming.set(target, [])
+    }
+    incoming.get(target).push(edge)
+  })
+  return incoming
+}
+
+function sortIncomingEdgesForNode(edges = [], nodeMap, downstreamId, keyParentByNodeId) {
+  return [...edges].sort((left, right) => {
+    const leftKey = keyParentByNodeId.get(downstreamId) === toKey(left.source)
+    const rightKey = keyParentByNodeId.get(downstreamId) === toKey(right.source)
+    if (leftKey !== rightKey) {
+      return leftKey ? -1 : 1
+    }
+
+    if (left.isKeyPath !== right.isKeyPath) {
+      return left.isKeyPath ? -1 : 1
+    }
+
+    const leftSemantic = isSemanticRelationType(left.relationType)
+    const rightSemantic = isSemanticRelationType(right.relationType)
+    if (leftSemantic !== rightSemantic) {
+      return leftSemantic ? -1 : 1
+    }
+
+    const ratioDelta =
+      normalizedRatioForComparison(right.controlRatio) -
+      normalizedRatioForComparison(left.controlRatio)
+    if (ratioDelta !== 0) {
+      return ratioDelta
+    }
+
+    const leftName = safeText(nodeMap.get(toKey(left.source))?.name, '')
+    const rightName = safeText(nodeMap.get(toKey(right.source))?.name, '')
+    return leftName.localeCompare(rightName)
+  })
+}
+
+function annotateStructuralHints({
+  nodeMap,
+  edgeMap,
+  targetId,
+  actualControllerId,
+  keyPathNodeIds,
+}) {
+  const edges = Array.from(edgeMap.values())
+  const incoming = buildIncomingEdgeMap(edges)
+  const directUpstreamEdges = incoming.get(targetId) || []
+  const directUpstreamIds = directUpstreamEdges.map((edge) => toKey(edge.source)).filter(Boolean)
+  const directSet = new Set(directUpstreamIds)
+  const secondLayerSet = new Set()
+
+  directUpstreamEdges.forEach((edge) => {
+    const sourceId = toKey(edge.source)
+    const ratio = edge.controlRatio
+    addCanonicalNode(nodeMap, nodeMap.get(sourceId), {
+      isDirectUpstream: true,
+      bestDownstreamRatio: ratio,
+      role: sameId(sourceId, actualControllerId) ? 'actualController' : 'direct',
+    })
+
+    const parents = incoming.get(sourceId) || []
+    parents.forEach((parentEdge) => {
+      secondLayerSet.add(toKey(parentEdge.source))
+    })
+  })
+
+  secondLayerSet.forEach((nodeId) => {
+    addCanonicalNode(nodeMap, nodeMap.get(nodeId), {
+      isSecondLayerCandidate: true,
+    })
+  })
+
+  keyPathNodeIds.forEach((nodeId, index) => {
+    addCanonicalNode(nodeMap, nodeMap.get(nodeId), {
+      isKeyPath: true,
+      keyPathIndex: index,
+      role: sameId(nodeId, targetId)
+        ? 'target'
+        : sameId(nodeId, actualControllerId)
+          ? 'actualController'
+          : directSet.has(nodeId)
+            ? 'direct'
+            : 'intermediate',
+    })
+  })
+
   return {
-    id: `${idPrefix}:${toKey(source)}->${toKey(target)}`,
-    source: toKey(source),
-    target: toKey(target),
-    relationType: type,
-    isKeyPath,
-    isPrimary,
-    controlRatio: relationship?.control_ratio ?? null,
+    incoming,
+    directUpstreamIds,
+    secondLayerIds: Array.from(secondLayerSet).filter(Boolean),
   }
 }
 
-function addNode(nodeMap, node) {
-  if (node?.id && !nodeMap.has(node.id)) {
-    nodeMap.set(node.id, node)
+function sortDirectUpstreamIds({
+  ids,
+  nodeMap,
+  incoming,
+  targetId,
+  keyPathFirstLayerId,
+  actualControllerId,
+}) {
+  return [...new Set(ids.map((id) => toKey(id)).filter(Boolean))].sort((leftId, rightId) => {
+    const leftKey = sameId(leftId, keyPathFirstLayerId)
+    const rightKey = sameId(rightId, keyPathFirstLayerId)
+    if (leftKey !== rightKey) {
+      return leftKey ? -1 : 1
+    }
+
+    const leftActual = sameId(leftId, actualControllerId)
+    const rightActual = sameId(rightId, actualControllerId)
+    if (leftActual !== rightActual) {
+      return leftActual ? -1 : 1
+    }
+
+    const targetIncoming = incoming.get(targetId) || []
+    const leftEdge = targetIncoming.find((edge) => sameId(edge.source, leftId))
+    const rightEdge = targetIncoming.find((edge) => sameId(edge.source, rightId))
+    const ratioDelta =
+      normalizedRatioForComparison(rightEdge?.controlRatio) -
+      normalizedRatioForComparison(leftEdge?.controlRatio)
+    if (ratioDelta !== 0) {
+      return ratioDelta
+    }
+
+    const leftSemantic = isSemanticRelationType(leftEdge?.relationType)
+    const rightSemantic = isSemanticRelationType(rightEdge?.relationType)
+    if (leftSemantic !== rightSemantic) {
+      return leftSemantic ? -1 : 1
+    }
+
+    return safeText(nodeMap.get(leftId)?.name, '').localeCompare(safeText(nodeMap.get(rightId)?.name, ''))
+  })
+}
+
+function buildKeyPathMetadata(pathSteps = []) {
+  const nodeIds = pathSteps.map((step) => toKey(step.id)).filter(Boolean)
+  const nodeIndex = new Map(nodeIds.map((id, index) => [id, index]))
+  const pairKeys = new Set()
+  const keyParentByNodeId = new Map()
+
+  nodeIds.forEach((nodeId, index) => {
+    const nextId = nodeIds[index + 1]
+    if (!nextId) {
+      return
+    }
+
+    pairKeys.add(pairKey(nodeId, nextId))
+    keyParentByNodeId.set(nextId, nodeId)
+  })
+
+  return {
+    nodeIds,
+    nodeIndex,
+    pairKeys,
+    keyParentByNodeId,
+    firstLayerId: nodeIds.length >= 2 ? nodeIds[nodeIds.length - 2] : '',
   }
 }
 
-function addEdge(edgeMap, edge) {
-  if (edge?.source && edge?.target && !edgeMap.has(edge.id)) {
-    edgeMap.set(edge.id, edge)
-  }
+function buildDefaultExpandedNodeIds(keyPathNodeIds = [], config = {}) {
+  const maxDepth = config.maxAutoExpandedKeyPathDepth ?? CONTROL_STRUCTURE_DISPLAY_CONFIG.maxAutoExpandedKeyPathDepth
+  return keyPathNodeIds.slice(2, Math.max(2, keyPathNodeIds.length - 1)).slice(0, maxDepth)
 }
 
-function attachmentForSupportPath(pathSteps, mainPathIds, targetId) {
-  const attachment = pathSteps.slice(1).find((step) => mainPathIds.has(toKey(step.id)))
-  return attachment?.id || targetId
+function buildExpansionSeed({ targetId, actualControllerId, keyPathNodeIds, edgeCount, nodeCount }) {
+  return [
+    targetId,
+    actualControllerId,
+    keyPathNodeIds.join('>'),
+    nodeCount,
+    edgeCount,
+  ].join('|')
 }
 
 export function buildControlStructureModel({
@@ -351,168 +683,215 @@ export function buildControlStructureModel({
     ...CONTROL_STRUCTURE_DISPLAY_CONFIG,
     ...displayConfig,
   }
+
   const relationships = Array.isArray(controlAnalysis?.control_relationships)
     ? controlAnalysis.control_relationships
     : []
+  const entityLookup = buildEntityLookup(relationshipGraph)
   const actualController = pickActualController(controlAnalysis)
   const focusedRelationship = pickFocusedRelationship(controlAnalysis, actualController)
-  const primaryRelationship = actualController || focusedRelationship
+  const summaryRelationship = pickSummaryRelationship(controlAnalysis, actualController)
+  const firstPathItem = getControlPaths(summaryRelationship)[0] || null
+  const target = targetStep({ company, relationshipGraph, pathItem: firstPathItem })
 
-  if (!primaryRelationship) {
+  if (!target.id) {
     return {
       hasDiagram: false,
-      placeholderTitle: '暂无可展示的控制结构',
-      placeholderDescription: '当前 summary 中尚无可用于生成控制结构图的控制关系。',
+      placeholderTitle: 'No renderable control structure',
+      placeholderDescription: 'Target company information is missing.',
       nodes: [],
       edges: [],
-      mainPathNodeIds: [],
+      keyPathNodeIds: [],
+      directUpstreamIds: [],
     }
   }
 
-  const entityLookup = buildEntityLookup(relationshipGraph)
-  const firstPathItem = getControlPaths(primaryRelationship)[0] || null
-  const target = targetStep({ company, relationshipGraph, pathItem: firstPathItem })
   const context = {
     entityLookup,
     target,
   }
-  const primaryPath = relationshipPath(primaryRelationship, context, 0)
-  const mainPathIds = new Set(primaryPath.steps.map((step) => toKey(step.id)).filter(Boolean))
-  const supportSelection = selectSupportRelationships({
-    relationships,
-    primaryRelationship,
-    mainPathIds,
-    config,
-  })
+
+  const primaryPath =
+    summaryRelationship ? relationshipPath(summaryRelationship, context, 0) : { steps: [] }
+  const fallbackCountryPath =
+    primaryPath.steps.length >= 2
+      ? []
+      : fallbackPathFromCountryAttribution(countryAttribution, entityLookup, target)
+  const keyPathSteps = primaryPath.steps.length >= 2 ? primaryPath.steps : fallbackCountryPath
+  const keyPath = buildKeyPathMetadata(keyPathSteps)
+
   const nodeMap = new Map()
   const edgeMap = new Map()
 
-  primaryPath.steps.forEach((step, index) => {
-    const isTarget = sameId(step.id, target.id) || index === primaryPath.steps.length - 1
-    const isActual = actualController && sameId(step.id, actualController.controller_entity_id)
-    const isFocused =
-      !isActual && focusedRelationship && sameId(step.id, focusedRelationship.controller_entity_id)
-    const role = isTarget
-      ? 'target'
-      : isActual
-        ? 'actualController'
-        : isFocused
-          ? 'focused'
-          : 'intermediate'
+  addGraphNodes(nodeMap, entityLookup)
+  addGraphEdges(edgeMap, relationshipGraph)
 
-    addNode(
+  addCanonicalNode(nodeMap, target, { role: 'target' })
+
+  if (summaryRelationship) {
+    const actualControllerId = toKey(actualController?.controller_entity_id)
+    const focusedControllerId = toKey(focusedRelationship?.controller_entity_id)
+    applyRelationshipPaths({
+      relationships,
+      context,
       nodeMap,
-      makeNode({
-        step: isTarget ? { ...step, entityType: 'company' } : step,
-        role,
-        relationship: role === 'actualController' ? actualController : null,
-        isMainPath: true,
-      }),
-    )
-  })
-
-  primaryPath.steps.forEach((step, index) => {
-    const nextStep = primaryPath.steps[index + 1]
-    if (!nextStep) {
-      return
-    }
-    addEdge(
       edgeMap,
-      makeEdge({
-        source: step.id,
-        target: nextStep.id,
-        relationship: primaryRelationship,
+      actualControllerId,
+      focusedControllerId,
+      keyPathPairKeys: keyPath.pairKeys,
+      keyPathNodeIndex: keyPath.nodeIndex,
+    })
+  } else if (keyPath.nodeIds.length >= 2) {
+    keyPathSteps.forEach((step, index) => {
+      addCanonicalNode(nodeMap, step, {
+        isKeyPath: true,
+        keyPathIndex: index,
+      })
+    })
+
+    keyPath.nodeIds.forEach((nodeId, index) => {
+      const nextId = keyPath.nodeIds[index + 1]
+      if (!nextId) {
+        return
+      }
+      addCanonicalEdge(edgeMap, {
+        id: pairKey(nodeId, nextId),
+        source: nodeId,
+        target: nextId,
+        relationType: 'equity',
         isKeyPath: true,
         isPrimary: true,
-        idPrefix: 'primary',
-      }),
-    )
-  })
+        isVirtual: true,
+        origin: 'country-attribution-fallback',
+      })
+    })
+  }
 
-  supportSelection.relationships.forEach((relationship, index) => {
-    const supportPath = relationshipPath(relationship, context, index + 1)
-    const controller = supportPath.steps[0]
-    const attachmentId = attachmentForSupportPath(supportPath.steps, mainPathIds, target.id)
-    const semantic = isSemanticRelationship(relationship)
-    const bridge = semantic
-      ? supportPath.steps
-          .slice(1, -1)
-          .find((step) => !mainPathIds.has(toKey(step.id)))
-      : null
+  const actualControllerId = toKey(actualController?.controller_entity_id) || toKey(countryAttribution?.basis?.actual_controller_entity_id)
+  const focusedControllerId = toKey(focusedRelationship?.controller_entity_id)
 
-    addNode(
-      nodeMap,
-      makeNode({
-        step: controller,
-        role:
-          focusedRelationship && sameId(controller.id, focusedRelationship.controller_entity_id)
-            ? 'focused'
-            : 'support',
-        relationship,
-      }),
-    )
-
-    if (bridge) {
-      addNode(
-        nodeMap,
-        makeNode({
-          step: bridge,
-          role: 'intermediate',
-          relationship,
-        }),
-      )
-      addEdge(
-        edgeMap,
-        makeEdge({
-          source: controller.id,
-          target: bridge.id,
-          relationship,
-          isKeyPath: semantic,
-          idPrefix: 'support',
-        }),
-      )
-      addEdge(
-        edgeMap,
-        makeEdge({
-          source: bridge.id,
-          target: attachmentId,
-          relationship,
-          isKeyPath: semantic,
-          idPrefix: 'support',
-        }),
-      )
-      return
+  if (actualControllerId) {
+    const actualNode = nodeMap.get(actualControllerId) || entityLookup.get(actualControllerId)
+    if (actualNode) {
+      addCanonicalNode(nodeMap, actualNode, {
+        isActualController: true,
+        role: 'actualController',
+        isKeyPath: keyPath.nodeIndex.has(actualControllerId),
+        keyPathIndex: keyPath.nodeIndex.get(actualControllerId) ?? 0,
+      })
     }
+  }
 
-    addEdge(
-      edgeMap,
-      makeEdge({
-        source: controller.id,
-        target: attachmentId,
-        relationship,
-        isKeyPath: semantic,
-        idPrefix: 'support',
-      }),
-    )
+  if (focusedControllerId && !sameId(focusedControllerId, actualControllerId)) {
+    const focusedNode = nodeMap.get(focusedControllerId) || entityLookup.get(focusedControllerId)
+    if (focusedNode) {
+      addCanonicalNode(nodeMap, focusedNode, {
+        isFocused: true,
+        role: 'focused',
+      })
+    }
+  }
+
+  const structural = annotateStructuralHints({
+    nodeMap,
+    edgeMap,
+    targetId: target.id,
+    actualControllerId,
+    keyPathNodeIds: keyPath.nodeIds,
   })
+
+  const directUpstreamIds = sortDirectUpstreamIds({
+    ids: structural.directUpstreamIds,
+    nodeMap,
+    incoming: structural.incoming,
+    targetId: target.id,
+    keyPathFirstLayerId: keyPath.firstLayerId,
+    actualControllerId,
+  })
+
+  const nodes = Array.from(nodeMap.values()).map((node) => {
+    const incomingEdges = sortIncomingEdgesForNode(
+      structural.incoming.get(node.id) || [],
+      nodeMap,
+      node.id,
+      keyPath.keyParentByNodeId,
+    )
+
+    return {
+      ...node,
+      incomingEdgeIds: incomingEdges.map((edge) => edge.id),
+      hasUpstream: incomingEdges.length > 0,
+      upstreamCount: incomingEdges.length,
+    }
+  })
+
+  const edges = Array.from(edgeMap.values()).map((edge) => ({
+    ...edge,
+    sourceName: nodeMap.get(toKey(edge.source))?.name || `Entity ${edge.source}`,
+    targetName: nodeMap.get(toKey(edge.target))?.name || `Entity ${edge.target}`,
+  }))
+
+  const summaryControllerId = actualControllerId || focusedControllerId || keyPath.nodeIds[0] || ''
+  const summaryControllerNode = nodeMap.get(summaryControllerId) || null
+  const defaultExpandedNodeIds = buildDefaultExpandedNodeIds(keyPath.nodeIds, config)
+
+  if (!edges.length && !directUpstreamIds.length && !summaryControllerId) {
+    return {
+      hasDiagram: false,
+      placeholderTitle: 'No renderable control structure',
+      placeholderDescription: 'Neither direct upstream relationships nor controller paths were found.',
+      nodes: [],
+      edges: [],
+      keyPathNodeIds: [],
+      directUpstreamIds: [],
+    }
+  }
 
   return {
     hasDiagram: true,
     viewMode: 'Control Structure Diagram',
-    sourceMode: 'summary-first',
+    sourceMode: 'progressive-expand',
+    displayMode: 'progressive-expand',
+    targetId: target.id,
     targetName: target.name,
-    actualControllerName: safeText(actualController?.controller_name, EMPTY_TEXT),
+    actualControllerId,
+    actualControllerName: safeText(actualController?.controller_name, summaryControllerNode?.name || EMPTY_TEXT),
+    focusedControllerId,
     focusedControllerName: safeText(focusedRelationship?.controller_name, EMPTY_TEXT),
-    actualControlCountry: safeText(countryAttribution?.actual_control_country, '未识别'),
+    summaryControllerId,
+    summaryControllerName: safeText(summaryControllerNode?.name || actualController?.controller_name || focusedRelationship?.controller_name, EMPTY_TEXT),
+    summaryControllerType: summaryControllerNode?.entityType || normalizeEntityType(actualController?.controller_type),
+    actualControlCountry: safeText(countryAttribution?.actual_control_country, 'Unknown'),
     attributionType: safeText(countryAttribution?.attribution_type, EMPTY_TEXT),
-    nodes: Array.from(nodeMap.values()),
-    edges: Array.from(edgeMap.values()),
-    mainPathNodeIds: primaryPath.steps.map((step) => toKey(step.id)).filter(Boolean),
-    omittedRelationshipCount: supportSelection.omittedCount,
-    displayMode: supportSelection.mode,
+    nodes,
+    edges,
+    directUpstreamIds,
+    secondLayerCandidateIds: structural.secondLayerIds,
+    keyPathNodeIds: keyPath.nodeIds,
+    keyPathEdgeIds: Array.from(keyPath.pairKeys),
+    keyPathFirstLayerId: keyPath.firstLayerId,
+    keyParentByNodeId: Object.fromEntries(keyPath.keyParentByNodeId.entries()),
+    defaultExpandedNodeIds,
+    omittedRelationshipCount: 0,
+    expansionSeed: buildExpansionSeed({
+      targetId: target.id,
+      actualControllerId,
+      keyPathNodeIds: keyPath.nodeIds,
+      edgeCount: edges.length,
+      nodeCount: nodes.length,
+    }),
+    selectionSummary: {
+      canonicalNodeCount: nodes.length,
+      canonicalEdgeCount: edges.length,
+      directUpstreamCount: directUpstreamIds.length,
+      secondLayerCandidateCount: structural.secondLayerIds.length,
+      keyPathLength: keyPath.nodeIds.length,
+      defaultExpandedCount: defaultExpandedNodeIds.length,
+      controlRelationshipCount: relationships.length,
+    },
     legend: {
       entityTypes: ENTITY_TYPES,
-      roles: ['target', 'focused', 'actualController'],
+      roles: ['target', 'direct', 'focused', 'actualController'],
       edgeTypes: ['equity', 'agreement', 'board_control', 'voting_right', 'nominee', 'vie', 'key_path'],
     },
   }

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import ControlStructurePlaceholder from '@/components/ControlStructurePlaceholder.vue'
 import { buildControlStructureModel } from '@/utils/controlStructureAdapter'
@@ -30,6 +30,55 @@ const props = defineProps({
 const stageRef = ref(null)
 const hoverCard = ref(null)
 const expandedByNodeId = reactive({})
+const viewportSize = reactive({
+  width: 0,
+  height: 0,
+})
+const viewportTransform = reactive({
+  x: 0,
+  y: 0,
+  scale: 1,
+  userAdjusted: false,
+})
+const panState = reactive({
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  originX: 0,
+  originY: 0,
+})
+
+const MIN_ZOOM = 0.32
+const MAX_ZOOM = 2.6
+const FIT_PADDING = 0.92
+let resizeObserver = null
+
+const ENTITY_TYPE_LABELS = {
+  company: '公司主体',
+  person: '自然人',
+  fund: '基金 / 公众持股',
+  government: '政府 / 国资主体',
+  other: '其他主体',
+}
+
+const RELATION_TYPE_LABELS = {
+  equity: '股权控制',
+  agreement: '协议控制',
+  agreement_control: '协议控制',
+  board_control: '董事会 / 席位控制',
+  voting_right: '表决权安排',
+  nominee: '代持 / 名义持有人',
+  vie: 'VIE 结构',
+  vie_control: 'VIE 结构',
+  mixed_control: '混合控制',
+  joint_control: '共同控制',
+}
+
+const DISPLAY_MODE_LABELS = {
+  'progressive-expand': '分层展开',
+  'summary-first': '摘要优先',
+}
 
 const diagramModel = computed(() =>
   buildControlStructureModel({
@@ -53,6 +102,8 @@ watch(
     defaults.forEach((nodeId) => {
       expandedByNodeId[String(nodeId)] = true
     })
+    viewportTransform.userAdjusted = false
+    nextTick(() => fitView())
   },
   { immediate: true },
 )
@@ -96,6 +147,18 @@ const diagramState = computed(() => {
 const diagramLayout = computed(() => diagramState.value.layout)
 const shouldFallback = computed(() => Boolean(diagramState.value.error || !diagramLayout.value))
 
+const viewportWidth = computed(() =>
+  Math.max(1, Math.round(viewportSize.width || diagramLayout.value?.width || 1)),
+)
+const viewportHeight = computed(() =>
+  Math.max(1, Math.round(viewportSize.height || diagramLayout.value?.canvasHeight || 1)),
+)
+const viewportBox = computed(() => `0 0 ${viewportWidth.value} ${viewportHeight.value}`)
+const contentTransform = computed(
+  () =>
+    `translate(${viewportTransform.x.toFixed(2)} ${viewportTransform.y.toFixed(2)}) scale(${viewportTransform.scale.toFixed(4)})`,
+)
+
 const canvasStyle = computed(() => {
   if (!diagramLayout.value) {
     return {}
@@ -108,6 +171,59 @@ const canvasStyle = computed(() => {
 
 function toKey(value) {
   return value === null || value === undefined ? '' : String(value)
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function measureViewport() {
+  const rect = stageRef.value?.getBoundingClientRect()
+  if (!rect) {
+    return
+  }
+
+  viewportSize.width = Math.max(1, rect.width)
+  viewportSize.height = Math.max(1, rect.height)
+}
+
+function attachResizeObserver() {
+  if (resizeObserver || !stageRef.value || typeof ResizeObserver === 'undefined') {
+    return
+  }
+
+  resizeObserver = new ResizeObserver(() => {
+    measureViewport()
+    if (!viewportTransform.userAdjusted) {
+      fitView()
+    }
+  })
+  resizeObserver.observe(stageRef.value)
+}
+
+function fitView() {
+  measureViewport()
+  const layout = diagramLayout.value
+  if (!layout?.width || !layout?.height) {
+    return
+  }
+
+  const availableWidth = viewportWidth.value
+  const availableHeight = viewportHeight.value
+  const nextScale = clamp(
+    Math.min(availableWidth / layout.width, availableHeight / layout.height) * FIT_PADDING,
+    MIN_ZOOM,
+    MAX_ZOOM,
+  )
+
+  viewportTransform.scale = nextScale
+  viewportTransform.x = (availableWidth - layout.width * nextScale) / 2
+  viewportTransform.y = (availableHeight - layout.height * nextScale) / 2
+}
+
+function resetView() {
+  viewportTransform.userAdjusted = false
+  fitView()
 }
 
 function resetHover() {
@@ -128,51 +244,84 @@ function formatPercent(value) {
   return `${normalized.toFixed(2)}%`
 }
 
+function entityTypeLabel(value) {
+  return ENTITY_TYPE_LABELS[value] || ENTITY_TYPE_LABELS.other
+}
+
+function relationTypeLabel(value) {
+  if (!value) {
+    return ''
+  }
+  return RELATION_TYPE_LABELS[value] || String(value)
+}
+
+function displayModeLabel(value) {
+  return DISPLAY_MODE_LABELS[value] || value || '分层展开'
+}
+
 function nodeRoleLabel(node) {
   if (node.role === 'actualSummary') {
-    return 'actual controller'
+    return '实际控制人'
   }
   if (node.role === 'target') {
-    return 'target company'
+    return '目标公司'
   }
   if (node.depthFromTarget === 1) {
-    return 'direct upstream'
+    return '直接上游主体'
   }
-  return `upstream layer ${node.depthFromTarget}`
+  if (node.isKeyPath) {
+    return '关键路径节点'
+  }
+  return `第 ${node.depthFromTarget} 层上游主体`
 }
 
 function edgeTitle(edge) {
   if (edge.isPrimary && edge.isCollapsed) {
-    return 'collapsed key path'
+    return '折叠关键路径提示'
   }
   if (edge.isPrimary) {
-    return 'key path'
+    return '关键控制路径'
   }
   if (edge.isKeyPath) {
-    return 'key-path segment'
+    return '关键路径片段'
   }
-  return 'control relation'
+  return '控制关系'
+}
+
+function yesNo(value) {
+  return value ? '是' : '否'
 }
 
 function buildTooltipLines(item) {
   if (item?.sourceRenderKey && item?.targetRenderKey) {
     return [
-      `type: ${item.relationType}`,
+      item.controlSubjectName ? `控制主体：${item.controlSubjectName}` : null,
+      item.controlObjectName ? `控制对象：${item.controlObjectName}` : null,
+      relationTypeLabel(item.relationType) ? `控制类型：${relationTypeLabel(item.relationType)}` : null,
       item.controlRatio !== null && item.controlRatio !== undefined && item.controlRatio !== ''
-        ? `ratio: ${formatPercent(item.controlRatio)}`
+        ? `控制 / 持股比例：${formatPercent(item.controlRatio)}`
         : null,
-      item.isCollapsed ? 'collapsed: hidden upstream steps are summarized' : null,
+      `关键路径：${yesNo(item.isPrimary || item.isKeyPath)}`,
+      item.isCollapsed ? '说明：中间路径已折叠显示' : null,
     ].filter(Boolean)
   }
 
   return [
-    `role: ${nodeRoleLabel(item)}`,
-    `entity: ${item.entityType}`,
-    item.country ? `country: ${item.country}` : null,
+    `节点角色：${nodeRoleLabel(item)}`,
+    `主体类型：${entityTypeLabel(item.entityType)}`,
+    item.country ? `国家 / 地区：${item.country}` : null,
+    item.controlRatio !== null && item.controlRatio !== undefined && item.controlRatio !== ''
+      ? `控制 / 持股比例：${formatPercent(item.controlRatio)}`
+      : null,
+    relationTypeLabel(item.relationType) ? `控制类型：${relationTypeLabel(item.relationType)}` : null,
+    item.relatedEntityName
+      ? `${item.relationDirection === 'controlledBy' ? '关联主体' : '控制对象'}：${item.relatedEntityName}`
+      : null,
+    `关键路径：${yesNo(item.isKeyPath)}`,
     item.expandable
       ? item.expanded
-        ? 'state: expanded'
-        : `state: collapsed (${item.hiddenUpstreamCount || 0} hidden)`
+        ? '展开状态：已展开'
+        : `展开状态：已收起（隐藏 ${item.hiddenUpstreamCount || 0} 个上游主体）`
       : null,
   ].filter(Boolean)
 }
@@ -205,7 +354,7 @@ function hoverCardStyle() {
 function labelLines(value) {
   const text = String(value || '').trim()
   if (!text) {
-    return ['Unnamed entity']
+    return ['未命名主体']
   }
 
   const limit = 16
@@ -254,6 +403,67 @@ function markerEnd(edge) {
     : 'url(#control-structure-arrow-normal)'
 }
 
+function handleWheel(event) {
+  if (!diagramLayout.value) {
+    return
+  }
+
+  const rect = stageRef.value?.getBoundingClientRect()
+  if (!rect) {
+    return
+  }
+
+  const pointerX = event.clientX - rect.left
+  const pointerY = event.clientY - rect.top
+  const previousScale = viewportTransform.scale
+  const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY
+  const nextScale = clamp(previousScale * Math.exp(-delta * 0.0012), MIN_ZOOM, MAX_ZOOM)
+  if (Math.abs(nextScale - previousScale) < 0.001) {
+    return
+  }
+
+  const ratio = nextScale / previousScale
+  viewportTransform.x = pointerX - (pointerX - viewportTransform.x) * ratio
+  viewportTransform.y = pointerY - (pointerY - viewportTransform.y) * ratio
+  viewportTransform.scale = nextScale
+  viewportTransform.userAdjusted = true
+}
+
+function startPan(event) {
+  if (event.button !== 0) {
+    return
+  }
+
+  panState.active = true
+  panState.pointerId = event.pointerId
+  panState.startX = event.clientX
+  panState.startY = event.clientY
+  panState.originX = viewportTransform.x
+  panState.originY = viewportTransform.y
+  viewportTransform.userAdjusted = true
+  resetHover()
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
+}
+
+function handlePanMove(event) {
+  if (!panState.active || panState.pointerId !== event.pointerId) {
+    return
+  }
+
+  viewportTransform.x = panState.originX + event.clientX - panState.startX
+  viewportTransform.y = panState.originY + event.clientY - panState.startY
+}
+
+function endPan(event) {
+  if (panState.pointerId !== null && panState.pointerId !== event.pointerId) {
+    return
+  }
+
+  panState.active = false
+  panState.pointerId = null
+  event.currentTarget?.releasePointerCapture?.(event.pointerId)
+}
+
 function toggleNode(node) {
   if (!node?.expandable) {
     return
@@ -265,41 +475,77 @@ function toggleNode(node) {
 function toggleGlyph(node) {
   return node?.expanded ? '-' : '+'
 }
+
+watch(
+  () => [
+    diagramLayout.value?.width,
+    diagramLayout.value?.height,
+    viewportSize.width,
+    viewportSize.height,
+  ],
+  () => {
+    if (!viewportTransform.userAdjusted) {
+      nextTick(() => {
+        attachResizeObserver()
+        fitView()
+      })
+    }
+  },
+  { flush: 'post' },
+)
+
+onMounted(() => {
+  nextTick(() => {
+    measureViewport()
+    attachResizeObserver()
+    fitView()
+  })
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+})
 </script>
 
 <template>
   <ControlStructurePlaceholder
     v-if="shouldFallback"
-    title="Control Structure"
+    title="控制结构图"
   />
 
   <section v-else class="control-structure-diagram">
     <header class="control-structure-diagram__header">
       <div>
-        <h3>Control Structure</h3>
+        <h3>控制结构示意图</h3>
         <p>
-          Default view keeps the target at the bottom, shows only direct upstream entities, and
-          keeps the actual-controller key path readable. Expand any visible node to reveal only its
-          own upstream subtree.
+          主链按“实际控制人 → 目标公司”纵向呈现，直接上游主体在目标公司下方分支展开，
+          可逐层查看每个节点的局部上游结构。
         </p>
       </div>
-      <el-tag effect="plain" type="danger">{{ diagramModel.displayMode || 'progressive-expand' }}</el-tag>
+      <el-tag effect="plain" type="danger">{{ displayModeLabel(diagramModel.displayMode) }}</el-tag>
     </header>
 
     <div class="control-structure-diagram__main">
       <section class="control-structure-diagram__stage">
         <div
           ref="stageRef"
-          class="control-structure-diagram__canvas"
+          :class="['control-structure-diagram__canvas', panState.active ? 'is-panning' : '']"
           :style="canvasStyle"
           @mouseleave="resetHover"
         >
+          <div class="control-structure-viewport-controls">
+            <button type="button" class="viewport-control-button" @click="resetView">
+              适应视图
+            </button>
+          </div>
+
           <svg
             class="control-structure-diagram__svg"
-            :viewBox="`0 0 ${diagramLayout.width} ${diagramLayout.height}`"
+            :viewBox="viewportBox"
             preserveAspectRatio="xMidYMid meet"
             role="img"
-            aria-label="control structure diagram"
+            aria-label="控制结构图"
+            @wheel.prevent="handleWheel"
           >
             <defs>
               <marker
@@ -326,72 +572,90 @@ function toggleGlyph(node) {
               </marker>
             </defs>
 
-            <g class="structure-edges">
-              <path
-                v-for="edge in diagramLayout.edges"
-                :key="edge.id"
-                :d="edge.path"
-                :marker-end="markerEnd(edge)"
-                :class="[
-                  'structure-edge',
-                  `structure-edge--${edge.relationType}`,
-                  edge.isKeyPath ? 'structure-edge--key' : '',
-                  edge.isPrimary ? 'structure-edge--primary' : '',
-                  edge.isCollapsed ? 'structure-edge--collapsed' : '',
-                ]"
-                @mousemove="showHover($event, edge)"
-              />
-            </g>
+            <rect
+              class="structure-pan-catcher"
+              x="0"
+              y="0"
+              :width="viewportWidth"
+              :height="viewportHeight"
+              @pointerdown="startPan"
+              @pointermove="handlePanMove"
+              @pointerup="endPan"
+              @pointercancel="endPan"
+            />
 
-            <g class="structure-nodes">
-              <g
-                v-for="node in diagramLayout.nodes"
-                :key="node.renderKey"
-                :transform="`translate(${node.x}, ${node.y})`"
-                :class="[
-                  'structure-node',
-                  `structure-node--${node.role}`,
-                  node.isKeyPath ? 'structure-node--key' : '',
-                ]"
-                @mousemove="showHover($event, node)"
-              >
-                <rect
-                  :x="nodeRectX(node)"
-                  :y="nodeRectY(node)"
-                  :width="node.width"
-                  :height="node.height"
-                  :rx="node.radius"
+            <g class="structure-viewport-content" :transform="contentTransform">
+              <g class="structure-edges">
+                <path
+                  v-for="edge in diagramLayout.edges"
+                  :key="edge.id"
+                  :d="edge.path"
+                  :marker-end="markerEnd(edge)"
                   :class="[
-                    'structure-node__box',
-                    `structure-node__box--${node.entityType}`,
-                    `structure-node__box--role-${node.role}`,
+                    'structure-edge',
+                    `structure-edge--${edge.relationType}`,
+                    edge.isBranch ? 'structure-edge--branch' : '',
+                    edge.branchDepth >= 2 ? 'structure-edge--subtree' : '',
+                    edge.isKeyPath ? 'structure-edge--key' : '',
+                    edge.isPrimary ? 'structure-edge--primary' : '',
+                    edge.isCollapsed ? 'structure-edge--collapsed' : '',
                   ]"
+                  @mousemove="showHover($event, edge)"
                 />
-                <text class="structure-node__label" text-anchor="middle" dominant-baseline="middle">
-                  <tspan
-                    v-for="(line, index) in labelLines(node.name)"
-                    :key="`${node.renderKey}-${index}`"
-                    x="0"
-                    :dy="index === 0 ? -5 : 15"
-                  >
-                    {{ line }}
-                  </tspan>
-                </text>
+              </g>
 
+              <g class="structure-nodes">
                 <g
-                  v-if="node.expandable"
-                  class="structure-node__toggle"
-                  :transform="`translate(0, ${node.height / 2 + 18})`"
-                  role="button"
-                  tabindex="0"
-                  @click.stop="toggleNode(node)"
-                  @keydown.enter.prevent.stop="toggleNode(node)"
-                  @keydown.space.prevent.stop="toggleNode(node)"
+                  v-for="node in diagramLayout.nodes"
+                  :key="node.renderKey"
+                  :transform="`translate(${node.x}, ${node.y})`"
+                  :class="[
+                    'structure-node',
+                    `structure-node--${node.role}`,
+                    node.isKeyPath ? 'structure-node--key' : '',
+                  ]"
+                  @mousemove="showHover($event, node)"
+                  @pointerdown.stop
                 >
-                  <circle cx="0" cy="0" r="11" class="structure-node__toggle-circle" />
-                  <text class="structure-node__toggle-glyph" text-anchor="middle" dominant-baseline="middle">
-                    {{ toggleGlyph(node) }}
+                  <rect
+                    :x="nodeRectX(node)"
+                    :y="nodeRectY(node)"
+                    :width="node.width"
+                    :height="node.height"
+                    :rx="node.radius"
+                    :class="[
+                      'structure-node__box',
+                      `structure-node__box--${node.entityType}`,
+                      `structure-node__box--role-${node.role}`,
+                    ]"
+                  />
+                  <text class="structure-node__label" text-anchor="middle" dominant-baseline="middle">
+                    <tspan
+                      v-for="(line, index) in labelLines(node.name)"
+                      :key="`${node.renderKey}-${index}`"
+                      x="0"
+                      :dy="index === 0 ? -5 : 15"
+                    >
+                      {{ line }}
+                    </tspan>
                   </text>
+
+                  <g
+                    v-if="node.expandable"
+                    class="structure-node__toggle"
+                    :transform="`translate(0, ${node.height / 2 + 18})`"
+                    role="button"
+                    tabindex="0"
+                    @pointerdown.stop
+                    @click.stop="toggleNode(node)"
+                    @keydown.enter.prevent.stop="toggleNode(node)"
+                    @keydown.space.prevent.stop="toggleNode(node)"
+                  >
+                    <circle cx="0" cy="0" r="11" class="structure-node__toggle-circle" />
+                    <text class="structure-node__toggle-glyph" text-anchor="middle" dominant-baseline="middle">
+                      {{ toggleGlyph(node) }}
+                    </text>
+                  </g>
                 </g>
               </g>
             </g>
@@ -404,71 +668,71 @@ function toggleGlyph(node) {
         </div>
 
         <div class="control-structure-diagram__footnote">
-          Default layers:
-          <strong>actual controller</strong> on top,
-          <strong>direct upstream</strong> in the middle,
-          <strong>target company</strong> at the bottom.
-          Expanded branches stay inside their own local columns.
+          默认层次：
+          <strong>实际控制人</strong>位于顶部主轴，
+          <strong>目标公司</strong>位于中轴，
+          <strong>直接上游主体</strong>位于目标公司下方。
+          可滚轮缩放、拖拽空白区域平移，点击“适应视图”可恢复居中。
         </div>
       </section>
 
-      <aside class="control-structure-diagram__legend" aria-label="control structure legend">
+      <aside class="control-structure-diagram__legend" aria-label="控制结构图图例">
         <div class="legend-block">
-          <h4>Entity Type</h4>
+          <h4>主体类型</h4>
           <div class="legend-row">
             <span class="legend-dot legend-dot--company" />
-            <span><strong>company</strong> corporate entity</span>
+            <span><strong>公司主体</strong>企业、控股平台或经营主体</span>
           </div>
           <div class="legend-row">
             <span class="legend-dot legend-dot--person" />
-            <span><strong>person</strong> natural person</span>
+            <span><strong>自然人</strong>个人控制主体</span>
           </div>
           <div class="legend-row">
             <span class="legend-dot legend-dot--fund" />
-            <span><strong>fund</strong> fund or float</span>
+            <span><strong>基金 / 公众持股</strong>基金、公众流通股等</span>
           </div>
           <div class="legend-row">
             <span class="legend-dot legend-dot--government" />
-            <span><strong>government</strong> sovereign or state-linked</span>
+            <span><strong>政府 / 国资主体</strong>政府、主权或国资相关主体</span>
           </div>
           <div class="legend-row">
             <span class="legend-dot legend-dot--other" />
-            <span><strong>other</strong> uncategorized entity</span>
+            <span><strong>其他主体</strong>暂未归类的上游主体</span>
           </div>
         </div>
 
         <div class="legend-block">
-          <h4>Node Emphasis</h4>
+          <h4>节点角色</h4>
           <div class="legend-row">
             <span class="legend-role legend-role--actual" />
-            <span><strong>actual controller</strong> persistent top summary node</span>
+            <span><strong>实际控制人</strong>顶部主链节点</span>
           </div>
           <div class="legend-row">
             <span class="legend-role legend-role--target" />
-            <span><strong>target company</strong> anchored at bottom center</span>
+            <span><strong>目标公司</strong>中轴锚点节点</span>
           </div>
           <div class="legend-row">
             <span class="legend-role legend-role--key" />
-            <span><strong>key path node</strong> highlighted within expanded subtrees</span>
+            <span><strong>关键路径节点</strong>控制主路径上的节点</span>
           </div>
         </div>
 
         <div class="legend-block">
-          <h4>Line Style</h4>
-          <div class="legend-line-row"><span class="legend-line legend-line--plain" /><span>ordinary relation</span></div>
-          <div class="legend-line-row"><span class="legend-line legend-line--key" /><span>key path</span></div>
-          <div class="legend-line-row"><span class="legend-line legend-line--collapsed" /><span>collapsed key-path jump</span></div>
+          <h4>边样式</h4>
+          <div class="legend-line-row"><span class="legend-line legend-line--plain" /><span>普通控制关系</span></div>
+          <div class="legend-line-row"><span class="legend-line legend-line--key" /><span>关键路径</span></div>
+          <div class="legend-line-row"><span class="legend-line legend-line--collapsed" /><span>折叠路径提示</span></div>
         </div>
 
         <div class="legend-block">
-          <h4>Toggle</h4>
+          <h4>交互说明</h4>
           <div class="legend-toggle-row">
             <span class="legend-toggle">+</span>
-            <span>expand the node's next upstream layer</span>
+            <span>展开该节点的下一层上游结构</span>
           </div>
           <div class="legend-toggle-row">
             <span class="legend-toggle">-</span>
-            <span>collapse only that local subtree</span>
+            <span>仅收起该节点的局部子树</span>
           </div>
         </div>
       </aside>
@@ -527,6 +791,39 @@ function toggleGlyph(node) {
 .control-structure-diagram__canvas {
   position: relative;
   min-height: 540px;
+  overflow: hidden;
+  cursor: default;
+}
+
+.control-structure-diagram__canvas.is-panning {
+  cursor: grabbing;
+}
+
+.control-structure-viewport-controls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+}
+
+.viewport-control-button {
+  padding: 5px 9px;
+  border: 1px solid rgba(37, 54, 74, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #25364a;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+
+.viewport-control-button:hover {
+  border-color: rgba(190, 18, 60, 0.34);
+  color: #be123c;
 }
 
 .control-structure-diagram__svg {
@@ -534,13 +831,24 @@ function toggleGlyph(node) {
   width: 100%;
   height: 100%;
   min-height: inherit;
+  touch-action: none;
+  user-select: none;
+}
+
+.structure-pan-catcher {
+  fill: transparent;
+  cursor: grab;
+}
+
+.control-structure-diagram__canvas.is-panning .structure-pan-catcher {
+  cursor: grabbing;
 }
 
 .structure-edge {
   fill: none;
-  stroke: #111827;
-  stroke-width: 1.9;
-  opacity: 0.68;
+  stroke: #475569;
+  stroke-width: 1.75;
+  opacity: 0.48;
   pointer-events: stroke;
 }
 
@@ -551,36 +859,51 @@ function toggleGlyph(node) {
 }
 
 .structure-edge--agreement {
-  stroke: #7c3aed;
+  stroke: #7666cf;
 }
 
 .structure-edge--board_control {
-  stroke: #ea580c;
+  stroke: #c56b2d;
 }
 
 .structure-edge--voting_right {
-  stroke: #0f766e;
+  stroke: #24736f;
   stroke-dasharray: 4 4;
 }
 
 .structure-edge--nominee {
-  stroke: #be185d;
+  stroke: #a64270;
 }
 
 .structure-edge--vie {
-  stroke: #0891b2;
+  stroke: #2f8ca7;
 }
 
 .structure-edge--key {
-  stroke: #be123c;
-  stroke-width: 3.2;
-  opacity: 0.86;
+  stroke: #b91c1c;
+  stroke-width: 3;
+  opacity: 0.84;
+}
+
+.structure-edge--branch {
+  stroke-width: 1.9;
+  opacity: 0.5;
+}
+
+.structure-edge--subtree {
+  stroke-width: 1.5;
+  opacity: 0.38;
+}
+
+.structure-edge--key.structure-edge--branch {
+  stroke-width: 3;
+  opacity: 0.84;
 }
 
 .structure-edge--primary {
-  stroke: #be123c;
-  stroke-width: 5;
-  opacity: 0.96;
+  stroke: #b91c1c;
+  stroke-width: 4.6;
+  opacity: 0.94;
 }
 
 .structure-edge--collapsed {
@@ -588,58 +911,58 @@ function toggleGlyph(node) {
 }
 
 .structure-arrow--normal {
-  fill: #111827;
-  opacity: 0.72;
+  fill: #475569;
+  opacity: 0.56;
 }
 
 .structure-arrow--key {
-  fill: #be123c;
+  fill: #b91c1c;
 }
 
 .structure-node__box {
   stroke: #334155;
   stroke-width: 1.6;
-  filter: drop-shadow(0 7px 12px rgba(15, 23, 42, 0.08));
+  filter: drop-shadow(0 6px 10px rgba(15, 23, 42, 0.07));
 }
 
 .structure-node__box--company {
-  fill: #2563eb;
+  fill: #3b6fa8;
 }
 
 .structure-node__box--person {
-  fill: #dc2626;
+  fill: #c2413b;
 }
 
 .structure-node__box--fund {
-  fill: #16a34a;
+  fill: #3b9b6d;
 }
 
 .structure-node__box--government {
-  fill: #ea580c;
+  fill: #c9792d;
 }
 
 .structure-node__box--other {
-  fill: #64748b;
+  fill: #6b7280;
 }
 
 .structure-node__box--role-target {
-  fill: #1d4ed8;
-  stroke: #0f172a;
-  stroke-width: 4;
-  filter: drop-shadow(0 11px 16px rgba(15, 23, 42, 0.18));
+  fill: #2f5f9f;
+  stroke: #1e293b;
+  stroke-width: 3.6;
+  filter: drop-shadow(0 9px 13px rgba(15, 23, 42, 0.16));
 }
 
 .structure-node__box--role-actualSummary {
-  fill: #dc2626;
-  stroke: #be123c;
-  stroke-width: 5;
-  filter: drop-shadow(0 12px 18px rgba(190, 18, 60, 0.22));
+  fill: #c2413b;
+  stroke: #b91c1c;
+  stroke-width: 4.2;
+  filter: drop-shadow(0 9px 14px rgba(185, 28, 28, 0.18));
 }
 
 .structure-node__box--role-focused {
-  fill: #7c3aed;
-  stroke: #6d28d9;
-  stroke-width: 4;
+  fill: #7666cf;
+  stroke: #5b50ad;
+  stroke-width: 3.4;
 }
 
 .structure-node--key .structure-node__box {
@@ -664,9 +987,9 @@ function toggleGlyph(node) {
 
 .structure-node__toggle-circle {
   fill: #ffffff;
-  stroke: #25364a;
+  stroke: #475569;
   stroke-width: 1.4;
-  filter: drop-shadow(0 4px 10px rgba(15, 23, 42, 0.1));
+  filter: drop-shadow(0 3px 8px rgba(15, 23, 42, 0.08));
 }
 
 .structure-node__toggle-glyph {
@@ -769,23 +1092,23 @@ function toggleGlyph(node) {
 }
 
 .legend-dot--company {
-  background: #2563eb;
+  background: #3b6fa8;
 }
 
 .legend-dot--person {
-  background: #dc2626;
+  background: #c2413b;
 }
 
 .legend-dot--fund {
-  background: #16a34a;
+  background: #3b9b6d;
 }
 
 .legend-dot--government {
-  background: #ea580c;
+  background: #c9792d;
 }
 
 .legend-dot--other {
-  background: #64748b;
+  background: #6b7280;
 }
 
 .legend-role {
@@ -796,7 +1119,7 @@ function toggleGlyph(node) {
 }
 
 .legend-role--actual {
-  border-color: #be123c;
+  border-color: #b91c1c;
 }
 
 .legend-role--target {
@@ -813,12 +1136,12 @@ function toggleGlyph(node) {
 }
 
 .legend-line--key {
-  border-top-color: #be123c;
+  border-top-color: #b91c1c;
   border-top-width: 4px;
 }
 
 .legend-line--collapsed {
-  border-top-color: #be123c;
+  border-top-color: #b91c1c;
   border-top-style: dashed;
 }
 

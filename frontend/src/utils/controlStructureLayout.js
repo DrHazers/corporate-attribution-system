@@ -1,13 +1,13 @@
 export const CONTROL_STRUCTURE_LAYOUT_CONFIG = {
   direction: 'vertical_top_to_bottom',
-  targetAnchor: 'bottom_center',
+  targetAnchor: 'main_axis_center',
   minWidth: 920,
-  minHeight: 560,
+  minHeight: 620,
   paddingX: 118,
   paddingY: 84,
-  rowGap: 138,
-  rootGap: 56,
-  branchGap: 34,
+  rowGap: 154,
+  rootGap: 76,
+  branchGap: 42,
   branchPadding: 16,
   nodeSize: {
     actualSummary: { width: 176, height: 72, radius: 36 },
@@ -286,8 +286,8 @@ function orderRoots(roots, model, nodeMap, incomingMap) {
   }
 
   const centerRoot =
-    ordered.find((root) => toKey(root.canonicalId) === toKey(model?.keyPathFirstLayerId)) || ordered[0]
-  const others = ordered.filter((root) => root !== centerRoot)
+    ordered.find((root) => toKey(root.canonicalId) === toKey(model?.keyPathFirstLayerId)) || null
+  const others = centerRoot ? ordered.filter((root) => root !== centerRoot) : ordered
   const left = []
   const right = []
 
@@ -331,25 +331,33 @@ function assignInstancePositions(instance, bandLeft, bandRight, placed = [], dow
 
 function placeRootBands(roots, model, nodeMap, incomingMap) {
   const arrangement = orderRoots(roots, model, nodeMap, incomingMap)
-  if (!arrangement?.centerRoot) {
+  if (!arrangement) {
     return []
   }
 
   const placements = []
   const { centerRoot, left, right } = arrangement
-  placements.push({
-    instance: centerRoot,
-    centerX: 0,
-  })
+  const centerWidth = centerRoot?.bandWidth || 0
 
-  let leftCursor = -centerRoot.bandWidth / 2 - CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap
+  if (centerRoot) {
+    placements.push({
+      instance: centerRoot,
+      centerX: 0,
+    })
+  }
+
+  let leftCursor =
+    -(centerWidth / 2) -
+    (centerRoot ? CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap : CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap / 2)
   left.forEach((root) => {
     const centerX = leftCursor - root.bandWidth / 2
     placements.push({ instance: root, centerX })
     leftCursor = centerX - root.bandWidth / 2 - CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap
   })
 
-  let rightCursor = centerRoot.bandWidth / 2 + CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap
+  let rightCursor =
+    centerWidth / 2 +
+    (centerRoot ? CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap : CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap / 2)
   right.forEach((root) => {
     const centerX = rightCursor + root.bandWidth / 2
     placements.push({ instance: root, centerX })
@@ -375,21 +383,23 @@ function collectPlacedTreeNodes(rootPlacements = []) {
 function buildRenderNodes({
   model,
   nodeMap,
+  edgeMap,
   placedTreeNodes,
 }) {
   const renderNodes = []
-  const treeMaxRow = placedTreeNodes.reduce((max, node) => Math.max(max, node.depthFromTarget), 1)
   const summaryControllerId = toKey(model?.summaryControllerId)
+  const targetId = toKey(model?.targetId)
   const summaryControllerNode = summaryControllerId
     ? nodeMap.get(summaryControllerId) || {
         id: summaryControllerId,
-        name: model?.summaryControllerName || 'Controller',
+        name: model?.summaryControllerName || '控制主体',
         entityType: model?.summaryControllerType || 'other',
       }
     : null
 
   if (summaryControllerNode) {
     const size = getNodeSize('actualSummary')
+    const relationEdge = edgeMap.get(`${summaryControllerId}->${targetId}`)
     renderNodes.push({
       renderKey: 'summary-controller',
       id: summaryControllerId,
@@ -400,31 +410,42 @@ function buildRenderNodes({
       width: size.width,
       height: size.height,
       radius: size.radius,
-      row: treeMaxRow + 1,
+      row: 0,
       x: 0,
       expandable: false,
       expanded: false,
       hiddenUpstreamCount: 0,
       isKeyPath: true,
-      depthFromTarget: treeMaxRow + 1,
+      depthFromTarget: -1,
+      relationType: relationEdge?.relationType || null,
+      controlRatio: relationEdge?.controlRatio ?? null,
+      relatedEntityId: targetId,
+      relatedEntityName: model?.targetName || '目标公司',
+      relationDirection: 'controls',
     })
   }
 
+  const targetRelationEdge = summaryControllerId ? edgeMap.get(`${summaryControllerId}->${targetId}`) : null
   renderNodes.push({
     renderKey: 'target-node',
-    id: toKey(model?.targetId),
-    name: model?.targetName || 'Target Company',
+    id: targetId,
+    name: model?.targetName || '目标公司',
     entityType: 'company',
     country: null,
     role: 'target',
     ...getNodeSize('target'),
-    row: 0,
+    row: 1,
     x: 0,
     expandable: false,
     expanded: false,
     hiddenUpstreamCount: 0,
-    isKeyPath: Array.isArray(model?.keyPathNodeIds) && model.keyPathNodeIds.includes(toKey(model?.targetId)),
+    isKeyPath: Array.isArray(model?.keyPathNodeIds) && model.keyPathNodeIds.includes(targetId),
     depthFromTarget: 0,
+    relationType: targetRelationEdge?.relationType || null,
+    controlRatio: targetRelationEdge?.controlRatio ?? null,
+    relatedEntityId: summaryControllerId || null,
+    relatedEntityName: model?.summaryControllerName || null,
+    relationDirection: 'controlledBy',
   })
 
   placedTreeNodes.forEach((instance) => {
@@ -433,6 +454,8 @@ function buildRenderNodes({
       return
     }
 
+    const relationEdge = edgeMap.get(`${toKey(instance.canonicalId)}->${toKey(instance.downstreamId)}`)
+    const relatedEntity = nodeMap.get(toKey(instance.downstreamId))
     renderNodes.push({
       renderKey: instance.renderKey,
       id: toKey(instance.canonicalId),
@@ -443,7 +466,7 @@ function buildRenderNodes({
       width: instance.width,
       height: instance.height,
       radius: instance.radius,
-      row: instance.depthFromTarget,
+      row: instance.depthFromTarget + 1,
       x: instance.x,
       expandable: instance.expandable,
       expanded: instance.expanded,
@@ -452,13 +475,20 @@ function buildRenderNodes({
       depthFromTarget: instance.depthFromTarget,
       downstreamId: instance.downstreamId,
       rootId: instance.rootId,
+      relationType: relationEdge?.relationType || null,
+      controlRatio: relationEdge?.controlRatio ?? null,
+      relatedEntityId: toKey(instance.downstreamId),
+      relatedEntityName:
+        toKey(instance.downstreamId) === targetId
+          ? model?.targetName || relatedEntity?.name || null
+          : relatedEntity?.name || null,
+      relationDirection: 'controls',
     })
   })
 
-  const maxRow = renderNodes.reduce((max, node) => Math.max(max, node.row), 0)
   return renderNodes.map((node) => ({
     ...node,
-    y: CONTROL_STRUCTURE_LAYOUT_CONFIG.paddingY + (maxRow - node.row) * CONTROL_STRUCTURE_LAYOUT_CONFIG.rowGap,
+    y: CONTROL_STRUCTURE_LAYOUT_CONFIG.paddingY + node.row * CONTROL_STRUCTURE_LAYOUT_CONFIG.rowGap,
   }))
 }
 
@@ -473,39 +503,29 @@ function buildPrimaryKeyEdge({
     return null
   }
 
-  const keyPathNodeIds = Array.isArray(model?.keyPathNodeIds) ? model.keyPathNodeIds.map((id) => toKey(id)) : []
-  const visibleKeyNodeById = new Map(
-    renderNodes
-      .filter((node) => node.role !== 'actualSummary' && node.role !== 'target' && node.isKeyPath)
-      .map((node) => [toKey(node.id), node]),
-  )
-
-  const visibleAnchorId =
-    keyPathNodeIds.slice(1, -1).find((nodeId) => visibleKeyNodeById.has(nodeId)) || targetId
-  const anchorNode =
-    visibleAnchorId === targetId
-      ? renderNodes.find((node) => node.role === 'target')
-      : visibleKeyNodeById.get(visibleAnchorId)
+  const anchorNode = renderNodes.find((node) => node.role === 'target')
   const summaryNode = renderNodes.find((node) => node.role === 'actualSummary')
 
   if (!summaryNode || !anchorNode) {
     return null
   }
 
-  const immediateDownstreamId = keyPathNodeIds[1] || targetId
-  const pair = `${summaryControllerId}->${visibleAnchorId}`
+  const pair = `${summaryControllerId}->${targetId}`
   const directEdge = edgeMap.get(pair)
-  const collapsed = visibleAnchorId !== immediateDownstreamId
 
   return {
-    id: `summary-key:${summaryControllerId}->${visibleAnchorId}`,
+    id: `summary-key:${summaryControllerId}->${targetId}`,
     sourceRenderKey: summaryNode.renderKey,
     targetRenderKey: anchorNode.renderKey,
     relationType: directEdge?.relationType || 'equity',
     controlRatio: directEdge?.controlRatio ?? null,
     isKeyPath: true,
     isPrimary: true,
-    isCollapsed: collapsed,
+    isCollapsed: false,
+    controlSubjectId: summaryControllerId,
+    controlSubjectName: summaryNode.name,
+    controlObjectId: targetId,
+    controlObjectName: anchorNode.name,
   }
 }
 
@@ -533,13 +553,19 @@ function buildTreeEdges({ placedTreeNodes, renderNodes, edgeMap }) {
 
     edges.push({
       id: `tree:${instance.renderKey}->${downstreamRenderKey}`,
-      sourceRenderKey: instance.renderKey,
-      targetRenderKey: downstreamRenderKey,
+      sourceRenderKey: downstreamRenderKey,
+      targetRenderKey: instance.renderKey,
       relationType: edge.relationType,
       controlRatio: edge.controlRatio,
       isKeyPath: Boolean(instance.onKeyPath && targetNode.isKeyPath),
       isPrimary: false,
       isCollapsed: false,
+      isBranch: true,
+      branchDepth: instance.depthFromTarget,
+      controlSubjectId: toKey(instance.canonicalId),
+      controlSubjectName: sourceNode.name,
+      controlObjectId: toKey(instance.downstreamId),
+      controlObjectName: targetNode.name,
     })
   })
 
@@ -655,6 +681,7 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
   const renderNodes = buildRenderNodes({
     model,
     nodeMap,
+    edgeMap,
     placedTreeNodes,
   })
 

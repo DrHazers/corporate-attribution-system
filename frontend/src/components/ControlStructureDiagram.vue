@@ -275,6 +275,25 @@ function nodeRoleLabel(node) {
   return `第 ${node.depthFromTarget} 层上游主体`
 }
 
+function resolvedNodeRoleLabel(node) {
+  if (node.role === 'actualSummary') {
+    return '实际控制人'
+  }
+  if (node.role === 'target') {
+    return '目标公司'
+  }
+  if (node.depthFromTarget === 1) {
+    return '直接上游主体'
+  }
+  if (node.branchDirection === 'up') {
+    return `实际控制人上方第 ${Math.max(1, Math.abs(Number(node.depthFromTarget) || 0) - 1)} 层主体`
+  }
+  if (node.isKeyPath) {
+    return '关键路径节点'
+  }
+  return `第 ${Math.max(2, Number(node.depthFromTarget) || 0)} 层上游主体`
+}
+
 function edgeTitle(edge) {
   if (edge.isPrimary && edge.isCollapsed) {
     return '折叠关键路径提示'
@@ -307,7 +326,7 @@ function buildTooltipLines(item) {
   }
 
   return [
-    `节点角色：${nodeRoleLabel(item)}`,
+    `节点角色：${resolvedNodeRoleLabel(item)}`,
     `主体类型：${entityTypeLabel(item.entityType)}`,
     item.country ? `国家 / 地区：${item.country}` : null,
     item.controlRatio !== null && item.controlRatio !== undefined && item.controlRatio !== ''
@@ -401,6 +420,11 @@ function markerEnd(edge) {
   return edge.isPrimary || edge.isKeyPath
     ? 'url(#control-structure-arrow-key)'
     : 'url(#control-structure-arrow-normal)'
+}
+
+function toggleTransform(node) {
+  const direction = node?.branchDirection === 'up' || node?.role === 'actualSummary' ? -1 : 1
+  return `translate(0, ${direction * (node.height / 2 + 18)})`
 }
 
 function handleWheel(event) {
@@ -518,8 +542,8 @@ onBeforeUnmount(() => {
       <div>
         <h3>控制结构示意图</h3>
         <p>
-          主链按“实际控制人 → 目标公司”纵向呈现，直接上游主体在目标公司下方分支展开，
-          可逐层查看每个节点的局部上游结构。
+          主链保持“实际控制人 → 目标公司”的向下语义；目标公司下方第一层及其子层统一向上汇聚到父节点，
+          实际控制人则可继续向上展开其上游结构。
         </p>
       </div>
       <el-tag effect="plain" type="danger">{{ displayModeLabel(diagramModel.displayMode) }}</el-tag>
@@ -643,7 +667,7 @@ onBeforeUnmount(() => {
                   <g
                     v-if="node.expandable"
                     class="structure-node__toggle"
-                    :transform="`translate(0, ${node.height / 2 + 18})`"
+                    :transform="toggleTransform(node)"
                     role="button"
                     tabindex="0"
                     @pointerdown.stop
@@ -669,9 +693,9 @@ onBeforeUnmount(() => {
 
         <div class="control-structure-diagram__footnote">
           默认层次：
-          <strong>实际控制人</strong>位于顶部主轴，
+          <strong>实际控制人</strong>位于顶部主轴并可向上展开，
           <strong>目标公司</strong>位于中轴，
-          <strong>直接上游主体</strong>位于目标公司下方。
+          <strong>直接上游主体</strong>位于目标公司下方并向上指向父节点。
           可滚轮缩放、拖拽空白区域平移，点击“适应视图”可恢复居中。
         </div>
       </section>
@@ -705,11 +729,11 @@ onBeforeUnmount(() => {
           <h4>节点角色</h4>
           <div class="legend-row">
             <span class="legend-role legend-role--actual" />
-            <span><strong>实际控制人</strong>顶部主链节点</span>
+            <span><strong>实际控制人</strong>顶部主链节点，可向上展开</span>
           </div>
           <div class="legend-row">
             <span class="legend-role legend-role--target" />
-            <span><strong>目标公司</strong>中轴锚点节点</span>
+            <span><strong>目标公司</strong>中轴锚点节点，承接上下汇聚关系</span>
           </div>
           <div class="legend-row">
             <span class="legend-role legend-role--key" />
@@ -728,7 +752,7 @@ onBeforeUnmount(() => {
           <h4>交互说明</h4>
           <div class="legend-toggle-row">
             <span class="legend-toggle">+</span>
-            <span>展开该节点的下一层上游结构</span>
+            <span>下方节点向下展开，上方实际控制人向上展开</span>
           </div>
           <div class="legend-toggle-row">
             <span class="legend-toggle">-</span>

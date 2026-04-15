@@ -662,11 +662,19 @@ function buildDefaultExpandedNodeIds(keyPathNodeIds = [], config = {}) {
   return keyPathNodeIds.slice(2, Math.max(2, keyPathNodeIds.length - 1)).slice(0, maxDepth)
 }
 
-function buildExpansionSeed({ targetId, actualControllerId, keyPathNodeIds, edgeCount, nodeCount }) {
+function buildExpansionSeed({
+  targetId,
+  actualControllerId,
+  keyPathNodeIds,
+  summaryControllerUpstreamIds = [],
+  edgeCount,
+  nodeCount,
+}) {
   return [
     targetId,
     actualControllerId,
     keyPathNodeIds.join('>'),
+    summaryControllerUpstreamIds.join('>'),
     nodeCount,
     edgeCount,
   ].join('|')
@@ -767,8 +775,11 @@ export function buildControlStructureModel({
     })
   }
 
-  const actualControllerId = toKey(actualController?.controller_entity_id) || toKey(countryAttribution?.basis?.actual_controller_entity_id)
+  const actualControllerId =
+    toKey(actualController?.controller_entity_id) ||
+    toKey(countryAttribution?.basis?.actual_controller_entity_id)
   const focusedControllerId = toKey(focusedRelationship?.controller_entity_id)
+  const summaryControllerId = actualControllerId || focusedControllerId || keyPath.nodeIds[0] || ''
 
   if (actualControllerId) {
     const actualNode = nodeMap.get(actualControllerId) || entityLookup.get(actualControllerId)
@@ -809,6 +820,17 @@ export function buildControlStructureModel({
     actualControllerId,
   })
 
+  const summaryControllerUpstreamIds = summaryControllerId
+    ? sortIncomingEdgesForNode(
+        structural.incoming.get(summaryControllerId) || [],
+        nodeMap,
+        summaryControllerId,
+        keyPath.keyParentByNodeId,
+      )
+        .map((edge) => toKey(edge.source))
+        .filter((nodeId) => nodeId && !sameId(nodeId, target.id))
+    : []
+
   const nodes = Array.from(nodeMap.values()).map((node) => {
     const incomingEdges = sortIncomingEdgesForNode(
       structural.incoming.get(node.id) || [],
@@ -822,6 +844,7 @@ export function buildControlStructureModel({
       incomingEdgeIds: incomingEdges.map((edge) => edge.id),
       hasUpstream: incomingEdges.length > 0,
       upstreamCount: incomingEdges.length,
+      isSummaryController: sameId(node.id, summaryControllerId),
     }
   })
 
@@ -831,7 +854,6 @@ export function buildControlStructureModel({
     targetName: nodeMap.get(toKey(edge.target))?.name || `Entity ${edge.target}`,
   }))
 
-  const summaryControllerId = actualControllerId || focusedControllerId || keyPath.nodeIds[0] || ''
   const summaryControllerNode = nodeMap.get(summaryControllerId) || null
   const defaultExpandedNodeIds = buildDefaultExpandedNodeIds(keyPath.nodeIds, config)
 
@@ -861,6 +883,8 @@ export function buildControlStructureModel({
     summaryControllerId,
     summaryControllerName: safeText(summaryControllerNode?.name || actualController?.controller_name || focusedRelationship?.controller_name, EMPTY_TEXT),
     summaryControllerType: summaryControllerNode?.entityType || normalizeEntityType(actualController?.controller_type),
+    summaryControllerUpstreamIds,
+    summaryControllerHasUpstream: summaryControllerUpstreamIds.length > 0,
     actualControlCountry: safeText(countryAttribution?.actual_control_country, 'Unknown'),
     attributionType: safeText(countryAttribution?.attribution_type, EMPTY_TEXT),
     nodes,
@@ -877,6 +901,7 @@ export function buildControlStructureModel({
       targetId: target.id,
       actualControllerId,
       keyPathNodeIds: keyPath.nodeIds,
+      summaryControllerUpstreamIds,
       edgeCount: edges.length,
       nodeCount: nodes.length,
     }),
@@ -887,6 +912,7 @@ export function buildControlStructureModel({
       secondLayerCandidateCount: structural.secondLayerIds.length,
       keyPathLength: keyPath.nodeIds.length,
       defaultExpandedCount: defaultExpandedNodeIds.length,
+      summaryControllerUpstreamCount: summaryControllerUpstreamIds.length,
       controlRelationshipCount: relationships.length,
     },
     legend: {

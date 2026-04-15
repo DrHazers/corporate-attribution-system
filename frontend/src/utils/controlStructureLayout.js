@@ -143,12 +143,13 @@ function rebuildInstanceTree({
   canonicalId,
   downstreamId,
   depthFromTarget,
+  branchDirection = 'down',
   rootId,
   nodeMap,
   incomingMap,
   expandedByNodeId,
   keyParentByNodeId,
-  summaryControllerId,
+  excludedNodeIds = new Set(),
   lineage,
 }) {
   const nodeId = toKey(canonicalId)
@@ -160,7 +161,7 @@ function rebuildInstanceTree({
   const eligibleEdges = sortUpstreamEdges(
     (incomingMap.get(nodeId) || []).filter((edge) => {
       const sourceId = toKey(edge.source)
-      return sourceId && !lineage.has(sourceId) && sourceId !== summaryControllerId
+      return sourceId && !lineage.has(sourceId) && !excludedNodeIds.has(sourceId)
     }),
     nodeMap,
     nodeId,
@@ -178,13 +179,15 @@ function rebuildInstanceTree({
           rebuildInstanceTree({
             canonicalId: edge.source,
             downstreamId: nodeId,
-            depthFromTarget: depthFromTarget + 1,
+            depthFromTarget:
+              branchDirection === 'up' ? depthFromTarget - 1 : depthFromTarget + 1,
+            branchDirection,
             rootId,
             nodeMap,
             incomingMap,
             expandedByNodeId,
             keyParentByNodeId,
-            summaryControllerId,
+            excludedNodeIds,
             lineage: nextLineage,
           }),
         )
@@ -192,11 +195,12 @@ function rebuildInstanceTree({
     : []
 
   return {
-    renderKey: `${rootId}:${depthFromTarget}:${nodeId}:${toKey(downstreamId)}`,
+    renderKey: `${branchDirection}:${rootId}:${depthFromTarget}:${nodeId}:${toKey(downstreamId)}`,
     canonicalId: nodeId,
     downstreamId: toKey(downstreamId),
     rootId: toKey(rootId),
     depthFromTarget,
+    branchDirection,
     onKeyPath,
     expanded,
     expandable: eligibleEdges.length > 0,
@@ -205,7 +209,7 @@ function rebuildInstanceTree({
   }
 }
 
-function buildRootInstances({
+function buildLowerRootInstances({
   model,
   nodeMap,
   incomingMap,
@@ -217,6 +221,7 @@ function buildRootInstances({
   const rootIds = (Array.isArray(model?.directUpstreamIds) ? model.directUpstreamIds : [])
     .map((id) => toKey(id))
     .filter((id) => id && id !== summaryControllerId)
+  const excludedNodeIds = new Set([summaryControllerId].filter(Boolean))
 
   return rootIds
     .map((rootId) =>
@@ -224,13 +229,54 @@ function buildRootInstances({
         canonicalId: rootId,
         downstreamId: targetId,
         depthFromTarget: 1,
+        branchDirection: 'down',
         rootId,
         nodeMap,
         incomingMap,
         expandedByNodeId,
         keyParentByNodeId,
-        summaryControllerId,
+        excludedNodeIds,
         lineage: new Set([targetId]),
+      }),
+    )
+    .filter(Boolean)
+}
+
+function buildUpperRootInstances({
+  model,
+  nodeMap,
+  incomingMap,
+  expandedByNodeId,
+  keyParentByNodeId,
+  summaryControllerId,
+}) {
+  const targetId = toKey(model?.targetId)
+  const rootIds = (Array.isArray(model?.summaryControllerUpstreamIds)
+    ? model.summaryControllerUpstreamIds
+    : [])
+    .map((id) => toKey(id))
+    .filter((id) => id && id !== targetId)
+
+  if (!summaryControllerId || !rootIds.length || !isExpanded(expandedByNodeId, summaryControllerId)) {
+    return []
+  }
+
+  const excludedNodeIds = new Set([targetId].filter(Boolean))
+
+  return rootIds
+    .map((rootId) =>
+      rebuildInstanceTree({
+        canonicalId: rootId,
+        downstreamId: summaryControllerId,
+        depthFromTarget: -2,
+        branchDirection: 'up',
+        rootId,
+        nodeMap,
+        incomingMap,
+        expandedByNodeId,
+        keyParentByNodeId,
+        excludedNodeIds,
+        lineage: new Set([targetId, summaryControllerId]),
       }),
     )
     .filter(Boolean)
@@ -258,21 +304,32 @@ function measureInstanceTree(instance, nodeMap) {
   }
 }
 
-function rootPriority(instance, model, nodeMap, incomingMap) {
+function buildRootEdgeLookup(anchorId, incomingMap) {
+  const lookup = new Map()
+  ;(incomingMap.get(toKey(anchorId)) || []).forEach((edge) => {
+    const sourceId = toKey(edge.source)
+    if (sourceId && !lookup.has(sourceId)) {
+      lookup.set(sourceId, edge)
+    }
+  })
+  return lookup
+}
+
+function rootPriority(instance, rootEdgeBySourceId, centerRootId = '') {
   const canonicalId = toKey(instance.canonicalId)
-  const keyRoot = toKey(model?.keyPathFirstLayerId)
-  if (canonicalId === keyRoot) {
+  if (canonicalId && canonicalId === toKey(centerRootId)) {
     return -1000
   }
 
-  const edge = (incomingMap.get(toKey(model?.targetId)) || []).find((item) => toKey(item.source) === canonicalId)
+  const edge = rootEdgeBySourceId.get(canonicalId)
   return -normalizedRatioForComparison(edge?.controlRatio)
 }
 
-function orderRoots(roots, model, nodeMap, incomingMap) {
+function orderRoots(roots, nodeMap, rootEdgeBySourceId, centerRootId = '') {
   const ordered = [...roots].sort((left, right) => {
     const priorityDelta =
-      rootPriority(left, model, nodeMap, incomingMap) - rootPriority(right, model, nodeMap, incomingMap)
+      rootPriority(left, rootEdgeBySourceId, centerRootId) -
+      rootPriority(right, rootEdgeBySourceId, centerRootId)
     if (priorityDelta !== 0) {
       return priorityDelta
     }
@@ -282,12 +339,12 @@ function orderRoots(roots, model, nodeMap, incomingMap) {
   })
 
   if (!ordered.length) {
-    return []
+    return null
   }
 
   const centerRoot =
-    ordered.find((root) => toKey(root.canonicalId) === toKey(model?.keyPathFirstLayerId)) || null
-  const others = centerRoot ? ordered.filter((root) => root !== centerRoot) : ordered
+    ordered.find((root) => toKey(root.canonicalId) === toKey(centerRootId)) || ordered[0] || null
+  const others = centerRoot ? ordered.filter((root) => root !== centerRoot) : []
   const left = []
   const right = []
 
@@ -329,8 +386,8 @@ function assignInstancePositions(instance, bandLeft, bandRight, placed = [], dow
   return placed
 }
 
-function placeRootBands(roots, model, nodeMap, incomingMap) {
-  const arrangement = orderRoots(roots, model, nodeMap, incomingMap)
+function placeRootBands(roots, nodeMap, rootEdgeBySourceId, centerRootId = '') {
+  const arrangement = orderRoots(roots, nodeMap, rootEdgeBySourceId, centerRootId)
   if (!arrangement) {
     return []
   }
@@ -367,7 +424,7 @@ function placeRootBands(roots, model, nodeMap, incomingMap) {
   return placements
 }
 
-function collectPlacedTreeNodes(rootPlacements = []) {
+function collectPlacedTreeNodes(rootPlacements = [], rootDownstreamRenderKey = 'target-node') {
   const placed = []
   rootPlacements.forEach(({ instance, centerX }) => {
     assignInstancePositions(
@@ -375,6 +432,7 @@ function collectPlacedTreeNodes(rootPlacements = []) {
       centerX - instance.bandWidth / 2,
       centerX + instance.bandWidth / 2,
       placed,
+      rootDownstreamRenderKey,
     )
   })
   return placed
@@ -385,10 +443,16 @@ function buildRenderNodes({
   nodeMap,
   edgeMap,
   placedTreeNodes,
+  expandedByNodeId,
 }) {
   const renderNodes = []
   const summaryControllerId = toKey(model?.summaryControllerId)
   const targetId = toKey(model?.targetId)
+  const summaryControllerUpstreamIds = (
+    Array.isArray(model?.summaryControllerUpstreamIds) ? model.summaryControllerUpstreamIds : []
+  )
+    .map((id) => toKey(id))
+    .filter(Boolean)
   const summaryControllerNode = summaryControllerId
     ? nodeMap.get(summaryControllerId) || {
         id: summaryControllerId,
@@ -396,6 +460,9 @@ function buildRenderNodes({
         entityType: model?.summaryControllerType || 'other',
       }
     : null
+  const summaryExpanded = summaryControllerId
+    ? isExpanded(expandedByNodeId, summaryControllerId)
+    : false
 
   if (summaryControllerNode) {
     const size = getNodeSize('actualSummary')
@@ -410,11 +477,12 @@ function buildRenderNodes({
       width: size.width,
       height: size.height,
       radius: size.radius,
-      row: 0,
+      row: -1,
       x: 0,
-      expandable: false,
-      expanded: false,
-      hiddenUpstreamCount: 0,
+      branchDirection: 'up',
+      expandable: summaryControllerUpstreamIds.length > 0,
+      expanded: summaryExpanded,
+      hiddenUpstreamCount: summaryExpanded ? 0 : summaryControllerUpstreamIds.length,
       isKeyPath: true,
       depthFromTarget: -1,
       relationType: relationEdge?.relationType || null,
@@ -434,8 +502,9 @@ function buildRenderNodes({
     country: null,
     role: 'target',
     ...getNodeSize('target'),
-    row: 1,
+    row: 0,
     x: 0,
+    branchDirection: 'center',
     expandable: false,
     expanded: false,
     hiddenUpstreamCount: 0,
@@ -466,8 +535,9 @@ function buildRenderNodes({
       width: instance.width,
       height: instance.height,
       radius: instance.radius,
-      row: instance.depthFromTarget + 1,
+      row: instance.depthFromTarget,
       x: instance.x,
+      branchDirection: instance.branchDirection,
       expandable: instance.expandable,
       expanded: instance.expanded,
       hiddenUpstreamCount: instance.hiddenUpstreamCount,
@@ -553,15 +623,16 @@ function buildTreeEdges({ placedTreeNodes, renderNodes, edgeMap }) {
 
     edges.push({
       id: `tree:${instance.renderKey}->${downstreamRenderKey}`,
-      sourceRenderKey: downstreamRenderKey,
-      targetRenderKey: instance.renderKey,
+      sourceRenderKey: instance.renderKey,
+      targetRenderKey: downstreamRenderKey,
       relationType: edge.relationType,
       controlRatio: edge.controlRatio,
       isKeyPath: Boolean(instance.onKeyPath && targetNode.isKeyPath),
       isPrimary: false,
       isCollapsed: false,
       isBranch: true,
-      branchDepth: instance.depthFromTarget,
+      branchDepth: Math.abs(instance.depthFromTarget),
+      branchDirection: instance.branchDirection,
       controlSubjectId: toKey(instance.canonicalId),
       controlSubjectName: sourceNode.name,
       controlObjectId: toKey(instance.downstreamId),
@@ -572,22 +643,24 @@ function buildTreeEdges({ placedTreeNodes, renderNodes, edgeMap }) {
   return edges
 }
 
-function edgeAnchor(node, side) {
+function edgeAnchor(node, side, direction = 'down') {
+  const verticalOffset = node.height / 2
   if (side === 'source') {
     return {
       x: node.x,
-      y: node.y + node.height / 2,
+      y: node.y + (direction === 'down' ? verticalOffset : -verticalOffset),
     }
   }
   return {
     x: node.x,
-    y: node.y - node.height / 2,
+    y: node.y + (direction === 'down' ? -verticalOffset : verticalOffset),
   }
 }
 
 function buildEdgePath(sourceNode, targetNode) {
-  const start = edgeAnchor(sourceNode, 'source')
-  const end = edgeAnchor(targetNode, 'target')
+  const direction = sourceNode.y <= targetNode.y ? 'down' : 'up'
+  const start = edgeAnchor(sourceNode, 'source', direction)
+  const end = edgeAnchor(targetNode, 'target', direction)
   const midY = Number(((start.y + end.y) / 2).toFixed(2))
 
   if (Math.abs(start.x - end.x) < 2) {
@@ -666,8 +739,15 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
   const incomingMap = buildIncomingMap(model?.edges)
   const keyParentByNodeId = buildKeyParentMap(model)
   const summaryControllerId = toKey(model?.summaryControllerId)
-
-  const rootInstances = buildRootInstances({
+  const lowerRootInstances = buildLowerRootInstances({
+    model,
+    nodeMap,
+    incomingMap,
+    expandedByNodeId,
+    keyParentByNodeId,
+    summaryControllerId,
+  }).map((root) => measureInstanceTree(root, nodeMap))
+  const upperRootInstances = buildUpperRootInstances({
     model,
     nodeMap,
     incomingMap,
@@ -676,13 +756,27 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     summaryControllerId,
   }).map((root) => measureInstanceTree(root, nodeMap))
 
-  const rootPlacements = placeRootBands(rootInstances, model, nodeMap, incomingMap)
-  const placedTreeNodes = collectPlacedTreeNodes(rootPlacements)
+  const lowerRootPlacements = placeRootBands(
+    lowerRootInstances,
+    nodeMap,
+    buildRootEdgeLookup(model?.targetId, incomingMap),
+    model?.keyPathFirstLayerId,
+  )
+  const upperRootPlacements = placeRootBands(
+    upperRootInstances,
+    nodeMap,
+    buildRootEdgeLookup(summaryControllerId, incomingMap),
+  )
+  const placedTreeNodes = [
+    ...collectPlacedTreeNodes(upperRootPlacements, 'summary-controller'),
+    ...collectPlacedTreeNodes(lowerRootPlacements, 'target-node'),
+  ]
   const renderNodes = buildRenderNodes({
     model,
     nodeMap,
     edgeMap,
     placedTreeNodes,
+    expandedByNodeId,
   })
 
   const treeEdges = buildTreeEdges({
@@ -708,7 +802,11 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     canvasHeight: viewport.canvasHeight,
     direction: CONTROL_STRUCTURE_LAYOUT_CONFIG.direction,
     targetAnchor: CONTROL_STRUCTURE_LAYOUT_CONFIG.targetAnchor,
-    layerCount: renderNodes.reduce((max, node) => Math.max(max, node.row), 0) + 1,
+    layerCount: renderNodes.length
+      ? Math.max(...renderNodes.map((node) => node.row)) -
+        Math.min(...renderNodes.map((node) => node.row)) +
+        1
+      : 0,
     expandedNodeCount: Object.keys(expandedByNodeId || {}).filter((key) => expandedByNodeId[key]).length,
     nodes: viewport.nodes,
     edges: viewport.edges,

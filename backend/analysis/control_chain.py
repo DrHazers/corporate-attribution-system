@@ -44,5 +44,6 @@ def analyze_control_chain_with_options(
 
     return {
         **control_chain_data,
-        "actual_controller": _pick_actual_controller(control_relationships),
+        "actual_controller": control_chain_data.get("actual_controller")
+        or _pick_actual_controller(control_relationships),
     }

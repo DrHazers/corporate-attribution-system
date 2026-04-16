@@ -20,9 +20,18 @@ const props = defineProps({
   },
 })
 
-const actualController = computed(
-  () => props.controlAnalysis?.actual_controller?.controller_name || '暂无',
+const displayController = computed(
+  () => props.controlAnalysis?.display_controller || props.controlAnalysis?.actual_controller || null,
 )
+const controllerDisplayText = computed(() => {
+  const name = displayController.value?.controller_name
+  if (!name) {
+    return '暂无'
+  }
+  return props.controlAnalysis?.display_controller_role === 'leading_candidate'
+    ? `重点控制候选：${name}`
+    : name
+})
 const actualControlCountry = computed(
   () => props.countryAttribution?.actual_control_country || '未识别',
 )
@@ -40,7 +49,7 @@ const overviewItems = computed(() => [
   { label: 'Stock Code', value: props.company?.stock_code || '暂无' },
   { label: '注册地', value: props.company?.incorporation_country || '暂无' },
   { label: '上市地', value: props.company?.listing_country || '暂无' },
-  { label: '实际控制人', value: actualController.value },
+  { label: '控制主体', value: controllerDisplayText.value },
   { label: '实际控制地', value: actualControlCountry.value },
   { label: '主产业', value: primaryIndustry.value },
   { label: '业务线数量', value: businessSegmentCount.value },

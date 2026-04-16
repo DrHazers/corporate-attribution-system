@@ -49,6 +49,10 @@ def analyze_country_attribution_with_options(
                 "basis": item["basis"],
                 "control_mode": item.get("control_mode"),
                 "semantic_flags": item.get("semantic_flags"),
+                "controller_status": item.get("controller_status"),
+                "selection_reason": item.get("selection_reason"),
+                "is_leading_candidate": item.get("is_leading_candidate"),
+                "whether_actual_controller": item.get("whether_actual_controller"),
                 "review_status": item.get("review_status"),
             }
         )

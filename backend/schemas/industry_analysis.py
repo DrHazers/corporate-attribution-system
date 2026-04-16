@@ -260,6 +260,10 @@ class ControlRelationshipSummaryRead(BaseModel):
     notes: str | None = None
     control_mode: str | None = None
     semantic_flags: list[str] | None = None
+    controller_status: str | None = None
+    selection_reason: str | None = None
+    is_leading_candidate: bool = False
+    whether_actual_controller: bool = False
     review_status: str | None = None
     created_at: str
     updated_at: str
@@ -269,6 +273,12 @@ class ControlAnalysisSummaryRead(BaseModel):
     company_id: int
     controller_count: int
     actual_controller: ControlRelationshipSummaryRead | None = None
+    leading_candidate: ControlRelationshipSummaryRead | None = None
+    focused_candidate: ControlRelationshipSummaryRead | None = None
+    display_controller: ControlRelationshipSummaryRead | None = None
+    display_controller_role: str | None = None
+    identification_status: str | None = None
+    controller_status: str | None = None
     control_relationships: list[ControlRelationshipSummaryRead]
 
 

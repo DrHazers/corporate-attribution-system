@@ -1,0 +1,261 @@
+{
+  "target_database_path": "D:\\graduation_project\\corp_attribution_system\\company_test_analysis_industry.db",
+  "backup_database_path": "D:\\graduation_project\\corp_attribution_system\\company_test_analysis_industry_backup_before_full_control_refresh_20260417_000508.db",
+  "execution_mode": "custom_full_refresh_via_unified_inference_and_apply_unified_company_analysis_records",
+  "started_at": "2026-04-17T00:05:10.404516",
+  "finished_at": "2026-04-17T00:07:04.302045",
+  "companies_total": 10000,
+  "success_count": 10000,
+  "failure_count": 0,
+  "failed_company_ids": [],
+  "failure_details": {},
+  "pre_counts": {
+    "companies": 10000,
+    "shareholder_entities": 26000,
+    "shareholder_structures": 105000,
+    "control_relationships": 18971,
+    "country_attributions": 10000
+  },
+  "post_counts": {
+    "companies": 10000,
+    "shareholder_entities": 26000,
+    "shareholder_structures": 105000,
+    "control_relationships": 18971,
+    "country_attributions": 10000
+  },
+  "base_tables_unchanged": {
+    "companies": true,
+    "shareholder_entities": true,
+    "shareholder_structures": true
+  },
+  "company_13_before": {
+    "company_id": 13,
+    "exists": true,
+    "control_chain": {
+      "controller_count": 2,
+      "actual_controller_name": null,
+      "leading_candidate_name": "Public Float - US",
+      "display_controller_role": "leading_candidate",
+      "identification_status": "no_actual_controller_but_leading_candidate_found",
+      "first_relationship_controller": "Public Float - US",
+      "first_relationship_selection_reason": "leading_candidate",
+      "first_relationship_controller_status": "no_actual_controller_but_leading_candidate_found"
+    },
+    "country_attribution": {
+      "actual_control_country": "USA",
+      "attribution_type": "fallback_incorporation",
+      "basis_controller_status": null,
+      "basis_leading_candidate_entity_id": null,
+      "basis_leading_candidate_name": null,
+      "basis_leading_candidate_classification": null,
+      "basis_top_candidates_count": 2,
+      "basis_top_candidates_with_selection_reason_count": 0
+    },
+    "summary": {
+      "actual_controller_name": null,
+      "leading_candidate_name": "Public Float - US",
+      "display_controller_name": "Public Float - US",
+      "display_controller_role": "leading_candidate",
+      "identification_status": "no_actual_controller_but_leading_candidate_found"
+    },
+    "raw_basis_presence": {
+      "control_relationship_basis_has_selection_reason": false,
+      "control_relationship_basis_has_controller_status": false,
+      "country_basis_has_leading_candidate": false,
+      "country_basis_has_controller_status": false
+    }
+  },
+  "company_13_after": {
+    "company_id": 13,
+    "exists": true,
+    "control_chain": {
+      "controller_count": 2,
+      "actual_controller_name": null,
+      "leading_candidate_name": "Public Float - US",
+      "display_controller_role": "leading_candidate",
+      "identification_status": "no_actual_controller_but_leading_candidate_found",
+      "first_relationship_controller": "Public Float - US",
+      "first_relationship_selection_reason": "leading_candidate_relative_control_signal",
+      "first_relationship_controller_status": "no_actual_controller_but_leading_candidate_found"
+    },
+    "country_attribution": {
+      "actual_control_country": "USA",
+      "attribution_type": "fallback_incorporation",
+      "basis_controller_status": "no_actual_controller_but_leading_candidate_found",
+      "basis_leading_candidate_entity_id": 10017,
+      "basis_leading_candidate_name": "Public Float - US",
+      "basis_leading_candidate_classification": "relative_control_candidate",
+      "basis_top_candidates_count": 2,
+      "basis_top_candidates_with_selection_reason_count": 2
+    },
+    "summary": {
+      "actual_controller_name": null,
+      "leading_candidate_name": "Public Float - US",
+      "display_controller_name": "Public Float - US",
+      "display_controller_role": "leading_candidate",
+      "identification_status": "no_actual_controller_but_leading_candidate_found"
+    },
+    "raw_basis_presence": {
+      "control_relationship_basis_has_selection_reason": true,
+      "control_relationship_basis_has_controller_status": true,
+      "country_basis_has_leading_candidate": true,
+      "country_basis_has_controller_status": true
+    }
+  },
+  "sample_company_ids": {
+    "company_13": 13,
+    "absolute_control": 1,
+    "close_candidates": 33,
+    "no_signal": 82
+  },
+  "validation_samples": {
+    "company_13": {
+      "company_id": 13,
+      "exists": true,
+      "control_chain": {
+        "controller_count": 2,
+        "actual_controller_name": null,
+        "leading_candidate_name": "Public Float - US",
+        "display_controller_role": "leading_candidate",
+        "identification_status": "no_actual_controller_but_leading_candidate_found",
+        "first_relationship_controller": "Public Float - US",
+        "first_relationship_selection_reason": "leading_candidate_relative_control_signal",
+        "first_relationship_controller_status": "no_actual_controller_but_leading_candidate_found"
+      },
+      "country_attribution": {
+        "actual_control_country": "USA",
+        "attribution_type": "fallback_incorporation",
+        "basis_controller_status": "no_actual_controller_but_leading_candidate_found",
+        "basis_leading_candidate_entity_id": 10017,
+        "basis_leading_candidate_name": "Public Float - US",
+        "basis_leading_candidate_classification": "relative_control_candidate",
+        "basis_top_candidates_count": 2,
+        "basis_top_candidates_with_selection_reason_count": 2
+      },
+      "summary": {
+        "actual_controller_name": null,
+        "leading_candidate_name": "Public Float - US",
+        "display_controller_name": "Public Float - US",
+        "display_controller_role": "leading_candidate",
+        "identification_status": "no_actual_controller_but_leading_candidate_found"
+      },
+      "raw_basis_presence": {
+        "control_relationship_basis_has_selection_reason": true,
+        "control_relationship_basis_has_controller_status": true,
+        "country_basis_has_leading_candidate": true,
+        "country_basis_has_controller_status": true
+      }
+    },
+    "absolute_control": {
+      "company_id": 1,
+      "exists": true,
+      "control_chain": {
+        "controller_count": 1,
+        "actual_controller_name": "Public Float - US",
+        "leading_candidate_name": "Public Float - US",
+        "display_controller_role": "actual_controller",
+        "identification_status": "actual_controller_identified",
+        "first_relationship_controller": "Public Float - US",
+        "first_relationship_selection_reason": "actual_controller_strict_control_threshold_met",
+        "first_relationship_controller_status": "actual_controller_identified"
+      },
+      "country_attribution": {
+        "actual_control_country": "USA",
+        "attribution_type": "equity_control",
+        "basis_controller_status": "actual_controller_identified",
+        "basis_leading_candidate_entity_id": 10017,
+        "basis_leading_candidate_name": "Public Float - US",
+        "basis_leading_candidate_classification": "absolute_control",
+        "basis_top_candidates_count": 1,
+        "basis_top_candidates_with_selection_reason_count": 1
+      },
+      "summary": {
+        "actual_controller_name": "Public Float - US",
+        "leading_candidate_name": "Public Float - US",
+        "display_controller_name": "Public Float - US",
+        "display_controller_role": "actual_controller",
+        "identification_status": "actual_controller_identified"
+      },
+      "raw_basis_presence": {
+        "control_relationship_basis_has_selection_reason": true,
+        "control_relationship_basis_has_controller_status": true,
+        "country_basis_has_leading_candidate": true,
+        "country_basis_has_controller_status": true
+      }
+    },
+    "close_candidates": {
+      "company_id": 33,
+      "exists": true,
+      "control_chain": {
+        "controller_count": 2,
+        "actual_controller_name": null,
+        "leading_candidate_name": "Public Float - Greater China",
+        "display_controller_role": "leading_candidate",
+        "identification_status": "no_actual_controller_but_leading_candidate_found",
+        "first_relationship_controller": "Public Float - Greater China",
+        "first_relationship_selection_reason": "leading_candidate_close_competition",
+        "first_relationship_controller_status": "no_actual_controller_but_leading_candidate_found"
+      },
+      "country_attribution": {
+        "actual_control_country": "China",
+        "attribution_type": "fallback_incorporation",
+        "basis_controller_status": "no_actual_controller_but_leading_candidate_found",
+        "basis_leading_candidate_entity_id": 10018,
+        "basis_leading_candidate_name": "Public Float - Greater China",
+        "basis_leading_candidate_classification": "significant_influence_close_competition",
+        "basis_top_candidates_count": 2,
+        "basis_top_candidates_with_selection_reason_count": 2
+      },
+      "summary": {
+        "actual_controller_name": null,
+        "leading_candidate_name": "Public Float - Greater China",
+        "display_controller_name": "Public Float - Greater China",
+        "display_controller_role": "leading_candidate",
+        "identification_status": "no_actual_controller_but_leading_candidate_found"
+      },
+      "raw_basis_presence": {
+        "control_relationship_basis_has_selection_reason": true,
+        "control_relationship_basis_has_controller_status": true,
+        "country_basis_has_leading_candidate": true,
+        "country_basis_has_controller_status": true
+      }
+    },
+    "no_signal": {
+      "company_id": 82,
+      "exists": true,
+      "control_chain": {
+        "controller_count": 0,
+        "actual_controller_name": null,
+        "leading_candidate_name": null,
+        "display_controller_role": null,
+        "identification_status": "no_meaningful_controller_signal",
+        "first_relationship_controller": null,
+        "first_relationship_selection_reason": null,
+        "first_relationship_controller_status": null
+      },
+      "country_attribution": {
+        "actual_control_country": "Japan",
+        "attribution_type": "fallback_incorporation",
+        "basis_controller_status": "no_meaningful_controller_signal",
+        "basis_leading_candidate_entity_id": null,
+        "basis_leading_candidate_name": null,
+        "basis_leading_candidate_classification": null,
+        "basis_top_candidates_count": 0,
+        "basis_top_candidates_with_selection_reason_count": 0
+      },
+      "summary": {
+        "actual_controller_name": null,
+        "leading_candidate_name": null,
+        "display_controller_name": null,
+        "display_controller_role": null,
+        "identification_status": "no_meaningful_controller_signal"
+      },
+      "raw_basis_presence": {
+        "control_relationship_basis_has_selection_reason": false,
+        "control_relationship_basis_has_controller_status": false,
+        "country_basis_has_leading_candidate": false,
+        "country_basis_has_controller_status": true
+      }
+    }
+  }
+}

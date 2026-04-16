@@ -53,6 +53,12 @@ def get_control_chain_analysis(
             "message": "No control relationship data found for this company.",
             "controller_count": 0,
             "actual_controller": None,
+            "leading_candidate": None,
+            "focused_candidate": None,
+            "display_controller": None,
+            "display_controller_role": None,
+            "identification_status": "no_meaningful_controller_signal",
+            "controller_status": "no_meaningful_controller_signal",
             "control_relationships": [],
         }
 

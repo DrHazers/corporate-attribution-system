@@ -26,6 +26,11 @@ DEFAULT_MIN_PATH_SCORE = Decimal("0.0001")
 DEFAULT_CONTROL_THRESHOLD = Decimal("0.5")
 DEFAULT_SIGNIFICANT_THRESHOLD = Decimal("0.2")
 DEFAULT_DISCLOSURE_THRESHOLD = DEFAULT_SIGNIFICANT_THRESHOLD
+DEFAULT_RELATIVE_CONTROL_CANDIDATE_THRESHOLD = Decimal("0.35")
+DEFAULT_RELATIVE_CONTROL_GAP_THRESHOLD = Decimal("0.08")
+DEFAULT_RELATIVE_CONTROL_RATIO_THRESHOLD = Decimal("1.2")
+DEFAULT_CLOSE_COMPETITION_GAP_THRESHOLD = Decimal("0.05")
+DEFAULT_CLOSE_COMPETITION_RATIO_THRESHOLD = Decimal("1.1")
 DEFAULT_AGGREGATOR = "sum_cap"
 SUPPORTED_RELATION_TYPES = (
     "equity",
@@ -156,6 +161,11 @@ BOARD_TOTAL_KEYS = (
 PCT_TEXT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 RATIO_TEXT_PATTERN = re.compile(r"(\d+)\s*/\s*(\d+)")
 
+CONTROLLER_STATUS_ACTUAL = "actual_controller_identified"
+CONTROLLER_STATUS_LEADING = "no_actual_controller_but_leading_candidate_found"
+CONTROLLER_STATUS_NONE = "no_meaningful_controller_signal"
+CONTROLLER_STATUS_JOINT = "joint_control_identified"
+
 
 @dataclass(slots=True)
 class EdgeFactor:
@@ -214,8 +224,11 @@ class ControlInferenceResult:
     aggregator: str
     candidates: tuple[ControllerCandidate, ...]
     actual_controller_entity_id: int | None
+    leading_candidate_entity_id: int | None
+    leading_candidate_classification: str | None
     actual_control_country: str
     attribution_type: str
+    controller_status: str
     joint_controller_entity_ids: tuple[int, ...]
 
 
@@ -926,6 +939,71 @@ def _resolve_country_attribution_type(candidate: ControllerCandidate) -> str:
     return "agreement_control"
 
 
+def _score_gap_ratio(
+    leading_score: Decimal,
+    trailing_score: Decimal,
+) -> Decimal | None:
+    if trailing_score <= ZERO:
+        return None
+    return leading_score / trailing_score
+
+
+def _classify_leading_candidate_signal(
+    candidates: list[ControllerCandidate],
+    *,
+    significant_threshold: Decimal,
+) -> str | None:
+    if not candidates:
+        return None
+
+    leading_candidate = candidates[0]
+    if leading_candidate.control_level == "control":
+        return "absolute_control"
+    if leading_candidate.control_level == "joint_control":
+        return "joint_control"
+    if leading_candidate.total_score < significant_threshold:
+        return None
+
+    runner_up_score = candidates[1].total_score if len(candidates) > 1 else ZERO
+    lead_gap = leading_candidate.total_score - runner_up_score
+    lead_ratio = _score_gap_ratio(leading_candidate.total_score, runner_up_score)
+
+    if (
+        leading_candidate.total_score >= DEFAULT_RELATIVE_CONTROL_CANDIDATE_THRESHOLD
+        and lead_gap >= DEFAULT_RELATIVE_CONTROL_GAP_THRESHOLD
+        and (
+            lead_ratio is None
+            or lead_ratio >= DEFAULT_RELATIVE_CONTROL_RATIO_THRESHOLD
+        )
+    ):
+        return "relative_control_candidate"
+
+    if (
+        runner_up_score > ZERO
+        and lead_gap <= DEFAULT_CLOSE_COMPETITION_GAP_THRESHOLD
+        and lead_ratio is not None
+        and lead_ratio <= DEFAULT_CLOSE_COMPETITION_RATIO_THRESHOLD
+    ):
+        return "significant_influence_close_competition"
+
+    return "significant_influence_candidate"
+
+
+def _resolve_controller_status(
+    *,
+    actual_controller_entity_id: int | None,
+    joint_controller_entity_ids: tuple[int, ...],
+    leading_candidate_entity_id: int | None,
+) -> str:
+    if actual_controller_entity_id is not None:
+        return CONTROLLER_STATUS_ACTUAL
+    if joint_controller_entity_ids:
+        return CONTROLLER_STATUS_JOINT
+    if leading_candidate_entity_id is not None:
+        return CONTROLLER_STATUS_LEADING
+    return CONTROLLER_STATUS_NONE
+
+
 def infer_controllers(
     context: ControlInferenceContext,
     company_id: int,
@@ -1004,6 +1082,8 @@ def infer_controllers(
     ]
 
     actual_controller_entity_id: int | None = None
+    leading_candidate_entity_id: int | None = None
+    leading_candidate_classification: str | None = None
     actual_control_country = company.incorporation_country
     attribution_type = "fallback_incorporation"
 
@@ -1020,13 +1100,30 @@ def infer_controllers(
         )
         attribution_type = _resolve_country_attribution_type(winner)
 
+    if candidates:
+        leading_candidate_entity_id = candidates[0].controller_entity_id
+        leading_candidate_classification = _classify_leading_candidate_signal(
+            candidates,
+            significant_threshold=significant_threshold,
+        )
+
+    joint_controller_entity_ids = tuple(sorted(joint_candidates))
+    controller_status = _resolve_controller_status(
+        actual_controller_entity_id=actual_controller_entity_id,
+        joint_controller_entity_ids=joint_controller_entity_ids,
+        leading_candidate_entity_id=leading_candidate_entity_id,
+    )
+
     return ControlInferenceResult(
         company=company,
         target_entity=target_entity,
         aggregator=aggregator,
         candidates=tuple(candidates),
         actual_controller_entity_id=actual_controller_entity_id,
+        leading_candidate_entity_id=leading_candidate_entity_id,
+        leading_candidate_classification=leading_candidate_classification,
         actual_control_country=actual_control_country,
         attribution_type=attribution_type,
-        joint_controller_entity_ids=tuple(sorted(joint_candidates)),
+        controller_status=controller_status,
+        joint_controller_entity_ids=joint_controller_entity_ids,
     )

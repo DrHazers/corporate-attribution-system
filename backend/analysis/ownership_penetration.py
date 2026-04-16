@@ -15,11 +15,19 @@ from backend.analysis.control_inference import (
     ControllerCandidate,
     ControlInferenceContext,
     ControlInferenceResult,
+    CONTROLLER_STATUS_ACTUAL,
+    CONTROLLER_STATUS_LEADING,
+    CONTROLLER_STATUS_NONE,
     DEFAULT_AGGREGATOR,
+    DEFAULT_CLOSE_COMPETITION_GAP_THRESHOLD,
+    DEFAULT_CLOSE_COMPETITION_RATIO_THRESHOLD,
     DEFAULT_CONTROL_THRESHOLD,
     DEFAULT_DISCLOSURE_THRESHOLD,
     DEFAULT_MAX_DEPTH,
     DEFAULT_MIN_PATH_SCORE,
+    DEFAULT_RELATIVE_CONTROL_CANDIDATE_THRESHOLD,
+    DEFAULT_RELATIVE_CONTROL_GAP_THRESHOLD,
+    DEFAULT_RELATIVE_CONTROL_RATIO_THRESHOLD,
     DEFAULT_SIGNIFICANT_THRESHOLD,
     PathState,
     build_control_context,
@@ -319,6 +327,11 @@ def _build_basis_payload(
     path_count: int,
     top_paths: list[OwnershipPath],
     target_entity_id: int,
+    controller_status: str | None = None,
+    selection_reason: str | None = None,
+    leading_candidate_classification: str | None = None,
+    is_leading_candidate: bool = False,
+    is_actual_controller: bool = False,
 ) -> str:
     payload = {
         "analysis": "ownership_penetration",
@@ -330,6 +343,12 @@ def _build_basis_payload(
         "path_count": path_count,
         "semantic_flags": None,
         "target_entity_id": target_entity_id,
+        "controller_status": controller_status,
+        "selection_reason": selection_reason,
+        "leading_candidate_classification": leading_candidate_classification,
+        "is_leading_candidate": is_leading_candidate,
+        "is_actual_controller": is_actual_controller,
+        "whether_actual_controller": is_actual_controller,
         "top_paths": json.loads(_serialize_paths(top_paths[:3])),
         "total_confidence": "1.0000",
         "total_score": _serialize_probability(total_ratio_pct / HUNDRED),
@@ -347,6 +366,11 @@ def _build_country_basis_payload(
     actual_control_country: str,
     total_ratio_pct: Decimal | None,
     top_paths: list[OwnershipPath] | None,
+    controller_status: str | None = None,
+    leading_candidate_entity_id: int | None = None,
+    leading_candidate_classification: str | None = None,
+    leading_candidate: dict | None = None,
+    top_candidates: list[dict] | None = None,
 ) -> str:
     if attribution_type == "fallback_incorporation":
         evidence_summary = [
@@ -368,16 +392,164 @@ def _build_country_basis_payload(
         "as_of": as_of.isoformat(),
         "classification": attribution_type,
         "attribution_type": attribution_type,
+        "controller_status": controller_status,
         "actual_control_country": actual_control_country,
         "actual_controller_entity_id": actual_controller_entity_id,
+        "leading_candidate_entity_id": leading_candidate_entity_id,
+        "leading_candidate_classification": leading_candidate_classification,
         "evidence_summary": evidence_summary,
         "semantic_flags": semantic_flags,
         "top_paths": top_paths_payload,
         "total_confidence": total_confidence,
         "total_score": total_score,
         "total_score_pct": _serialize_pct_from_any(total_score),
+        "leading_candidate": leading_candidate,
+        "top_candidates": top_candidates or [],
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _legacy_ratio_gap_ratio(
+    leading_ratio_pct: Decimal,
+    trailing_ratio_pct: Decimal,
+) -> Decimal | None:
+    if trailing_ratio_pct <= ZERO:
+        return None
+    return leading_ratio_pct / trailing_ratio_pct
+
+
+def _classify_legacy_leading_candidate(
+    candidate_results: list[dict],
+    *,
+    majority_threshold_pct: Decimal,
+) -> str | None:
+    if not candidate_results:
+        return None
+
+    leading_ratio_pct = candidate_results[0]["total_ratio_pct"]
+    if leading_ratio_pct >= majority_threshold_pct:
+        return "absolute_control"
+    if leading_ratio_pct < unit_to_pct(DEFAULT_SIGNIFICANT_THRESHOLD):
+        return None
+
+    runner_up_ratio_pct = (
+        candidate_results[1]["total_ratio_pct"]
+        if len(candidate_results) > 1
+        else ZERO
+    )
+    lead_gap = leading_ratio_pct - runner_up_ratio_pct
+    lead_ratio = _legacy_ratio_gap_ratio(leading_ratio_pct, runner_up_ratio_pct)
+
+    if (
+        leading_ratio_pct >= unit_to_pct(DEFAULT_RELATIVE_CONTROL_CANDIDATE_THRESHOLD)
+        and lead_gap >= unit_to_pct(DEFAULT_RELATIVE_CONTROL_GAP_THRESHOLD)
+        and (
+            lead_ratio is None
+            or lead_ratio >= DEFAULT_RELATIVE_CONTROL_RATIO_THRESHOLD
+        )
+    ):
+        return "relative_control_candidate"
+
+    if (
+        runner_up_ratio_pct > ZERO
+        and lead_gap <= unit_to_pct(DEFAULT_CLOSE_COMPETITION_GAP_THRESHOLD)
+        and lead_ratio is not None
+        and lead_ratio <= DEFAULT_CLOSE_COMPETITION_RATIO_THRESHOLD
+    ):
+        return "significant_influence_close_competition"
+
+    return "significant_influence_candidate"
+
+
+def _resolve_legacy_controller_status(
+    *,
+    actual_controller_entity_id: int | None,
+    leading_candidate_entity_id: int | None,
+) -> str:
+    if actual_controller_entity_id is not None:
+        return CONTROLLER_STATUS_ACTUAL
+    if leading_candidate_entity_id is not None:
+        return CONTROLLER_STATUS_LEADING
+    return CONTROLLER_STATUS_NONE
+
+
+def _legacy_candidate_selection_reason(
+    *,
+    prepared_result: dict,
+    item: dict,
+) -> str:
+    if (
+        prepared_result["actual_controller_entity_id"] is not None
+        and item["entity_id"] == prepared_result["actual_controller_entity_id"]
+    ):
+        return "actual_controller_strict_control_threshold_met"
+
+    if (
+        prepared_result.get("leading_candidate_entity_id") is not None
+        and item["entity_id"] == prepared_result["leading_candidate_entity_id"]
+    ):
+        classification = prepared_result.get("leading_candidate_classification")
+        if classification == "relative_control_candidate":
+            return "leading_candidate_relative_control_signal"
+        if classification == "significant_influence_close_competition":
+            return "leading_candidate_close_competition"
+        if classification == "significant_influence_candidate":
+            return "leading_candidate_significant_influence"
+        if classification == "absolute_control":
+            return "leading_candidate_absolute_control"
+        return "leading_candidate"
+
+    return "supporting_candidate"
+
+
+def _build_legacy_candidate_payload(
+    *,
+    prepared_result: dict,
+    item: dict,
+) -> dict:
+    is_actual_controller = (
+        prepared_result["actual_controller_entity_id"] is not None
+        and item["entity_id"] == prepared_result["actual_controller_entity_id"]
+    )
+    is_leading_candidate = (
+        prepared_result.get("leading_candidate_entity_id") is not None
+        and item["entity_id"] == prepared_result["leading_candidate_entity_id"]
+    )
+    controller_status = (
+        prepared_result["controller_status"]
+        if is_actual_controller or is_leading_candidate
+        else "supporting_candidate"
+    )
+    return {
+        "controller_entity_id": item["entity_id"],
+        "controller_name": item["entity"].entity_name,
+        "controller_type": item["entity"].entity_type,
+        "controller_country": _resolve_controller_country(item["entity"]),
+        "classification": (
+            "equity_control" if is_actual_controller else "significant_influence"
+        ),
+        "control_type": (
+            "equity_control" if is_actual_controller else "significant_influence"
+        ),
+        "control_mode": "numeric",
+        "control_ratio": _serialize_decimal(item["total_ratio_pct"]),
+        "semantic_flags": None,
+        "total_confidence": "1.0000",
+        "total_score": _serialize_probability(item["total_ratio_pct"] / HUNDRED),
+        "total_score_pct": _serialize_decimal(item["total_ratio_pct"]),
+        "controller_status": controller_status,
+        "selection_reason": _legacy_candidate_selection_reason(
+            prepared_result=prepared_result,
+            item=item,
+        ),
+        "leading_candidate_classification": prepared_result.get(
+            "leading_candidate_classification"
+        ),
+        "is_leading_candidate": is_leading_candidate,
+        "is_actual_controller": is_actual_controller,
+        "whether_actual_controller": is_actual_controller,
+        "control_path": json.loads(_serialize_paths(item["paths"][:3])),
+    }
 
 
 def _collect_candidate_paths(
@@ -513,14 +685,31 @@ def _prepare_candidate_results(
         )
         attribution_type = "equity_control"
 
+    leading_candidate = candidate_results[0] if candidate_results else None
+    leading_candidate_entity_id = (
+        leading_candidate["entity_id"] if leading_candidate is not None else None
+    )
+    leading_candidate_classification = _classify_legacy_leading_candidate(
+        candidate_results,
+        majority_threshold_pct=majority_threshold_pct,
+    )
+    controller_status = _resolve_legacy_controller_status(
+        actual_controller_entity_id=actual_controller_entity_id,
+        leading_candidate_entity_id=leading_candidate_entity_id,
+    )
+
     return {
         "company": company,
         "target_entity": target_entity,
         "candidate_results": candidate_results,
         "actual_controller": actual_controller,
         "actual_controller_entity_id": actual_controller_entity_id,
+        "leading_candidate": leading_candidate,
+        "leading_candidate_entity_id": leading_candidate_entity_id,
+        "leading_candidate_classification": leading_candidate_classification,
         "actual_control_country": actual_control_country,
         "attribution_type": attribution_type,
+        "controller_status": controller_status,
     }
 
 
@@ -537,8 +726,16 @@ def _apply_company_analysis_records(
     actual_controller_entity_id: int | None = prepared_result[
         "actual_controller_entity_id"
     ]
+    leading_candidate = prepared_result.get("leading_candidate")
+    leading_candidate_entity_id: int | None = prepared_result.get(
+        "leading_candidate_entity_id"
+    )
+    leading_candidate_classification: str | None = prepared_result.get(
+        "leading_candidate_classification"
+    )
     actual_control_country: str = prepared_result["actual_control_country"]
     attribution_type: str = prepared_result["attribution_type"]
+    controller_status: str = prepared_result["controller_status"]
 
     (
         db.query(ControlRelationship)
@@ -565,6 +762,14 @@ def _apply_company_analysis_records(
             if is_actual_controller
             else "significant_influence"
         )
+        is_leading_candidate = (
+            leading_candidate_entity_id is not None
+            and controller_entity.id == leading_candidate_entity_id
+        )
+        selection_reason = _legacy_candidate_selection_reason(
+            prepared_result=prepared_result,
+            item=item,
+        )
 
         db.add(
             ControlRelationship(
@@ -583,6 +788,15 @@ def _apply_company_analysis_records(
                     path_count=len(item["paths"]),
                     top_paths=item["paths"],
                     target_entity_id=target_entity.id,
+                    controller_status=(
+                        controller_status
+                        if is_actual_controller or is_leading_candidate
+                        else "supporting_candidate"
+                    ),
+                    selection_reason=selection_reason,
+                    leading_candidate_classification=leading_candidate_classification,
+                    is_leading_candidate=is_leading_candidate,
+                    is_actual_controller=is_actual_controller,
                 ),
                 notes=AUTO_NOTE,
                 control_mode="numeric",
@@ -613,6 +827,24 @@ def _apply_company_analysis_records(
                     if actual_controller is not None
                     else None
                 ),
+                controller_status=controller_status,
+                leading_candidate_entity_id=leading_candidate_entity_id,
+                leading_candidate_classification=leading_candidate_classification,
+                leading_candidate=(
+                    _build_legacy_candidate_payload(
+                        prepared_result=prepared_result,
+                        item=leading_candidate,
+                    )
+                    if leading_candidate is not None
+                    else None
+                ),
+                top_candidates=[
+                    _build_legacy_candidate_payload(
+                        prepared_result=prepared_result,
+                        item=candidate_item,
+                    )
+                    for candidate_item in candidate_results[:5]
+                ],
             ),
             is_manual=False,
             notes=AUTO_NOTE,
@@ -631,6 +863,9 @@ def _apply_company_analysis_records(
         "target_entity_id": target_entity.id,
         "as_of": as_of.isoformat(),
         "actual_controller_entity_id": actual_controller_entity_id,
+        "leading_candidate_entity_id": leading_candidate_entity_id,
+        "leading_candidate_classification": leading_candidate_classification,
+        "controller_status": controller_status,
         "control_relationship_count": len(candidate_results),
         "country_attribution_type": attribution_type,
         "controller_candidates": [
@@ -639,6 +874,17 @@ def _apply_company_analysis_records(
                 "entity_name": item["entity"].entity_name,
                 "total_ratio_pct": _serialize_decimal(item["total_ratio_pct"]),
                 "path_count": len(item["paths"]),
+                "controller_status": (
+                    controller_status
+                    if item["entity_id"] in {actual_controller_entity_id, leading_candidate_entity_id}
+                    else "supporting_candidate"
+                ),
+                "selection_reason": _legacy_candidate_selection_reason(
+                    prepared_result=prepared_result,
+                    item=item,
+                ),
+                "leading_candidate_classification": leading_candidate_classification,
+                "is_leading_candidate": item["entity_id"] == leading_candidate_entity_id,
                 "is_actual_controller": (
                     actual_controller is not None
                     and item["entity_id"] == actual_controller["entity_id"]
@@ -712,6 +958,104 @@ def _control_type_from_candidate(candidate: ControllerCandidate) -> str:
     return "agreement_control"
 
 
+def _is_result_leading_candidate(
+    result: ControlInferenceResult,
+    candidate: ControllerCandidate,
+) -> bool:
+    return (
+        result.leading_candidate_entity_id is not None
+        and candidate.controller_entity_id == result.leading_candidate_entity_id
+    )
+
+
+def _candidate_selection_reason(
+    *,
+    result: ControlInferenceResult,
+    candidate: ControllerCandidate,
+) -> str:
+    if (
+        result.actual_controller_entity_id is not None
+        and candidate.controller_entity_id == result.actual_controller_entity_id
+    ):
+        return "actual_controller_strict_control_threshold_met"
+
+    if _is_result_leading_candidate(result, candidate):
+        classification = result.leading_candidate_classification
+        if classification == "relative_control_candidate":
+            return "leading_candidate_relative_control_signal"
+        if classification == "significant_influence_close_competition":
+            return "leading_candidate_close_competition"
+        if classification == "significant_influence_candidate":
+            return "leading_candidate_significant_influence"
+        if classification == "joint_control":
+            return "joint_control_candidate"
+        if classification == "absolute_control":
+            return "leading_candidate_absolute_control"
+        return "leading_candidate"
+
+    return "supporting_candidate"
+
+
+def _candidate_controller_status(
+    *,
+    result: ControlInferenceResult,
+    candidate: ControllerCandidate,
+) -> str:
+    if (
+        result.actual_controller_entity_id is not None
+        and candidate.controller_entity_id == result.actual_controller_entity_id
+    ):
+        return result.controller_status
+    if _is_result_leading_candidate(result, candidate):
+        return result.controller_status
+    return "supporting_candidate"
+
+
+def _build_unified_candidate_payload(
+    *,
+    result: ControlInferenceResult,
+    candidate: ControllerCandidate,
+    context: ControlInferenceContext,
+) -> dict:
+    controller_entity = context.entity_map[candidate.controller_entity_id]
+    is_actual_controller = (
+        result.actual_controller_entity_id is not None
+        and candidate.controller_entity_id == result.actual_controller_entity_id
+    )
+    is_leading_candidate = _is_result_leading_candidate(result, candidate)
+    selection_reason = _candidate_selection_reason(
+        result=result,
+        candidate=candidate,
+    )
+    return {
+        "controller_entity_id": candidate.controller_entity_id,
+        "controller_name": controller_entity.entity_name,
+        "controller_type": controller_entity.entity_type,
+        "controller_country": _resolve_controller_country(controller_entity),
+        "classification": _control_type_from_candidate(candidate),
+        "control_type": _control_type_from_candidate(candidate),
+        "control_mode": candidate.control_mode,
+        "control_ratio": serialize_pct_score(candidate.total_score),
+        "semantic_flags": _semantic_flags_for_storage(candidate.semantic_flags),
+        "total_confidence": serialize_unit_score(candidate.total_confidence),
+        "total_score": serialize_unit_score(candidate.total_score),
+        "total_score_pct": serialize_pct_score(candidate.total_score),
+        "controller_status": _candidate_controller_status(
+            result=result,
+            candidate=candidate,
+        ),
+        "selection_reason": selection_reason,
+        "leading_candidate_classification": result.leading_candidate_classification,
+        "is_leading_candidate": is_leading_candidate,
+        "is_actual_controller": is_actual_controller,
+        "whether_actual_controller": is_actual_controller,
+        "control_path": [
+            _serialize_unified_path(path_state, context=context)
+            for path_state in candidate.top_paths
+        ],
+    }
+
+
 def _build_canonical_path_edges_from_factors(
     path_state: PathState,
 ) -> list[dict]:
@@ -775,6 +1119,15 @@ def _build_unified_basis_payload(
     context: ControlInferenceContext,
 ) -> str:
     classification = _control_type_from_candidate(candidate)
+    selection_reason = _candidate_selection_reason(
+        result=result,
+        candidate=candidate,
+    )
+    is_leading_candidate = _is_result_leading_candidate(result, candidate)
+    is_actual_controller = (
+        result.actual_controller_entity_id is not None
+        and candidate.controller_entity_id == result.actual_controller_entity_id
+    )
     payload = {
         "analysis": "unified_control_inference_v1",
         "aggregator": result.aggregator,
@@ -786,6 +1139,15 @@ def _build_unified_basis_payload(
         "path_count": len(candidate.path_states),
         "semantic_flags": _semantic_flags_for_storage(candidate.semantic_flags),
         "target_entity_id": result.target_entity.id,
+        "controller_status": _candidate_controller_status(
+            result=result,
+            candidate=candidate,
+        ),
+        "selection_reason": selection_reason,
+        "leading_candidate_classification": result.leading_candidate_classification,
+        "is_leading_candidate": is_leading_candidate,
+        "is_actual_controller": is_actual_controller,
+        "whether_actual_controller": is_actual_controller,
         "top_paths": [
             _serialize_unified_path(path_state, context=context)
             for path_state in candidate.top_paths
@@ -807,6 +1169,14 @@ def _build_unified_country_basis_payload(
             candidate
             for candidate in result.candidates
             if candidate.controller_entity_id == result.actual_controller_entity_id
+        ),
+        None,
+    )
+    leading_candidate = next(
+        (
+            candidate
+            for candidate in result.candidates
+            if candidate.controller_entity_id == result.leading_candidate_entity_id
         ),
         None,
     )
@@ -836,8 +1206,11 @@ def _build_unified_country_basis_payload(
         "as_of": context.as_of.isoformat(),
         "classification": result.attribution_type,
         "attribution_type": result.attribution_type,
+        "controller_status": result.controller_status,
         "actual_control_country": result.actual_control_country,
         "actual_controller_entity_id": result.actual_controller_entity_id,
+        "leading_candidate_entity_id": result.leading_candidate_entity_id,
+        "leading_candidate_classification": result.leading_candidate_classification,
         "joint_controller_entity_ids": list(result.joint_controller_entity_ids),
         "semantic_flags": semantic_flags,
         "top_paths": top_paths,
@@ -845,17 +1218,21 @@ def _build_unified_country_basis_payload(
         "total_confidence": total_confidence,
         "total_score": total_score,
         "total_score_pct": _serialize_pct_from_any(total_score),
+        "leading_candidate": (
+            _build_unified_candidate_payload(
+                result=result,
+                candidate=leading_candidate,
+                context=context,
+            )
+            if leading_candidate is not None
+            else None
+        ),
         "top_candidates": [
-            {
-                "controller_entity_id": candidate.controller_entity_id,
-                "controller_name": context.entity_map[candidate.controller_entity_id].entity_name,
-                "classification": _control_type_from_candidate(candidate),
-                "control_mode": candidate.control_mode,
-                "semantic_flags": _semantic_flags_for_storage(candidate.semantic_flags),
-                "total_confidence": serialize_unit_score(candidate.total_confidence),
-                "total_score": serialize_unit_score(candidate.total_score),
-                "total_score_pct": serialize_pct_score(candidate.total_score),
-            }
+            _build_unified_candidate_payload(
+                result=result,
+                candidate=candidate,
+                context=context,
+            )
             for candidate in result.candidates[:5]
         ],
     }
@@ -958,6 +1335,9 @@ def _apply_unified_company_analysis_records(
         "target_entity_id": target_entity.id,
         "as_of": context.as_of.isoformat(),
         "actual_controller_entity_id": result.actual_controller_entity_id,
+        "leading_candidate_entity_id": result.leading_candidate_entity_id,
+        "leading_candidate_classification": result.leading_candidate_classification,
+        "controller_status": result.controller_status,
         "control_relationship_count": len(result.candidates),
         "country_attribution_type": attribution_type,
         "engine": "unified_control_inference_v1",
@@ -971,6 +1351,19 @@ def _apply_unified_company_analysis_records(
                 "total_confidence": serialize_unit_score(candidate.total_confidence),
                 "total_score_pct": serialize_pct_score(candidate.total_score),
                 "path_count": len(candidate.path_states),
+                "controller_status": _candidate_controller_status(
+                    result=result,
+                    candidate=candidate,
+                ),
+                "selection_reason": _candidate_selection_reason(
+                    result=result,
+                    candidate=candidate,
+                ),
+                "leading_candidate_classification": result.leading_candidate_classification,
+                "is_leading_candidate": _is_result_leading_candidate(
+                    result,
+                    candidate,
+                ),
                 "is_actual_controller": (
                     result.actual_controller_entity_id is not None
                     and candidate.controller_entity_id == result.actual_controller_entity_id
@@ -1408,33 +1801,50 @@ def _normalize_country_basis_payload(
         control_mode=parsed.get("control_mode"),
         semantic_flags=_parse_json_list(parsed.get("semantic_flags")),
     )
-    top_candidates = parsed.get("top_candidates")
-    if isinstance(top_candidates, list):
-        normalized_top_candidates = []
-        for item in top_candidates:
-            if not isinstance(item, dict):
-                continue
-            normalized_top_candidates.append(
-                {
-                    **item,
-                    "classification": _canonical_control_type(
-                        item.get("classification")
-                    )
-                    or item.get("classification"),
-                    "semantic_flags": _parse_json_list(item.get("semantic_flags")),
-                    "total_confidence": _serialize_probability(
-                        item.get("total_confidence")
-                    )
-                    or "0.0000",
-                    "total_score": _serialize_probability(item.get("total_score"))
-                    or _serialize_probability(item.get("total_score_pct"))
-                    or "0.0000",
-                    "total_score_pct": item.get("total_score_pct")
-                    or _serialize_pct_from_any(item.get("total_score")),
-                }
+    def _normalize_country_candidate_item(item: dict | None) -> dict | None:
+        if not isinstance(item, dict):
+            return None
+        return {
+            **item,
+            "classification": _canonical_control_type(item.get("classification"))
+            or item.get("classification"),
+            "control_type": _canonical_control_type(
+                item.get("control_type") or item.get("classification")
             )
-    else:
-        normalized_top_candidates = []
+            or item.get("control_type")
+            or item.get("classification"),
+            "semantic_flags": _parse_json_list(item.get("semantic_flags")),
+            "total_confidence": _serialize_probability(item.get("total_confidence"))
+            or "0.0000",
+            "total_score": _serialize_probability(item.get("total_score"))
+            or _serialize_probability(item.get("total_score_pct"))
+            or "0.0000",
+            "total_score_pct": item.get("total_score_pct")
+            or _serialize_pct_from_any(item.get("total_score")),
+            "control_path": _normalize_control_path_payload(
+                item.get("control_path"),
+                control_mode=item.get("control_mode"),
+                semantic_flags=_parse_json_list(item.get("semantic_flags")),
+            )
+            or [],
+            "whether_actual_controller": bool(
+                item.get("whether_actual_controller")
+                if item.get("whether_actual_controller") is not None
+                else item.get("is_actual_controller")
+            ),
+            "is_leading_candidate": bool(item.get("is_leading_candidate")),
+        }
+
+    top_candidates = parsed.get("top_candidates")
+    normalized_top_candidates = []
+    if isinstance(top_candidates, list):
+        for item in top_candidates:
+            normalized_item = _normalize_country_candidate_item(item)
+            if normalized_item is not None:
+                normalized_top_candidates.append(normalized_item)
+    normalized_leading_candidate = _normalize_country_candidate_item(
+        parsed.get("leading_candidate")
+    )
 
     return {
         **parsed,
@@ -1454,6 +1864,12 @@ def _normalize_country_basis_payload(
         "total_score": total_score,
         "total_score_pct": parsed.get("total_score_pct")
         or _serialize_pct_from_any(total_score),
+        "controller_status": parsed.get("controller_status"),
+        "leading_candidate_entity_id": parsed.get("leading_candidate_entity_id"),
+        "leading_candidate_classification": parsed.get(
+            "leading_candidate_classification"
+        ),
+        "leading_candidate": normalized_leading_candidate,
         "top_candidates": normalized_top_candidates,
     }
 
@@ -1470,6 +1886,29 @@ def _serialize_control_relationship_response(
         control_mode=control_mode,
         semantic_flags=semantic_flags,
     )
+    normalized_basis = _normalize_basis_payload(
+        relationship.basis,
+        classification=control_type,
+        control_mode=control_mode,
+        semantic_flags=semantic_flags,
+        control_path=control_path,
+        control_ratio=control_ratio,
+    )
+    basis_controller_status = (
+        normalized_basis.get("controller_status")
+        if isinstance(normalized_basis, dict)
+        else None
+    )
+    basis_selection_reason = (
+        normalized_basis.get("selection_reason")
+        if isinstance(normalized_basis, dict)
+        else None
+    )
+    basis_is_leading = (
+        bool(normalized_basis.get("is_leading_candidate"))
+        if isinstance(normalized_basis, dict)
+        else False
+    )
     return {
         "id": relationship.id,
         "company_id": relationship.company_id,
@@ -1480,17 +1919,14 @@ def _serialize_control_relationship_response(
         "control_ratio": control_ratio,
         "control_path": control_path,
         "is_actual_controller": relationship.is_actual_controller,
-        "basis": _normalize_basis_payload(
-            relationship.basis,
-            classification=control_type,
-            control_mode=control_mode,
-            semantic_flags=semantic_flags,
-            control_path=control_path,
-            control_ratio=control_ratio,
-        ),
+        "whether_actual_controller": relationship.is_actual_controller,
+        "basis": normalized_basis,
         "notes": relationship.notes,
         "control_mode": control_mode,
         "semantic_flags": semantic_flags,
+        "controller_status": basis_controller_status,
+        "selection_reason": basis_selection_reason,
+        "is_leading_candidate": basis_is_leading,
         "review_status": relationship.review_status,
         "created_at": relationship.created_at.isoformat(),
         "updated_at": relationship.updated_at.isoformat(),
@@ -1508,14 +1944,131 @@ def get_company_control_chain_data(db: Session, company_id: int) -> dict:
         )
         .all()
     )
+    serialized_relationships = [
+        _serialize_control_relationship_response(relationship)
+        for relationship in relationships
+    ]
+
+    actual_controller = next(
+        (
+            relationship
+            for relationship in serialized_relationships
+            if relationship["is_actual_controller"]
+        ),
+        None,
+    )
+    leading_candidate = actual_controller or next(
+        (
+            relationship
+            for relationship in serialized_relationships
+            if relationship.get("is_leading_candidate")
+        ),
+        None,
+    )
+    if leading_candidate is None and serialized_relationships:
+        leading_candidate = serialized_relationships[0]
+    if (
+        actual_controller is None
+        and leading_candidate is not None
+        and leading_candidate in serialized_relationships
+    ):
+        leading_candidate["is_leading_candidate"] = True
+        leading_candidate["controller_status"] = (
+            leading_candidate.get("controller_status") or CONTROLLER_STATUS_LEADING
+        )
+        leading_candidate["selection_reason"] = (
+            leading_candidate.get("selection_reason") or "leading_candidate"
+        )
+        if isinstance(leading_candidate.get("basis"), dict):
+            leading_candidate["basis"]["is_leading_candidate"] = True
+            leading_candidate["basis"]["controller_status"] = (
+                leading_candidate["basis"].get("controller_status")
+                or CONTROLLER_STATUS_LEADING
+            )
+            leading_candidate["basis"]["selection_reason"] = (
+                leading_candidate["basis"].get("selection_reason")
+                or "leading_candidate"
+            )
+
+    country_attribution = (
+        db.query(CountryAttribution)
+        .filter(CountryAttribution.company_id == company_id)
+        .order_by(CountryAttribution.id.desc())
+        .first()
+    )
+    country_basis = _normalize_country_basis_payload(
+        country_attribution.basis if country_attribution is not None else None,
+        attribution_type=(
+            _canonical_attribution_type(country_attribution.attribution_type)
+            if country_attribution is not None
+            else None
+        ),
+    )
+
+    if leading_candidate is None and isinstance(country_basis, dict):
+        basis_leading_candidate = country_basis.get("leading_candidate")
+        if isinstance(basis_leading_candidate, dict):
+            leading_candidate = {
+                "id": 0,
+                "company_id": company_id,
+                "controller_entity_id": basis_leading_candidate.get(
+                    "controller_entity_id"
+                ),
+                "controller_name": basis_leading_candidate.get("controller_name")
+                or "Unknown controller candidate",
+                "controller_type": basis_leading_candidate.get("controller_type")
+                or "other",
+                "control_type": basis_leading_candidate.get("control_type")
+                or basis_leading_candidate.get("classification")
+                or "significant_influence",
+                "control_ratio": basis_leading_candidate.get("control_ratio")
+                or basis_leading_candidate.get("total_score_pct"),
+                "control_path": basis_leading_candidate.get("control_path")
+                or country_basis.get("top_paths")
+                or [],
+                "is_actual_controller": False,
+                "whether_actual_controller": False,
+                "basis": basis_leading_candidate,
+                "notes": None,
+                "control_mode": basis_leading_candidate.get("control_mode"),
+                "semantic_flags": basis_leading_candidate.get("semantic_flags"),
+                "controller_status": basis_leading_candidate.get("controller_status")
+                or country_basis.get("controller_status"),
+                "selection_reason": basis_leading_candidate.get("selection_reason"),
+                "is_leading_candidate": True,
+                "review_status": None,
+                "created_at": "",
+                "updated_at": "",
+            }
+
+    identification_status = CONTROLLER_STATUS_NONE
+    if actual_controller is not None:
+        identification_status = CONTROLLER_STATUS_ACTUAL
+    elif leading_candidate is not None:
+        identification_status = (
+            leading_candidate.get("controller_status") or CONTROLLER_STATUS_LEADING
+        )
+    elif isinstance(country_basis, dict) and country_basis.get("controller_status"):
+        identification_status = country_basis["controller_status"]
+
+    display_controller = actual_controller or leading_candidate
+    display_controller_role = (
+        "actual_controller"
+        if actual_controller is not None
+        else "leading_candidate" if leading_candidate is not None else None
+    )
 
     return {
         "company_id": company_id,
         "controller_count": len(relationships),
-        "control_relationships": [
-            _serialize_control_relationship_response(relationship)
-            for relationship in relationships
-        ],
+        "control_relationships": serialized_relationships,
+        "actual_controller": actual_controller,
+        "leading_candidate": leading_candidate,
+        "focused_candidate": leading_candidate,
+        "display_controller": display_controller,
+        "display_controller_role": display_controller_role,
+        "identification_status": identification_status,
+        "controller_status": identification_status,
     }
 
 

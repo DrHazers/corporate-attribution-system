@@ -85,6 +85,9 @@ def test_equity_only_inference_persists_numeric_mode(tmp_path):
             inference = infer_controllers(context, company.id)
 
             assert inference.actual_controller_entity_id == controller.id
+            assert inference.leading_candidate_entity_id == controller.id
+            assert inference.leading_candidate_classification == "absolute_control"
+            assert inference.controller_status == "actual_controller_identified"
             assert len(inference.candidates) == 1
             assert inference.candidates[0].control_mode == "numeric"
             assert inference.candidates[0].control_level == "control"
@@ -95,6 +98,8 @@ def test_equity_only_inference_persists_numeric_mode(tmp_path):
             attribution = fetch_country_attribution(db, company.id)
 
             assert result["actual_controller_entity_id"] == controller.id
+            assert result["leading_candidate_entity_id"] == controller.id
+            assert result["controller_status"] == "actual_controller_identified"
             assert len(relationships) == 1
             assert relationships[0].control_mode == "numeric"
             assert relationships[0].control_type == "equity_control"
@@ -151,6 +156,8 @@ def test_agreement_only_inference_persists_semantic_mode(tmp_path):
             inference = infer_controllers(context, company.id)
 
             assert inference.actual_controller_entity_id == controller.id
+            assert inference.leading_candidate_entity_id == controller.id
+            assert inference.controller_status == "actual_controller_identified"
             assert len(inference.candidates) == 1
             assert inference.candidates[0].control_mode == "semantic"
             assert inference.candidates[0].control_level == "control"
@@ -166,6 +173,7 @@ def test_agreement_only_inference_persists_semantic_mode(tmp_path):
             assert relationships[0].is_actual_controller is True
             basis = json.loads(relationships[0].basis)
             assert basis["classification"] == "agreement_control"
+            assert basis["selection_reason"] == "actual_controller_strict_control_threshold_met"
             assert basis["control_mode"] == "semantic"
             assert basis["aggregator"] == "sum_cap"
             assert basis["semantic_flags"] == ["agreement"]

@@ -35,17 +35,26 @@ const props = defineProps({
   },
 })
 
-const actualController = computed(
-  () => props.controlAnalysis?.actual_controller?.controller_name || '暂无',
+const displayController = computed(
+  () => props.controlAnalysis?.display_controller || props.controlAnalysis?.actual_controller || null,
 )
-const actualControllerType = computed(
-  () => props.controlAnalysis?.actual_controller?.controller_type || '暂无',
+const displayControllerRole = computed(
+  () => props.controlAnalysis?.display_controller_role || (displayController.value ? 'actual_controller' : null),
 )
-const actualControlType = computed(
-  () => props.controlAnalysis?.actual_controller?.control_type || '暂无',
+const controllerRoleLabel = computed(() =>
+  displayControllerRole.value === 'leading_candidate' ? '重点控制候选' : '实际控制人',
 )
-const actualControlRatio = computed(() => {
-  const value = props.controlAnalysis?.actual_controller?.control_ratio
+const controllerName = computed(
+  () => displayController.value?.controller_name || '暂无',
+)
+const controllerType = computed(
+  () => displayController.value?.controller_type || '暂无',
+)
+const controlType = computed(
+  () => displayController.value?.control_type || '暂无',
+)
+const controlRatio = computed(() => {
+  const value = displayController.value?.control_ratio
   if (value === null || value === undefined || value === '') {
     return '暂无'
   }
@@ -71,11 +80,34 @@ const controlRelationshipCount = computed(
     0,
 )
 const hasControlData = computed(() => controlRelationshipCount.value > 0)
-const recognitionStatus = computed(() =>
-  actualController.value !== '暂无' && actualControlCountry.value !== '未识别'
-    ? '已识别'
-    : '待补充',
-)
+const recognitionStatus = computed(() => {
+  const status =
+    props.controlAnalysis?.identification_status ||
+    props.controlAnalysis?.controller_status
+
+  if (status === 'actual_controller_identified') {
+    return '已识别实际控制人'
+  }
+  if (status === 'no_actual_controller_but_leading_candidate_found') {
+    return '已识别重点控制候选'
+  }
+  if (status === 'joint_control_identified') {
+    return '存在共同控制信号'
+  }
+  return '暂无明确控制信号'
+})
+const recognitionTagType = computed(() => {
+  if (recognitionStatus.value === '已识别实际控制人') {
+    return 'success'
+  }
+  if (
+    recognitionStatus.value === '已识别重点控制候选' ||
+    recognitionStatus.value === '存在共同控制信号'
+  ) {
+    return 'warning'
+  }
+  return 'info'
+})
 </script>
 
 <template>
@@ -94,20 +126,20 @@ const recognitionStatus = computed(() =>
         <div class="control-summary-card__title">控制分析摘要</div>
         <dl class="compact-facts">
           <div>
-            <dt>实际控制人</dt>
-            <dd>{{ actualController }}</dd>
+            <dt>{{ controllerRoleLabel }}</dt>
+            <dd>{{ controllerName }}</dd>
           </div>
           <div>
             <dt>控制主体类型</dt>
-            <dd>{{ actualControllerType }}</dd>
+            <dd>{{ controllerType }}</dd>
           </div>
           <div>
             <dt>控制类型</dt>
-            <dd>{{ actualControlType }}</dd>
+            <dd>{{ controlType }}</dd>
           </div>
           <div>
             <dt>控制比例</dt>
-            <dd>{{ actualControlRatio }}</dd>
+            <dd>{{ controlRatio }}</dd>
           </div>
           <div>
             <dt>控制关系数量</dt>
@@ -142,8 +174,8 @@ const recognitionStatus = computed(() =>
         <div class="control-summary-card__title">关键结论</div>
         <dl class="compact-facts">
           <div>
-            <dt>实际控制人</dt>
-            <dd>{{ actualController }}</dd>
+            <dt>{{ controllerRoleLabel }}</dt>
+            <dd>{{ controllerName }}</dd>
           </div>
           <div>
             <dt>实际控制地</dt>
@@ -152,7 +184,7 @@ const recognitionStatus = computed(() =>
           <div>
             <dt>识别状态</dt>
             <dd>
-              <el-tag :type="recognitionStatus === '已识别' ? 'success' : 'warning'" effect="plain">
+              <el-tag :type="recognitionTagType" effect="plain">
                 {{ recognitionStatus }}
               </el-tag>
             </dd>

@@ -31,6 +31,29 @@ class ControlRelationship(Base):
     control_ratio = Column(Numeric(7, 4), nullable=True)
     control_path = Column(Text, nullable=True)
     is_actual_controller = Column(Boolean, nullable=False, default=False)
+    control_tier = Column(String(20), nullable=True, index=True)
+    is_direct_controller = Column(Boolean, nullable=False, default=False)
+    is_intermediate_controller = Column(Boolean, nullable=False, default=False)
+    is_ultimate_controller = Column(Boolean, nullable=False, default=False)
+    promotion_source_entity_id = Column(
+        Integer,
+        ForeignKey("shareholder_entities.id"),
+        nullable=True,
+        index=True,
+    )
+    promotion_reason = Column(String(100), nullable=True)
+    control_chain_depth = Column(Integer, nullable=True)
+    is_terminal_inference = Column(Boolean, nullable=False, default=False)
+    terminal_failure_reason = Column(String(100), nullable=True)
+    immediate_control_ratio = Column(Numeric(10, 4), nullable=True)
+    aggregated_control_score = Column(Numeric(10, 6), nullable=True)
+    terminal_control_score = Column(Numeric(10, 6), nullable=True)
+    inference_run_id = Column(
+        Integer,
+        ForeignKey("control_inference_runs.id"),
+        nullable=True,
+        index=True,
+    )
     basis = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     control_mode = Column(String(20), nullable=True, index=True)
@@ -47,5 +70,14 @@ class ControlRelationship(Base):
     company = relationship("Company", back_populates="control_relationships")
     controller_entity = relationship(
         "ShareholderEntity",
+        back_populates="control_relationships",
+        foreign_keys=[controller_entity_id],
+    )
+    promotion_source_entity = relationship(
+        "ShareholderEntity",
+        foreign_keys=[promotion_source_entity_id],
+    )
+    inference_run = relationship(
+        "ControlInferenceRun",
         back_populates="control_relationships",
     )

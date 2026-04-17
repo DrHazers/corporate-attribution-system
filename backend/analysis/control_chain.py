@@ -15,6 +15,7 @@ def _pick_actual_controller(
             relationship
             for relationship in control_relationships
             if relationship["is_actual_controller"]
+            or relationship.get("is_ultimate_controller")
         ),
         None,
     )

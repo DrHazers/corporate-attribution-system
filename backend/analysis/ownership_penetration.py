@@ -4,7 +4,7 @@ import json
 import os
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from time import perf_counter
 
@@ -39,6 +39,8 @@ from backend.analysis.control_inference import (
 from backend.crud.company import get_company_by_id
 from backend.crud.shareholder import get_entity_by_company_id
 from backend.models.company import Company
+from backend.models.control_inference_audit_log import ControlInferenceAuditLog
+from backend.models.control_inference_run import ControlInferenceRun
 from backend.models.control_relationship import ControlRelationship
 from backend.models.country_attribution import CountryAttribution
 from backend.models.shareholder import ShareholderEntity, ShareholderStructure
@@ -77,6 +79,78 @@ class OwnershipAnalysisContext:
     entity_map: dict[int, ShareholderEntity]
     entity_by_company_id: dict[int, ShareholderEntity]
     incoming_map: dict[int, list[ShareholderStructure]]
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _start_inference_run(
+    db: Session,
+    *,
+    company_id: int,
+    max_depth: int,
+    disclosure_threshold_pct: Decimal,
+    majority_threshold_pct: Decimal,
+    notes: str | None = None,
+) -> ControlInferenceRun:
+    run = ControlInferenceRun(
+        company_id=company_id,
+        run_started_at=_now_utc(),
+        engine_version="unified_terminal_v2",
+        engine_mode="unified_terminal",
+        max_depth=max_depth,
+        disclosure_threshold=_pct_threshold_to_unit(disclosure_threshold_pct),
+        significant_threshold=DEFAULT_SIGNIFICANT_THRESHOLD,
+        control_threshold=_pct_threshold_to_unit(majority_threshold_pct),
+        terminal_identification_enabled=True,
+        look_through_policy="promote_unique_control_parents",
+        result_status="running",
+        notes=notes,
+    )
+    db.add(run)
+    db.flush()
+    return run
+
+
+def _finalize_inference_run(
+    run: ControlInferenceRun,
+    *,
+    status: str,
+    summary: dict | None = None,
+    notes: str | None = None,
+) -> None:
+    run.run_finished_at = _now_utc()
+    run.result_status = status
+    if summary is not None:
+        run.summary_json = json.dumps(summary, ensure_ascii=False, sort_keys=True)
+    if notes is not None:
+        run.notes = notes
+
+
+def _append_inference_audit_logs(
+    db: Session,
+    *,
+    run_id: int,
+    company_id: int,
+    audit_events: tuple | list,
+) -> None:
+    for index, event in enumerate(audit_events, start=1):
+        db.add(
+            ControlInferenceAuditLog(
+                inference_run_id=run_id,
+                company_id=company_id,
+                step_no=index,
+                from_entity_id=event.from_entity_id,
+                to_entity_id=event.to_entity_id,
+                action_type=event.action_type,
+                action_reason=event.action_reason,
+                score_before=event.score_before,
+                score_after=event.score_after,
+                details_json=json.dumps(event.details, ensure_ascii=False, sort_keys=True),
+                created_at=_now_utc(),
+            )
+        )
 
 
 def _normalize_as_of(as_of: date | datetime | None) -> date:
@@ -1011,6 +1085,36 @@ def _candidate_controller_status(
     return "supporting_candidate"
 
 
+def _candidate_immediate_control_ratio(candidate: ControllerCandidate) -> Decimal | None:
+    if not candidate.top_paths:
+        return None
+    first_path = candidate.top_paths[0]
+    if not first_path.edge_factors:
+        return None
+    first_factor = first_path.edge_factors[0]
+    return unit_to_pct(first_factor.numeric_factor * first_factor.semantic_factor)
+
+
+def _candidate_control_tier(
+    *,
+    result: ControlInferenceResult,
+    candidate: ControllerCandidate,
+) -> str:
+    if (
+        result.actual_controller_entity_id is not None
+        and candidate.controller_entity_id == result.actual_controller_entity_id
+    ):
+        return "ultimate"
+    if (
+        result.direct_controller_entity_id is not None
+        and candidate.controller_entity_id == result.direct_controller_entity_id
+    ):
+        return "direct"
+    if candidate.controller_entity_id in set(result.promotion_path_entity_ids[:-1]):
+        return "intermediate"
+    return "candidate"
+
+
 def _build_unified_candidate_payload(
     *,
     result: ControlInferenceResult,
@@ -1022,10 +1126,23 @@ def _build_unified_candidate_payload(
         result.actual_controller_entity_id is not None
         and candidate.controller_entity_id == result.actual_controller_entity_id
     )
+    is_direct_controller = (
+        result.direct_controller_entity_id is not None
+        and candidate.controller_entity_id == result.direct_controller_entity_id
+    )
     is_leading_candidate = _is_result_leading_candidate(result, candidate)
     selection_reason = _candidate_selection_reason(
         result=result,
         candidate=candidate,
+    )
+    control_tier = _candidate_control_tier(
+        result=result,
+        candidate=candidate,
+    )
+    immediate_control_ratio = _candidate_immediate_control_ratio(candidate)
+    terminal_control_score = result.terminal_score_by_entity_id.get(
+        candidate.controller_entity_id,
+        candidate.total_score,
     )
     return {
         "controller_entity_id": candidate.controller_entity_id,
@@ -1049,6 +1166,26 @@ def _build_unified_candidate_payload(
         "is_leading_candidate": is_leading_candidate,
         "is_actual_controller": is_actual_controller,
         "whether_actual_controller": is_actual_controller,
+        "control_tier": control_tier,
+        "is_direct_controller": is_direct_controller,
+        "is_intermediate_controller": (
+            candidate.controller_entity_id in set(result.promotion_path_entity_ids[:-1])
+        ),
+        "is_ultimate_controller": is_actual_controller,
+        "promotion_source_entity_id": result.promotion_source_by_entity_id.get(
+            candidate.controller_entity_id
+        ),
+        "promotion_reason": result.promotion_reason_by_entity_id.get(
+            candidate.controller_entity_id
+        ),
+        "control_chain_depth": candidate.min_depth,
+        "is_terminal_inference": control_tier in {"direct", "intermediate", "ultimate"},
+        "terminal_failure_reason": result.terminal_failure_reason,
+        "immediate_control_ratio": _serialize_pct_from_any(immediate_control_ratio)
+        if immediate_control_ratio is not None
+        else None,
+        "aggregated_control_score": serialize_unit_score(candidate.total_score),
+        "terminal_control_score": serialize_unit_score(terminal_control_score),
         "control_path": [
             _serialize_unified_path(path_state, context=context)
             for path_state in candidate.top_paths
@@ -1128,8 +1265,20 @@ def _build_unified_basis_payload(
         result.actual_controller_entity_id is not None
         and candidate.controller_entity_id == result.actual_controller_entity_id
     )
+    is_direct_controller = (
+        result.direct_controller_entity_id is not None
+        and candidate.controller_entity_id == result.direct_controller_entity_id
+    )
+    control_tier = _candidate_control_tier(
+        result=result,
+        candidate=candidate,
+    )
+    terminal_control_score = result.terminal_score_by_entity_id.get(
+        candidate.controller_entity_id,
+        candidate.total_score,
+    )
     payload = {
-        "analysis": "unified_control_inference_v1",
+        "analysis": "unified_control_inference_v2",
         "aggregator": result.aggregator,
         "as_of": context.as_of.isoformat(),
         "classification": classification,
@@ -1148,6 +1297,26 @@ def _build_unified_basis_payload(
         "is_leading_candidate": is_leading_candidate,
         "is_actual_controller": is_actual_controller,
         "whether_actual_controller": is_actual_controller,
+        "control_tier": control_tier,
+        "is_direct_controller": is_direct_controller,
+        "is_intermediate_controller": (
+            candidate.controller_entity_id in set(result.promotion_path_entity_ids[:-1])
+        ),
+        "is_ultimate_controller": is_actual_controller,
+        "promotion_source_entity_id": result.promotion_source_by_entity_id.get(
+            candidate.controller_entity_id
+        ),
+        "promotion_reason": result.promotion_reason_by_entity_id.get(
+            candidate.controller_entity_id
+        ),
+        "control_chain_depth": candidate.min_depth,
+        "is_terminal_inference": control_tier in {"direct", "intermediate", "ultimate"},
+        "terminal_failure_reason": result.terminal_failure_reason,
+        "immediate_control_ratio": _serialize_pct_from_any(
+            _candidate_immediate_control_ratio(candidate)
+        )
+        if _candidate_immediate_control_ratio(candidate) is not None
+        else None,
         "top_paths": [
             _serialize_unified_path(path_state, context=context)
             for path_state in candidate.top_paths
@@ -1155,6 +1324,8 @@ def _build_unified_basis_payload(
         "total_confidence": serialize_unit_score(candidate.total_confidence),
         "total_score": serialize_unit_score(candidate.total_score),
         "total_score_pct": serialize_pct_score(candidate.total_score),
+        "terminal_control_score": serialize_unit_score(terminal_control_score),
+        "promotion_path_entity_ids": list(result.promotion_path_entity_ids),
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -1180,16 +1351,34 @@ def _build_unified_country_basis_payload(
         ),
         None,
     )
+    direct_candidate = next(
+        (
+            candidate
+            for candidate in result.candidates
+            if candidate.controller_entity_id == result.direct_controller_entity_id
+        ),
+        None,
+    )
     if winning_candidate is None:
-        total_score = "0.0000"
-        total_confidence = "0.0000"
-        semantic_flags = None
-        top_paths = []
-        evidence_summary = (
-            ["joint control prevents unique attribution"]
-            if result.attribution_type == "joint_control"
-            else ["fallback to incorporation country because no controlling candidate met threshold"]
-        )
+        if direct_candidate is not None and result.attribution_layer == "direct_controller_country":
+            total_score = serialize_unit_score(direct_candidate.total_score)
+            total_confidence = serialize_unit_score(direct_candidate.total_confidence)
+            semantic_flags = _semantic_flags_for_storage(direct_candidate.semantic_flags)
+            top_paths = [
+                _serialize_unified_path(path_state, context=context)
+                for path_state in direct_candidate.top_paths
+            ]
+            evidence_summary = list(direct_candidate.evidence_summary)
+        else:
+            total_score = "0.0000"
+            total_confidence = "0.0000"
+            semantic_flags = None
+            top_paths = []
+            evidence_summary = (
+                ["joint control prevents unique attribution"]
+                if result.attribution_type == "joint_control"
+                else ["fallback to incorporation country because no controlling candidate met threshold"]
+            )
     else:
         total_score = serialize_unit_score(winning_candidate.total_score)
         total_confidence = serialize_unit_score(winning_candidate.total_confidence)
@@ -1201,7 +1390,7 @@ def _build_unified_country_basis_payload(
         evidence_summary = list(winning_candidate.evidence_summary)
 
     payload = {
-        "analysis": "unified_control_inference_v1",
+        "analysis": "unified_control_inference_v2",
         "aggregator": result.aggregator,
         "as_of": context.as_of.isoformat(),
         "classification": result.attribution_type,
@@ -1209,9 +1398,17 @@ def _build_unified_country_basis_payload(
         "controller_status": result.controller_status,
         "actual_control_country": result.actual_control_country,
         "actual_controller_entity_id": result.actual_controller_entity_id,
+        "direct_controller_entity_id": result.direct_controller_entity_id,
         "leading_candidate_entity_id": result.leading_candidate_entity_id,
         "leading_candidate_classification": result.leading_candidate_classification,
         "joint_controller_entity_ids": list(result.joint_controller_entity_ids),
+        "attribution_layer": result.attribution_layer,
+        "country_inference_reason": result.country_inference_reason,
+        "look_through_applied": result.look_through_applied,
+        "promotion_path_entity_ids": list(result.promotion_path_entity_ids),
+        "promotion_source_by_entity_id": result.promotion_source_by_entity_id,
+        "promotion_reason_by_entity_id": result.promotion_reason_by_entity_id,
+        "terminal_failure_reason": result.terminal_failure_reason,
         "semantic_flags": semantic_flags,
         "top_paths": top_paths,
         "evidence_summary": evidence_summary,
@@ -1225,6 +1422,15 @@ def _build_unified_country_basis_payload(
                 context=context,
             )
             if leading_candidate is not None
+            else None
+        ),
+        "direct_controller": (
+            _build_unified_candidate_payload(
+                result=result,
+                candidate=direct_candidate,
+                context=context,
+            )
+            if direct_candidate is not None
             else None
         ),
         "top_candidates": [
@@ -1244,6 +1450,7 @@ def _apply_unified_company_analysis_records(
     result: ControlInferenceResult,
     *,
     context: ControlInferenceContext,
+    run_record: ControlInferenceRun | None = None,
 ) -> dict:
     company = result.company
     target_entity = result.target_entity
@@ -1267,11 +1474,23 @@ def _apply_unified_company_analysis_records(
             result.actual_controller_entity_id is not None
             and candidate.controller_entity_id == result.actual_controller_entity_id
         )
+        is_direct_controller = (
+            result.direct_controller_entity_id is not None
+            and candidate.controller_entity_id == result.direct_controller_entity_id
+        )
+        is_intermediate_controller = (
+            candidate.controller_entity_id in set(result.promotion_path_entity_ids[:-1])
+        )
         semantic_flags = _semantic_flags_for_storage(candidate.semantic_flags)
         review_status = (
             "needs_review"
             if semantic_flags and "needs_review" in semantic_flags
             else "auto"
+        )
+        immediate_control_ratio = _candidate_immediate_control_ratio(candidate)
+        control_tier = _candidate_control_tier(
+            result=result,
+            candidate=candidate,
         )
 
         db.add(
@@ -1287,6 +1506,27 @@ def _apply_unified_company_analysis_records(
                     context=context,
                 ),
                 is_actual_controller=is_actual_controller,
+                control_tier=control_tier,
+                is_direct_controller=is_direct_controller,
+                is_intermediate_controller=is_intermediate_controller,
+                is_ultimate_controller=is_actual_controller,
+                promotion_source_entity_id=result.promotion_source_by_entity_id.get(
+                    candidate.controller_entity_id
+                ),
+                promotion_reason=result.promotion_reason_by_entity_id.get(
+                    candidate.controller_entity_id
+                ),
+                control_chain_depth=candidate.min_depth,
+                is_terminal_inference=control_tier
+                in {"direct", "intermediate", "ultimate"},
+                terminal_failure_reason=result.terminal_failure_reason,
+                immediate_control_ratio=immediate_control_ratio,
+                aggregated_control_score=candidate.total_score,
+                terminal_control_score=result.terminal_score_by_entity_id.get(
+                    candidate.controller_entity_id,
+                    candidate.total_score,
+                ),
+                inference_run_id=run_record.id if run_record is not None else None,
                 basis=_build_unified_basis_payload(
                     result=result,
                     candidate=candidate,
@@ -1318,6 +1558,12 @@ def _apply_unified_company_analysis_records(
             listing_country=company.listing_country,
             actual_control_country=result.actual_control_country,
             attribution_type=attribution_type,
+            actual_controller_entity_id=result.actual_controller_entity_id,
+            direct_controller_entity_id=result.direct_controller_entity_id,
+            attribution_layer=result.attribution_layer,
+            country_inference_reason=result.country_inference_reason,
+            look_through_applied=result.look_through_applied,
+            inference_run_id=run_record.id if run_record is not None else None,
             basis=_build_unified_country_basis_payload(
                 result=result,
                 context=context,
@@ -1329,18 +1575,29 @@ def _apply_unified_company_analysis_records(
     )
 
     db.flush()
+    if run_record is not None:
+        _append_inference_audit_logs(
+            db,
+            run_id=run_record.id,
+            company_id=company.id,
+            audit_events=result.audit_events,
+        )
 
     return {
         "company_id": company.id,
         "target_entity_id": target_entity.id,
         "as_of": context.as_of.isoformat(),
+        "direct_controller_entity_id": result.direct_controller_entity_id,
         "actual_controller_entity_id": result.actual_controller_entity_id,
         "leading_candidate_entity_id": result.leading_candidate_entity_id,
         "leading_candidate_classification": result.leading_candidate_classification,
         "controller_status": result.controller_status,
+        "look_through_applied": result.look_through_applied,
+        "terminal_failure_reason": result.terminal_failure_reason,
+        "inference_run_id": run_record.id if run_record is not None else None,
         "control_relationship_count": len(result.candidates),
         "country_attribution_type": attribution_type,
-        "engine": "unified_control_inference_v1",
+        "engine": "unified_control_inference_v2",
         "controller_candidates": [
             {
                 "entity_id": candidate.controller_entity_id,
@@ -1351,6 +1608,15 @@ def _apply_unified_company_analysis_records(
                 "total_confidence": serialize_unit_score(candidate.total_confidence),
                 "total_score_pct": serialize_pct_score(candidate.total_score),
                 "path_count": len(candidate.path_states),
+                "control_tier": _candidate_control_tier(
+                    result=result,
+                    candidate=candidate,
+                ),
+                "is_direct_controller": (
+                    result.direct_controller_entity_id is not None
+                    and candidate.controller_entity_id
+                    == result.direct_controller_entity_id
+                ),
                 "controller_status": _candidate_controller_status(
                     result=result,
                     candidate=candidate,
@@ -1368,6 +1634,13 @@ def _apply_unified_company_analysis_records(
                     result.actual_controller_entity_id is not None
                     and candidate.controller_entity_id == result.actual_controller_entity_id
                 ),
+                "aggregated_control_score": serialize_unit_score(candidate.total_score),
+                "terminal_control_score": serialize_unit_score(
+                    result.terminal_score_by_entity_id.get(
+                        candidate.controller_entity_id,
+                        candidate.total_score,
+                    )
+                ),
             }
             for candidate in result.candidates
         ],
@@ -1384,6 +1657,14 @@ def _refresh_company_control_analysis_with_unified_context(
     majority_threshold_pct: Decimal,
     disclosure_threshold_pct: Decimal,
 ) -> dict:
+    run_record = _start_inference_run(
+        db,
+        company_id=company_id,
+        max_depth=max_depth,
+        disclosure_threshold_pct=disclosure_threshold_pct,
+        majority_threshold_pct=majority_threshold_pct,
+        notes="AUTO: unified terminal control inference",
+    )
     result = infer_controllers(
         context,
         company_id,
@@ -1394,11 +1675,21 @@ def _refresh_company_control_analysis_with_unified_context(
         disclosure_threshold=_pct_threshold_to_unit(disclosure_threshold_pct),
         aggregator=DEFAULT_AGGREGATOR,
     )
-    return _apply_unified_company_analysis_records(
+    persisted = _apply_unified_company_analysis_records(
         db,
         result,
         context=context,
+        run_record=run_record,
     )
+    _finalize_inference_run(
+        run_record,
+        status="success",
+        summary={
+            **persisted,
+            "audit_event_count": len(result.audit_events),
+        },
+    )
+    return persisted
 
 
 def refresh_company_control_analysis(
@@ -1833,6 +2124,24 @@ def _normalize_country_basis_payload(
                 else item.get("is_actual_controller")
             ),
             "is_leading_candidate": bool(item.get("is_leading_candidate")),
+            "control_tier": item.get("control_tier"),
+            "is_direct_controller": bool(item.get("is_direct_controller")),
+            "is_intermediate_controller": bool(item.get("is_intermediate_controller")),
+            "is_ultimate_controller": bool(item.get("is_ultimate_controller")),
+            "promotion_source_entity_id": item.get("promotion_source_entity_id"),
+            "promotion_reason": item.get("promotion_reason"),
+            "control_chain_depth": item.get("control_chain_depth"),
+            "is_terminal_inference": bool(item.get("is_terminal_inference")),
+            "terminal_failure_reason": item.get("terminal_failure_reason"),
+            "immediate_control_ratio": item.get("immediate_control_ratio"),
+            "aggregated_control_score": _serialize_probability(
+                item.get("aggregated_control_score")
+            )
+            or _serialize_probability(item.get("total_score"))
+            or _serialize_probability(item.get("total_score_pct")),
+            "terminal_control_score": _serialize_probability(
+                item.get("terminal_control_score")
+            ),
         }
 
     top_candidates = parsed.get("top_candidates")
@@ -1844,6 +2153,9 @@ def _normalize_country_basis_payload(
                 normalized_top_candidates.append(normalized_item)
     normalized_leading_candidate = _normalize_country_candidate_item(
         parsed.get("leading_candidate")
+    )
+    normalized_direct_controller = _normalize_country_candidate_item(
+        parsed.get("direct_controller")
     )
 
     return {
@@ -1865,11 +2177,23 @@ def _normalize_country_basis_payload(
         "total_score_pct": parsed.get("total_score_pct")
         or _serialize_pct_from_any(total_score),
         "controller_status": parsed.get("controller_status"),
+        "actual_controller_entity_id": parsed.get("actual_controller_entity_id"),
+        "direct_controller_entity_id": parsed.get("direct_controller_entity_id"),
+        "attribution_layer": parsed.get("attribution_layer"),
+        "country_inference_reason": parsed.get("country_inference_reason"),
+        "look_through_applied": bool(parsed.get("look_through_applied", False)),
+        "promotion_path_entity_ids": parsed.get("promotion_path_entity_ids") or [],
+        "promotion_source_by_entity_id": parsed.get("promotion_source_by_entity_id")
+        or {},
+        "promotion_reason_by_entity_id": parsed.get("promotion_reason_by_entity_id")
+        or {},
+        "terminal_failure_reason": parsed.get("terminal_failure_reason"),
         "leading_candidate_entity_id": parsed.get("leading_candidate_entity_id"),
         "leading_candidate_classification": parsed.get(
             "leading_candidate_classification"
         ),
         "leading_candidate": normalized_leading_candidate,
+        "direct_controller": normalized_direct_controller,
         "top_candidates": normalized_top_candidates,
     }
 
@@ -1920,6 +2244,25 @@ def _serialize_control_relationship_response(
         "control_path": control_path,
         "is_actual_controller": relationship.is_actual_controller,
         "whether_actual_controller": relationship.is_actual_controller,
+        "control_tier": relationship.control_tier,
+        "is_direct_controller": bool(relationship.is_direct_controller),
+        "is_intermediate_controller": bool(relationship.is_intermediate_controller),
+        "is_ultimate_controller": bool(relationship.is_ultimate_controller),
+        "promotion_source_entity_id": relationship.promotion_source_entity_id,
+        "promotion_reason": relationship.promotion_reason,
+        "control_chain_depth": relationship.control_chain_depth,
+        "is_terminal_inference": bool(relationship.is_terminal_inference),
+        "terminal_failure_reason": relationship.terminal_failure_reason,
+        "immediate_control_ratio": _serialize_ratio(
+            relationship.immediate_control_ratio
+        ),
+        "aggregated_control_score": _serialize_probability(
+            relationship.aggregated_control_score
+        ),
+        "terminal_control_score": _serialize_probability(
+            relationship.terminal_control_score
+        ),
+        "inference_run_id": relationship.inference_run_id,
         "basis": normalized_basis,
         "notes": relationship.notes,
         "control_mode": control_mode,
@@ -1953,7 +2296,16 @@ def get_company_control_chain_data(db: Session, company_id: int) -> dict:
         (
             relationship
             for relationship in serialized_relationships
-            if relationship["is_actual_controller"]
+            if relationship["is_ultimate_controller"]
+            or relationship["is_actual_controller"]
+        ),
+        None,
+    )
+    direct_controller = next(
+        (
+            relationship
+            for relationship in serialized_relationships
+            if relationship.get("is_direct_controller")
         ),
         None,
     )
@@ -2062,6 +2414,7 @@ def get_company_control_chain_data(db: Session, company_id: int) -> dict:
         "company_id": company_id,
         "controller_count": len(relationships),
         "control_relationships": serialized_relationships,
+        "direct_controller": direct_controller,
         "actual_controller": actual_controller,
         "leading_candidate": leading_candidate,
         "focused_candidate": leading_candidate,
@@ -2076,7 +2429,12 @@ def get_company_actual_controller_data(db: Session, company_id: int) -> dict:
     relationships = (
         db.query(ControlRelationship)
         .filter(ControlRelationship.company_id == company_id)
-        .filter(ControlRelationship.is_actual_controller.is_(True))
+        .filter(
+            or_(
+                ControlRelationship.is_actual_controller.is_(True),
+                ControlRelationship.is_ultimate_controller.is_(True),
+            )
+        )
         .order_by(
             ControlRelationship.control_ratio.is_(None),
             ControlRelationship.control_ratio.desc(),
@@ -2109,6 +2467,11 @@ def get_company_country_attribution_data(db: Session, company_id: int) -> dict:
             "message": "No country attribution data found for this company.",
             "actual_control_country": None,
             "attribution_type": None,
+            "actual_controller_entity_id": None,
+            "direct_controller_entity_id": None,
+            "attribution_layer": None,
+            "country_inference_reason": None,
+            "look_through_applied": None,
             "basis": None,
             "source_mode": None,
         }
@@ -2118,6 +2481,11 @@ def get_company_country_attribution_data(db: Session, company_id: int) -> dict:
         "company_id": company_id,
         "actual_control_country": country_attribution.actual_control_country,
         "attribution_type": attribution_type,
+        "actual_controller_entity_id": country_attribution.actual_controller_entity_id,
+        "direct_controller_entity_id": country_attribution.direct_controller_entity_id,
+        "attribution_layer": country_attribution.attribution_layer,
+        "country_inference_reason": country_attribution.country_inference_reason,
+        "look_through_applied": country_attribution.look_through_applied,
         "basis": _normalize_country_basis_payload(
             country_attribution.basis,
             attribution_type=attribution_type,

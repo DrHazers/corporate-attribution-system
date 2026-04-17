@@ -8,7 +8,7 @@ from backend.api.country_attribution import router as country_attribution_router
 from backend.api.industry_analysis import router as industry_analysis_router
 from backend.api.relationship_support import router as relationship_support_router
 from backend.api.shareholder import router as shareholder_router
-from backend.database import init_db
+from backend.database import DATABASE_URL, get_database_path, init_db
 import backend.models  # noqa: F401
 
 
@@ -46,4 +46,8 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "database_url": DATABASE_URL,
+        "database_path": str(get_database_path() or ""),
+    }

@@ -5,10 +5,10 @@
 前端联调、截图和最终演示时，后端请固定使用：
 
 ```text
-DATABASE_URL=sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry.db
+DATABASE_URL=sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db
 ```
 
-不设置 `DATABASE_URL` 时，后端默认会连接项目根目录下的 `company.db`。`company.db` 不适合作为当前前端综合分析页的演示库，因为它不一定覆盖产业分析、多报告期、质量提示和完整控制分析结果。
+不设置 `DATABASE_URL` 时，后端默认会连接项目根目录下的 `company_test_analysis_industry_v2.db`。这份库是在 `company_test_analysis_industry.db` 基础上复制并升级得到的 V2 演示库，覆盖控制链、国别归属、产业分析、多报告期和质量提示，更适合作为当前前端综合分析页的默认演示库。
 
 这是当前项目的前端第一版，目标是快速跑通一个“企业综合分析展示页”，用于后续逐步扩展。
 

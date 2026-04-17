@@ -94,7 +94,7 @@ def _default_database_path() -> Path:
     if working_copy_candidates:
         return working_copy_candidates[0]
 
-    return (PROJECT_ROOT / "company.db").resolve()
+    return (PROJECT_ROOT / "company_test_analysis_industry.db").resolve()
 
 
 def _resolve_database_path(database_path: str | None) -> Path:

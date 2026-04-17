@@ -35,6 +35,83 @@ const props = defineProps({
   },
 })
 
+const ENTITY_TYPE_LABELS = {
+  company: '公司主体',
+  person: '自然人',
+  fund: '基金 / 公众持股',
+  institution: '机构投资者',
+  government: '政府 / 国资主体',
+  other: '其他主体',
+}
+
+const CONTROL_TYPE_LABELS = {
+  equity: '股权控制',
+  equity_control: '股权控制',
+  direct_equity_control: '股权控制',
+  indirect_equity_control: '股权控制',
+  significant_influence: '重大影响',
+  agreement: '协议控制',
+  agreement_control: '协议控制',
+  board_control: '董事会席位控制',
+  voting_right: '表决权安排',
+  voting_right_control: '表决权安排',
+  nominee: '代持 / 名义持有人',
+  nominee_control: '代持 / 名义持有人',
+  vie: 'VIE 结构',
+  vie_control: 'VIE 结构',
+  mixed_control: '混合控制',
+  joint_control: '共同控制',
+}
+
+const ATTRIBUTION_TYPE_LABELS = {
+  equity_control: '股权控制归属',
+  agreement_control: '协议控制归属',
+  board_control: '董事会席位控制归属',
+  voting_right_control: '表决权安排归属',
+  mixed_control: '混合控制归属',
+  joint_control: '共同控制归属',
+  fallback_incorporation: '回落至注册地',
+  fallback_listing: '回落至上市地',
+  fallback_listing_country: '回落至上市地',
+  fallback_headquarters: '回落至总部所在地',
+  fallback_unknown: '未识别',
+}
+
+const STATUS_LABELS = {
+  actual_controller_identified: '已识别实际控制人',
+  no_actual_controller_but_leading_candidate_found: '已识别重点控制候选',
+  joint_control_identified: '共同控制',
+  no_meaningful_controller_signal: '无明显控制信号',
+}
+
+function normalizeKey(value) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function entityTypeLabel(value) {
+  const normalized = normalizeKey(value)
+  if (!normalized) {
+    return '暂无'
+  }
+  return ENTITY_TYPE_LABELS[normalized] || '其他主体'
+}
+
+function controlTypeLabel(value) {
+  const normalized = normalizeKey(value)
+  if (!normalized) {
+    return '暂无'
+  }
+  return CONTROL_TYPE_LABELS[normalized] || String(value)
+}
+
+function attributionTypeLabel(value) {
+  const normalized = normalizeKey(value)
+  if (!normalized) {
+    return '暂无'
+  }
+  return ATTRIBUTION_TYPE_LABELS[normalized] || String(value)
+}
+
 const displayController = computed(
   () => props.controlAnalysis?.display_controller || props.controlAnalysis?.actual_controller || null,
 )
@@ -48,10 +125,10 @@ const controllerName = computed(
   () => displayController.value?.controller_name || '暂无',
 )
 const controllerType = computed(
-  () => displayController.value?.controller_type || '暂无',
+  () => entityTypeLabel(displayController.value?.controller_type),
 )
 const controlType = computed(
-  () => displayController.value?.control_type || '暂无',
+  () => controlTypeLabel(displayController.value?.control_type),
 )
 const controlRatio = computed(() => {
   const value = displayController.value?.control_ratio
@@ -68,7 +145,7 @@ const controlRatio = computed(() => {
 })
 
 const attributionType = computed(
-  () => props.countryAttribution?.attribution_type || '暂无',
+  () => attributionTypeLabel(props.countryAttribution?.attribution_type),
 )
 const actualControlCountry = computed(
   () => props.countryAttribution?.actual_control_country || '未识别',
@@ -85,16 +162,7 @@ const recognitionStatus = computed(() => {
     props.controlAnalysis?.identification_status ||
     props.controlAnalysis?.controller_status
 
-  if (status === 'actual_controller_identified') {
-    return '已识别实际控制人'
-  }
-  if (status === 'no_actual_controller_but_leading_candidate_found') {
-    return '已识别重点控制候选'
-  }
-  if (status === 'joint_control_identified') {
-    return '存在共同控制信号'
-  }
-  return '暂无明确控制信号'
+  return STATUS_LABELS[status] || '无明显控制信号'
 })
 const recognitionTagType = computed(() => {
   if (recognitionStatus.value === '已识别实际控制人') {
@@ -102,7 +170,7 @@ const recognitionTagType = computed(() => {
   }
   if (
     recognitionStatus.value === '已识别重点控制候选' ||
-    recognitionStatus.value === '存在共同控制信号'
+    recognitionStatus.value === '共同控制'
   ) {
     return 'warning'
   }
@@ -116,7 +184,7 @@ const recognitionTagType = computed(() => {
       <div class="section-heading">
         <div>
           <h2>控制链与国别归属</h2>
-          <p>上半区域展示新版控制结构示意图，下半区域保留控制分析摘要与国别归属说明。</p>
+          <p>上半区域展示控制结构图，下半区域展示控制分析摘要与国别归属结论。</p>
         </div>
       </div>
     </template>

@@ -256,6 +256,19 @@ class ControlRelationshipSummaryRead(BaseModel):
     control_ratio: str | None = None
     control_path: Any = None
     is_actual_controller: bool
+    control_tier: str | None = None
+    is_direct_controller: bool = False
+    is_intermediate_controller: bool = False
+    is_ultimate_controller: bool = False
+    promotion_source_entity_id: int | None = None
+    promotion_reason: str | None = None
+    control_chain_depth: int | None = None
+    is_terminal_inference: bool = False
+    terminal_failure_reason: str | None = None
+    immediate_control_ratio: str | None = None
+    aggregated_control_score: str | None = None
+    terminal_control_score: str | None = None
+    inference_run_id: int | None = None
     basis: Any = None
     notes: str | None = None
     control_mode: str | None = None
@@ -272,6 +285,7 @@ class ControlRelationshipSummaryRead(BaseModel):
 class ControlAnalysisSummaryRead(BaseModel):
     company_id: int
     controller_count: int
+    direct_controller: ControlRelationshipSummaryRead | None = None
     actual_controller: ControlRelationshipSummaryRead | None = None
     leading_candidate: ControlRelationshipSummaryRead | None = None
     focused_candidate: ControlRelationshipSummaryRead | None = None
@@ -286,6 +300,11 @@ class CountryAttributionSummaryRead(BaseModel):
     company_id: int
     actual_control_country: str | None = None
     attribution_type: str | None = None
+    actual_controller_entity_id: int | None = None
+    direct_controller_entity_id: int | None = None
+    attribution_layer: str | None = None
+    country_inference_reason: str | None = None
+    look_through_applied: bool | None = None
     basis: Any = None
     source_mode: str | None = None
     message: str | None = None

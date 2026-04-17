@@ -39,6 +39,26 @@ class ShareholderEntity(Base):
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
     identifier_code = Column(String(100), nullable=True)
     is_listed = Column(Boolean, nullable=True)
+    entity_subtype = Column(String(50), nullable=True, index=True)
+    ultimate_owner_hint = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("0"),
+    )
+    look_through_priority = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    controller_class = Column(String(50), nullable=True, index=True)
+    beneficial_owner_disclosed = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("0"),
+    )
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(
@@ -64,6 +84,7 @@ class ShareholderEntity(Base):
     control_relationships = relationship(
         "ControlRelationship",
         back_populates="controller_entity",
+        foreign_keys="ControlRelationship.controller_entity_id",
     )
     aliases = relationship(
         "EntityAlias",
@@ -90,6 +111,8 @@ class ShareholderStructure(Base):
         index=True,
     )
     holding_ratio = Column(Numeric(7, 4), nullable=True)
+    voting_ratio = Column(Numeric(10, 4), nullable=True)
+    economic_ratio = Column(Numeric(10, 4), nullable=True)
     is_direct = Column(Boolean, nullable=False, default=True)
     control_type = Column(String(30), nullable=True, default="equity")
     relation_type = Column(String(30), nullable=True, index=True)
@@ -99,6 +122,20 @@ class ShareholderStructure(Base):
         default=False,
         server_default=text("0"),
     )
+    is_beneficial_control = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("0"),
+    )
+    look_through_allowed = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("1"),
+    )
+    termination_signal = Column(String(50), nullable=True, index=True)
+    effective_control_ratio = Column(Numeric(10, 4), nullable=True)
     relation_role = Column(String(30), nullable=True)
     control_basis = Column(Text, nullable=True)
     board_seats = Column(Integer, nullable=True)

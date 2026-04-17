@@ -7,21 +7,21 @@
 当前后端默认库：
 
 ```text
-company.db
+company_test_analysis_industry_v2.db
 ```
 
-原因：`backend/database.py` 中 `DEFAULT_DATABASE_NAME = "company.db"`，如果没有设置 `DATABASE_URL`，FastAPI 会默认连接项目根目录下的 `company.db`。
+原因：`backend/database.py` 中默认数据库已切到 `company_test_analysis_industry_v2.db`，即使没有单独设置 `DATABASE_URL`，当前前后端联调也会优先连接这份 V2 演示库。
 
 当前推荐演示库：
 
 ```text
-company_test_analysis_industry.db
+company_test_analysis_industry_v2.db
 ```
 
 完整连接串：
 
 ```text
-sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry.db
+sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db
 ```
 
 推荐原因：
@@ -35,7 +35,7 @@ sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_in
 在项目根目录执行：
 
 ```powershell
-$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry.db'
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db'
 .\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
 ```
 
@@ -79,7 +79,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 生成 HTML 验证图、运行前端 API、手工查询数据库时，建议尽量使用同一份数据库：
 
 ```text
-d:/graduation_project/corp_attribution_system/company_test_analysis_industry.db
+d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db
 ```
 
 如果使用 HTML 验证图脚本，也建议显式传入数据库路径，例如：

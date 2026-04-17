@@ -1048,6 +1048,7 @@ def get_company_analysis_summary(
         "control_analysis": {
             "company_id": company_id,
             "controller_count": control_analysis["controller_count"],
+            "direct_controller": control_analysis.get("direct_controller"),
             "actual_controller": control_analysis["actual_controller"],
             "leading_candidate": control_analysis.get("leading_candidate"),
             "focused_candidate": control_analysis.get("focused_candidate"),

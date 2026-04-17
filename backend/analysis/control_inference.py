@@ -178,6 +178,8 @@ class EdgeFactor:
     semantic_factor: Decimal
     confidence_weight: Decimal
     priority: int
+    look_through_allowed: bool
+    termination_signal: str | None
     flags: tuple[str, ...]
     evidence: dict[str, Any]
 
@@ -205,6 +207,18 @@ class ControllerCandidate:
     top_paths: tuple[PathState, ...]
     evidence_summary: tuple[str, ...]
     is_joint_control: bool
+    min_depth: int
+
+
+@dataclass(slots=True)
+class InferenceAuditEvent:
+    action_type: str
+    action_reason: str | None
+    from_entity_id: int | None
+    to_entity_id: int | None
+    score_before: Decimal | None
+    score_after: Decimal | None
+    details: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -223,13 +237,24 @@ class ControlInferenceResult:
     target_entity: ShareholderEntity
     aggregator: str
     candidates: tuple[ControllerCandidate, ...]
+    direct_controller_entity_id: int | None
+    direct_controller_country: str | None
     actual_controller_entity_id: int | None
     leading_candidate_entity_id: int | None
     leading_candidate_classification: str | None
     actual_control_country: str
     attribution_type: str
+    attribution_layer: str
+    country_inference_reason: str
     controller_status: str
     joint_controller_entity_ids: tuple[int, ...]
+    look_through_applied: bool
+    promotion_path_entity_ids: tuple[int, ...]
+    promotion_source_by_entity_id: dict[int, int]
+    promotion_reason_by_entity_id: dict[int, str]
+    terminal_score_by_entity_id: dict[int, Decimal]
+    terminal_failure_reason: str | None
+    audit_events: tuple[InferenceAuditEvent, ...]
 
 
 def _normalize_as_of(as_of: date | datetime | None) -> date:
@@ -563,6 +588,22 @@ def edge_to_factor(structure: ShareholderStructure) -> EdgeFactor | None:
         relation_role=structure.relation_role,
     )
     metadata = _deserialize_json_text(structure.relation_metadata)
+    if structure.voting_ratio is not None and metadata.get("voting_ratio") is None:
+        metadata["voting_ratio"] = format(_to_decimal(structure.voting_ratio), "f")
+    if (
+        structure.effective_control_ratio is not None
+        and metadata.get("effective_control_ratio") is None
+    ):
+        metadata["effective_control_ratio"] = format(
+            _to_decimal(structure.effective_control_ratio),
+            "f",
+        )
+    if structure.economic_ratio is not None and metadata.get("economic_ratio") is None:
+        metadata["economic_ratio"] = format(_to_decimal(structure.economic_ratio), "f")
+    if metadata.get("beneficial_owner_disclosed") is None:
+        metadata["beneficial_owner_disclosed"] = bool(
+            structure.is_beneficial_control
+        )
     evidence_text = _coalesce_text(
         structure.control_basis,
         structure.agreement_scope,
@@ -572,9 +613,22 @@ def edge_to_factor(structure: ShareholderStructure) -> EdgeFactor | None:
     flags = {relation_type}
     numeric_factor = ONE
     semantic_factor = ONE
+    look_through_allowed = bool(
+        True if structure.look_through_allowed is None else structure.look_through_allowed
+    )
+    termination_signal = (
+        str(structure.termination_signal).strip().lower()
+        if structure.termination_signal is not None
+        and str(structure.termination_signal).strip()
+        else "none"
+    )
 
     if relation_type == "equity":
-        numeric_factor = _normalize_ratio_to_unit(structure.holding_ratio)
+        numeric_factor = _normalize_ratio_to_unit(
+            structure.effective_control_ratio
+            if structure.effective_control_ratio is not None
+            else structure.holding_ratio
+        )
         semantic_factor = ONE
         if numeric_factor <= ZERO:
             return None
@@ -619,6 +673,24 @@ def edge_to_factor(structure: ShareholderStructure) -> EdgeFactor | None:
             if structure.holding_ratio is not None
             else None
         ),
+        "voting_ratio_raw": (
+            format(_to_decimal(structure.voting_ratio), "f")
+            if structure.voting_ratio is not None
+            else None
+        ),
+        "economic_ratio_raw": (
+            format(_to_decimal(structure.economic_ratio), "f")
+            if structure.economic_ratio is not None
+            else None
+        ),
+        "effective_control_ratio_raw": (
+            format(_to_decimal(structure.effective_control_ratio), "f")
+            if structure.effective_control_ratio is not None
+            else None
+        ),
+        "is_beneficial_control": bool(structure.is_beneficial_control),
+        "look_through_allowed": look_through_allowed,
+        "termination_signal": termination_signal,
         "agreement_scope": structure.agreement_scope,
         "control_basis": structure.control_basis,
         "board_seats": structure.board_seats,
@@ -640,6 +712,8 @@ def edge_to_factor(structure: ShareholderStructure) -> EdgeFactor | None:
         semantic_factor=_clamp_probability(semantic_factor),
         confidence_weight=_clamp_probability(confidence_weight),
         priority=priority,
+        look_through_allowed=look_through_allowed,
+        termination_signal=termination_signal,
         flags=tuple(sorted(flags)),
         evidence=evidence,
     )
@@ -689,11 +763,17 @@ def build_control_context(
                 holding_ratio,
                 is_direct,
                 control_type,
-                relation_type,
-                has_numeric_ratio,
-                relation_role,
-                control_basis,
-                board_seats,
+            relation_type,
+            has_numeric_ratio,
+            voting_ratio,
+            economic_ratio,
+            is_beneficial_control,
+            look_through_allowed,
+            termination_signal,
+            effective_control_ratio,
+            relation_role,
+            control_basis,
+            board_seats,
                 nomination_rights,
                 agreement_scope,
                 relation_metadata,
@@ -860,6 +940,12 @@ def _candidate_flags(path_states: list[PathState]) -> tuple[str, ...]:
     return tuple(sorted(flags))
 
 
+def _candidate_min_depth(path_states: list[PathState]) -> int:
+    if not path_states:
+        return 0
+    return min(len(path_state.edge_ids) for path_state in path_states)
+
+
 def _candidate_confidence(path_states: list[PathState]) -> Decimal:
     total_score = ZERO
     weighted_confidence = ZERO
@@ -885,6 +971,175 @@ def _candidate_evidence_summary(path_states: list[PathState]) -> tuple[str, ...]
             if len(summaries) >= 6:
                 return tuple(summaries)
     return tuple(summaries)
+
+
+def _controller_sort_key(item: ControllerCandidate) -> tuple[Any, ...]:
+    return (
+        item.control_level != "control",
+        item.control_level != "joint_control",
+        -item.total_score,
+        -item.total_confidence,
+        item.controller_entity_id,
+    )
+
+
+def _direct_candidate_sort_key(item: ControllerCandidate) -> tuple[Any, ...]:
+    return (
+        item.min_depth != 1,
+        item.control_level != "control",
+        item.control_level != "joint_control",
+        -item.total_score,
+        -item.total_confidence,
+        item.controller_entity_id,
+    )
+
+
+def _build_candidates_for_target_entity(
+    context: ControlInferenceContext,
+    target_entity_id: int,
+    *,
+    max_depth: int,
+    min_path_score: Decimal,
+    control_threshold: Decimal,
+    significant_threshold: Decimal,
+    disclosure_threshold: Decimal,
+    aggregator: str,
+    top_path_limit: int,
+) -> list[ControllerCandidate]:
+    aggregate = _resolve_aggregator(aggregator)
+    paths_by_entity_id = collect_control_paths(
+        context,
+        target_entity_id,
+        max_depth=max_depth,
+        min_path_score=min_path_score,
+    )
+
+    candidates: list[ControllerCandidate] = []
+    for entity_id, path_states in paths_by_entity_id.items():
+        path_scores = [_path_score(path_state) for path_state in path_states]
+        total_score = aggregate(path_scores)
+        if total_score < disclosure_threshold:
+            continue
+
+        semantic_flags = _candidate_flags(path_states)
+        control_mode = _candidate_control_mode(path_states)
+        control_level = _classify_control_level(
+            total_score=total_score,
+            semantic_flags=semantic_flags,
+            control_threshold=control_threshold,
+            significant_threshold=significant_threshold,
+        )
+        sorted_paths = sorted(
+            path_states,
+            key=lambda item: (_path_score(item), item.conf_prod, -len(item.edge_ids)),
+            reverse=True,
+        )
+        candidates.append(
+            ControllerCandidate(
+                controller_entity_id=entity_id,
+                total_score=total_score,
+                total_confidence=_candidate_confidence(path_states),
+                control_level=control_level,
+                control_mode=control_mode,
+                semantic_flags=semantic_flags,
+                path_states=tuple(sorted_paths),
+                top_paths=tuple(sorted_paths[:top_path_limit]),
+                evidence_summary=_candidate_evidence_summary(sorted_paths),
+                is_joint_control=control_level == "joint_control",
+                min_depth=_candidate_min_depth(sorted_paths),
+            )
+        )
+
+    candidates.sort(key=_controller_sort_key)
+    return candidates
+
+
+def _candidate_immediate_edge(candidate: ControllerCandidate) -> EdgeFactor | None:
+    if not candidate.top_paths:
+        return None
+    if not candidate.top_paths[0].edge_factors:
+        return None
+    return candidate.top_paths[0].edge_factors[0]
+
+
+def _is_close_competition(
+    leading_candidate: ControllerCandidate,
+    runner_up_candidate: ControllerCandidate | None,
+) -> bool:
+    if runner_up_candidate is None:
+        return False
+    lead_gap = leading_candidate.total_score - runner_up_candidate.total_score
+    lead_ratio = _score_gap_ratio(
+        leading_candidate.total_score,
+        runner_up_candidate.total_score,
+    )
+    return (
+        runner_up_candidate.total_score > ZERO
+        and lead_gap <= DEFAULT_CLOSE_COMPETITION_GAP_THRESHOLD
+        and lead_ratio is not None
+        and lead_ratio <= DEFAULT_CLOSE_COMPETITION_RATIO_THRESHOLD
+    )
+
+
+def _entity_prefers_terminal_stop(entity: ShareholderEntity | None) -> bool:
+    if entity is None:
+        return False
+    if bool(getattr(entity, "ultimate_owner_hint", False)):
+        return True
+    controller_class = (getattr(entity, "controller_class", None) or "").strip().lower()
+    if controller_class in {"natural_person", "state"}:
+        return True
+    if entity.entity_type in {"person", "government"}:
+        return True
+    if (getattr(entity, "entity_subtype", None) or "").strip().lower() in {
+        "government_agency",
+        "family_vehicle",
+        "founder_vehicle",
+    }:
+        return True
+    return False
+
+
+def _promotion_block_reason(edge: EdgeFactor | None) -> str | None:
+    if edge is None:
+        return None
+    termination_signal = (edge.termination_signal or "none").strip().lower()
+    if termination_signal and termination_signal != "none":
+        return termination_signal
+    if not edge.look_through_allowed:
+        return "look_through_not_allowed"
+    return None
+
+
+def _promotion_reason_for_entity(
+    current_entity: ShareholderEntity | None,
+    parent_entity: ShareholderEntity | None,
+) -> str:
+    if parent_entity is not None and bool(getattr(parent_entity, "ultimate_owner_hint", False)):
+        return "beneficial_owner_priority"
+    entity_subtype = (getattr(current_entity, "entity_subtype", None) or "").strip().lower()
+    if entity_subtype in {"holding_company", "spv", "shell_company", "state_owned_vehicle"}:
+        return "look_through_holding_vehicle"
+    if current_entity is not None and bool(getattr(current_entity, "beneficial_owner_disclosed", False)):
+        return "disclosed_ultimate_parent"
+    return "controls_direct_controller"
+
+
+def _override_leading_candidate_from_subset(
+    candidates: list[ControllerCandidate],
+    *,
+    significant_threshold: Decimal,
+) -> tuple[int | None, str | None]:
+    if not candidates:
+        return None, None
+    sorted_candidates = sorted(candidates, key=_controller_sort_key)
+    return (
+        sorted_candidates[0].controller_entity_id,
+        _classify_leading_candidate_signal(
+            sorted_candidates,
+            significant_threshold=significant_threshold,
+        ),
+    )
 
 
 def _classify_control_level(
@@ -1017,97 +1272,470 @@ def infer_controllers(
     top_path_limit: int = 5,
 ) -> ControlInferenceResult:
     company, target_entity = _resolve_company_and_target_entity(context, company_id)
-    aggregate = _resolve_aggregator(aggregator)
-    paths_by_entity_id = collect_control_paths(
+    candidates = _build_candidates_for_target_entity(
         context,
         target_entity.id,
         max_depth=max_depth,
         min_path_score=min_path_score,
+        control_threshold=control_threshold,
+        significant_threshold=significant_threshold,
+        disclosure_threshold=disclosure_threshold,
+        aggregator=aggregator,
+        top_path_limit=top_path_limit,
     )
+    company_candidate_map = {
+        candidate.controller_entity_id: candidate for candidate in candidates
+    }
 
-    candidates: list[ControllerCandidate] = []
-    for entity_id, path_states in paths_by_entity_id.items():
-        path_scores = [_path_score(path_state) for path_state in path_states]
-        total_score = aggregate(path_scores)
-        if total_score < disclosure_threshold:
-            continue
-
-        semantic_flags = _candidate_flags(path_states)
-        control_mode = _candidate_control_mode(path_states)
-        control_level = _classify_control_level(
-            total_score=total_score,
-            semantic_flags=semantic_flags,
-            control_threshold=control_threshold,
-            significant_threshold=significant_threshold,
-        )
-        sorted_paths = sorted(
-            path_states,
-            key=lambda item: (_path_score(item), item.conf_prod, -len(item.edge_ids)),
-            reverse=True,
-        )
-        candidates.append(
-            ControllerCandidate(
-                controller_entity_id=entity_id,
-                total_score=total_score,
-                total_confidence=_candidate_confidence(path_states),
-                control_level=control_level,
-                control_mode=control_mode,
-                semantic_flags=semantic_flags,
-                path_states=tuple(sorted_paths),
-                top_paths=tuple(sorted_paths[:top_path_limit]),
-                evidence_summary=_candidate_evidence_summary(sorted_paths),
-                is_joint_control=control_level == "joint_control",
-            )
-        )
-
-    candidates.sort(
-        key=lambda item: (
-            item.control_level != "control",
-            item.control_level != "joint_control",
-            -item.total_score,
-            -item.total_confidence,
-            item.controller_entity_id,
-        )
-    )
-
-    control_candidates = [
-        candidate
-        for candidate in candidates
-        if candidate.control_level in {"control", "joint_control"}
-    ]
-    joint_candidates = [
-        candidate.controller_entity_id
-        for candidate in control_candidates
-        if candidate.is_joint_control
-    ]
-
-    actual_controller_entity_id: int | None = None
-    leading_candidate_entity_id: int | None = None
-    leading_candidate_classification: str | None = None
-    actual_control_country = company.incorporation_country
-    attribution_type = "fallback_incorporation"
-
-    if joint_candidates:
-        actual_control_country = "undetermined"
-        attribution_type = "joint_control"
-    elif control_candidates:
-        winner = control_candidates[0]
-        actual_controller_entity_id = winner.controller_entity_id
-        controller_entity = context.entity_map.get(winner.controller_entity_id)
-        actual_control_country = (
-            _resolve_controller_country(controller_entity)
-            or company.incorporation_country
-        )
-        attribution_type = _resolve_country_attribution_type(winner)
-
-    if candidates:
-        leading_candidate_entity_id = candidates[0].controller_entity_id
-        leading_candidate_classification = _classify_leading_candidate_signal(
+    leading_candidate_entity_id = candidates[0].controller_entity_id if candidates else None
+    leading_candidate_classification = (
+        _classify_leading_candidate_signal(
             candidates,
             significant_threshold=significant_threshold,
         )
+        if candidates
+        else None
+    )
 
-    joint_controller_entity_ids = tuple(sorted(joint_candidates))
+    direct_candidates = sorted(
+        [candidate for candidate in candidates if candidate.min_depth == 1],
+        key=_direct_candidate_sort_key,
+    )
+    direct_candidate = direct_candidates[0] if direct_candidates else None
+    direct_controller_entity_id = (
+        direct_candidate.controller_entity_id if direct_candidate is not None else None
+    )
+    direct_controller_country = (
+        _resolve_controller_country(
+            context.entity_map.get(direct_controller_entity_id)
+        )
+        if direct_controller_entity_id is not None
+        else None
+    )
+
+    actual_controller_entity_id: int | None = None
+    actual_control_country = company.incorporation_country
+    attribution_type = "fallback_incorporation"
+    attribution_layer = "fallback_incorporation"
+    country_inference_reason = "fallback_to_incorporation"
+    joint_controller_entity_ids: tuple[int, ...] = tuple()
+    look_through_applied = False
+    promotion_path_entity_ids: list[int] = []
+    promotion_source_by_entity_id: dict[int, int] = {}
+    promotion_reason_by_entity_id: dict[int, str] = {}
+    terminal_score_by_entity_id: dict[int, Decimal] = {}
+    terminal_failure_reason: str | None = None
+    audit_events: list[InferenceAuditEvent] = []
+    leading_override_entity_id: int | None = None
+    leading_override_classification: str | None = None
+
+    if direct_candidate is not None:
+        promotion_path_entity_ids.append(direct_candidate.controller_entity_id)
+        terminal_score_by_entity_id[direct_candidate.controller_entity_id] = (
+            direct_candidate.total_score
+        )
+        audit_events.append(
+            InferenceAuditEvent(
+                action_type="candidate_selected",
+                action_reason="direct_controller_candidate",
+                from_entity_id=direct_candidate.controller_entity_id,
+                to_entity_id=target_entity.id,
+                score_before=direct_candidate.total_score,
+                score_after=direct_candidate.total_score,
+                details={
+                    "company_candidate_score": serialize_unit_score(
+                        direct_candidate.total_score
+                    ),
+                    "control_level": direct_candidate.control_level,
+                    "min_depth": direct_candidate.min_depth,
+                },
+            )
+        )
+
+    if direct_candidate is None:
+        pass
+    elif direct_candidate.is_joint_control:
+        joint_controller_entity_ids = (direct_candidate.controller_entity_id,)
+        terminal_failure_reason = "joint_control"
+        actual_control_country = "undetermined"
+        attribution_type = "joint_control"
+        attribution_layer = "joint_control_undetermined"
+        country_inference_reason = "joint_control_no_single_country"
+        leading_override_entity_id = direct_candidate.controller_entity_id
+        leading_override_classification = "joint_control"
+        audit_events.append(
+            InferenceAuditEvent(
+                action_type="joint_control_detected",
+                action_reason="direct_layer_joint_control",
+                from_entity_id=direct_candidate.controller_entity_id,
+                to_entity_id=target_entity.id,
+                score_before=direct_candidate.total_score,
+                score_after=None,
+                details={},
+            )
+        )
+    else:
+        current_company_candidate = direct_candidate
+        current_entity_id = direct_candidate.controller_entity_id
+        visited_entity_ids = {current_entity_id}
+
+        while True:
+            current_entity = context.entity_map.get(current_entity_id)
+            if _entity_prefers_terminal_stop(current_entity):
+                if current_company_candidate.control_level == "control":
+                    actual_controller_entity_id = current_entity_id
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="terminal_confirmed",
+                            action_reason="terminal_entity_preferred",
+                            from_entity_id=current_entity_id,
+                            to_entity_id=target_entity.id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=terminal_score_by_entity_id.get(current_entity_id),
+                            details={},
+                        )
+                    )
+                else:
+                    terminal_failure_reason = "insufficient_evidence"
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="promotion_blocked",
+                            action_reason="insufficient_evidence",
+                            from_entity_id=current_entity_id,
+                            to_entity_id=target_entity.id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=None,
+                            details={"stage": "terminal_entity_preferred"},
+                        )
+                    )
+                break
+
+            parent_candidates = [
+                candidate
+                for candidate in _build_candidates_for_target_entity(
+                    context,
+                    current_entity_id,
+                    max_depth=max_depth,
+                    min_path_score=min_path_score,
+                    control_threshold=control_threshold,
+                    significant_threshold=significant_threshold,
+                    disclosure_threshold=disclosure_threshold,
+                    aggregator=aggregator,
+                    top_path_limit=top_path_limit,
+                )
+                if candidate.min_depth == 1
+            ]
+
+            parent_company_candidates = [
+                company_candidate_map[candidate.controller_entity_id]
+                for candidate in parent_candidates
+                if candidate.controller_entity_id in company_candidate_map
+            ]
+
+            if any(candidate.is_joint_control for candidate in parent_candidates):
+                joint_controller_entity_ids = tuple(
+                    sorted(
+                        candidate.controller_entity_id
+                        for candidate in parent_candidates
+                        if candidate.is_joint_control
+                    )
+                )
+                terminal_failure_reason = "joint_control"
+                leading_override_entity_id, leading_override_classification = (
+                    _override_leading_candidate_from_subset(
+                        parent_company_candidates,
+                        significant_threshold=significant_threshold,
+                    )
+                )
+                actual_control_country = "undetermined"
+                attribution_type = "joint_control"
+                attribution_layer = "joint_control_undetermined"
+                country_inference_reason = "joint_control_no_single_country"
+                audit_events.append(
+                    InferenceAuditEvent(
+                        action_type="joint_control_detected",
+                        action_reason="promotion_blocked_by_joint_control",
+                        from_entity_id=current_entity_id,
+                        to_entity_id=target_entity.id,
+                        score_before=current_company_candidate.total_score,
+                        score_after=None,
+                        details={
+                            "joint_controller_entity_ids": list(
+                                joint_controller_entity_ids
+                            )
+                        },
+                    )
+                )
+                break
+
+            parent_control_candidates = sorted(
+                [
+                    candidate
+                    for candidate in parent_candidates
+                    if candidate.control_level == "control"
+                ],
+                key=_controller_sort_key,
+            )
+
+            if not parent_control_candidates:
+                if current_company_candidate.control_level == "control":
+                    actual_controller_entity_id = current_entity_id
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="terminal_confirmed",
+                            action_reason="no_parent_control_above_threshold",
+                            from_entity_id=current_entity_id,
+                            to_entity_id=target_entity.id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=terminal_score_by_entity_id.get(current_entity_id),
+                            details={},
+                        )
+                    )
+                else:
+                    terminal_failure_reason = "no_parent_control_above_threshold"
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="promotion_blocked",
+                            action_reason="no_parent_control_above_threshold",
+                            from_entity_id=current_entity_id,
+                            to_entity_id=target_entity.id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=None,
+                            details={},
+                        )
+                    )
+                break
+
+            winner = parent_control_candidates[0]
+            runner_up = (
+                parent_control_candidates[1]
+                if len(parent_control_candidates) > 1
+                else None
+            )
+            winner_company_candidate = company_candidate_map.get(
+                winner.controller_entity_id
+            )
+
+            if _is_close_competition(winner, runner_up):
+                terminal_failure_reason = "close_competition"
+                relevant_candidates = [
+                    company_candidate_map[candidate.controller_entity_id]
+                    for candidate in parent_control_candidates[:2]
+                    if candidate.controller_entity_id in company_candidate_map
+                ]
+                leading_override_entity_id, leading_override_classification = (
+                    _override_leading_candidate_from_subset(
+                        relevant_candidates,
+                        significant_threshold=significant_threshold,
+                    )
+                )
+                audit_events.append(
+                    InferenceAuditEvent(
+                        action_type="promotion_blocked",
+                        action_reason="close_competition",
+                        from_entity_id=current_entity_id,
+                        to_entity_id=winner.controller_entity_id,
+                        score_before=current_company_candidate.total_score,
+                        score_after=winner.total_score,
+                        details={
+                            "runner_up_entity_id": (
+                                runner_up.controller_entity_id
+                                if runner_up is not None
+                                else None
+                            )
+                        },
+                    )
+                )
+                break
+
+            if winner.controller_entity_id in visited_entity_ids:
+                if current_company_candidate.control_level == "control":
+                    actual_controller_entity_id = current_entity_id
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="terminal_confirmed",
+                            action_reason="promotion_cycle_detected",
+                            from_entity_id=current_entity_id,
+                            to_entity_id=target_entity.id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=terminal_score_by_entity_id.get(current_entity_id),
+                            details={"cycle_to_entity_id": winner.controller_entity_id},
+                        )
+                    )
+                else:
+                    terminal_failure_reason = "insufficient_evidence"
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="promotion_blocked",
+                            action_reason="promotion_cycle_detected",
+                            from_entity_id=current_entity_id,
+                            to_entity_id=winner.controller_entity_id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=winner.total_score,
+                            details={},
+                        )
+                    )
+                break
+
+            block_reason = _promotion_block_reason(_candidate_immediate_edge(winner))
+            if block_reason in {"beneficial_owner_unknown", "nominee_without_disclosure"}:
+                terminal_failure_reason = block_reason
+                if winner_company_candidate is not None:
+                    leading_override_entity_id = winner_company_candidate.controller_entity_id
+                    leading_override_classification = (
+                        "significant_influence_candidate"
+                        if winner_company_candidate.control_level
+                        == "significant_influence"
+                        else "absolute_control"
+                    )
+                audit_events.append(
+                    InferenceAuditEvent(
+                        action_type="promotion_blocked",
+                        action_reason=block_reason,
+                        from_entity_id=current_entity_id,
+                        to_entity_id=winner.controller_entity_id,
+                        score_before=current_company_candidate.total_score,
+                        score_after=winner.total_score,
+                        details={},
+                    )
+                )
+                break
+
+            if (
+                winner_company_candidate is None
+                or winner_company_candidate.control_level != "control"
+            ):
+                if current_company_candidate.control_level == "control":
+                    actual_controller_entity_id = current_entity_id
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="terminal_confirmed",
+                            action_reason="no_parent_control_above_target_threshold",
+                            from_entity_id=current_entity_id,
+                            to_entity_id=target_entity.id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=terminal_score_by_entity_id.get(current_entity_id),
+                            details={
+                                "candidate_parent_entity_id": winner.controller_entity_id
+                            },
+                        )
+                    )
+                else:
+                    terminal_failure_reason = "insufficient_evidence"
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="promotion_blocked",
+                            action_reason="insufficient_evidence",
+                            from_entity_id=current_entity_id,
+                            to_entity_id=winner.controller_entity_id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=winner.total_score,
+                            details={
+                                "reason": "parent_does_not_control_target_above_threshold"
+                            },
+                        )
+                    )
+                break
+
+            if block_reason in {"protective_right_only", "look_through_not_allowed"}:
+                if current_company_candidate.control_level == "control":
+                    actual_controller_entity_id = current_entity_id
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="terminal_confirmed",
+                            action_reason=block_reason,
+                            from_entity_id=current_entity_id,
+                            to_entity_id=target_entity.id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=terminal_score_by_entity_id.get(current_entity_id),
+                            details={},
+                        )
+                    )
+                else:
+                    terminal_failure_reason = "insufficient_evidence"
+                    audit_events.append(
+                        InferenceAuditEvent(
+                            action_type="promotion_blocked",
+                            action_reason=block_reason,
+                            from_entity_id=current_entity_id,
+                            to_entity_id=winner.controller_entity_id,
+                            score_before=current_company_candidate.total_score,
+                            score_after=winner.total_score,
+                            details={},
+                        )
+                    )
+                break
+
+            look_through_applied = True
+            promotion_path_entity_ids.append(winner.controller_entity_id)
+            promotion_source_by_entity_id[winner.controller_entity_id] = current_entity_id
+            promotion_reason_by_entity_id[winner.controller_entity_id] = (
+                _promotion_reason_for_entity(
+                    current_entity,
+                    context.entity_map.get(winner.controller_entity_id),
+                )
+            )
+            terminal_score_by_entity_id[winner.controller_entity_id] = winner.total_score
+            audit_events.append(
+                InferenceAuditEvent(
+                    action_type="promotion_to_parent",
+                    action_reason=promotion_reason_by_entity_id[
+                        winner.controller_entity_id
+                    ],
+                    from_entity_id=current_entity_id,
+                    to_entity_id=winner.controller_entity_id,
+                    score_before=current_company_candidate.total_score,
+                    score_after=winner.total_score,
+                    details={
+                        "company_target_score_after_promotion": serialize_unit_score(
+                            winner_company_candidate.total_score
+                        )
+                    },
+                )
+            )
+
+            current_entity_id = winner.controller_entity_id
+            current_company_candidate = winner_company_candidate
+            visited_entity_ids.add(current_entity_id)
+
+        if actual_controller_entity_id is not None:
+            actual_candidate = company_candidate_map.get(actual_controller_entity_id)
+            controller_entity = context.entity_map.get(actual_controller_entity_id)
+            actual_control_country = (
+                _resolve_controller_country(controller_entity)
+                or company.incorporation_country
+            )
+            if actual_candidate is not None:
+                attribution_type = _resolve_country_attribution_type(actual_candidate)
+            attribution_layer = (
+                "ultimate_controller_country"
+                if look_through_applied
+                or actual_controller_entity_id != direct_controller_entity_id
+                else "direct_controller_country"
+            )
+            country_inference_reason = (
+                "derived_from_ultimate_controller"
+                if attribution_layer == "ultimate_controller_country"
+                else "derived_from_direct_controller"
+            )
+        elif direct_candidate is not None:
+            if (
+                terminal_failure_reason not in {"joint_control"}
+                and direct_controller_country
+                and direct_candidate.control_level == "control"
+            ):
+                actual_control_country = direct_controller_country
+                attribution_type = _resolve_country_attribution_type(direct_candidate)
+                attribution_layer = "direct_controller_country"
+                country_inference_reason = "derived_from_direct_controller"
+
+    if actual_controller_entity_id is not None:
+        leading_candidate_entity_id = actual_controller_entity_id
+        leading_candidate_classification = "absolute_control"
+    elif leading_override_entity_id is not None:
+        leading_candidate_entity_id = leading_override_entity_id
+        leading_candidate_classification = leading_override_classification
+
     controller_status = _resolve_controller_status(
         actual_controller_entity_id=actual_controller_entity_id,
         joint_controller_entity_ids=joint_controller_entity_ids,
@@ -1119,11 +1747,22 @@ def infer_controllers(
         target_entity=target_entity,
         aggregator=aggregator,
         candidates=tuple(candidates),
+        direct_controller_entity_id=direct_controller_entity_id,
+        direct_controller_country=direct_controller_country,
         actual_controller_entity_id=actual_controller_entity_id,
         leading_candidate_entity_id=leading_candidate_entity_id,
         leading_candidate_classification=leading_candidate_classification,
         actual_control_country=actual_control_country,
         attribution_type=attribution_type,
+        attribution_layer=attribution_layer,
+        country_inference_reason=country_inference_reason,
         controller_status=controller_status,
         joint_controller_entity_ids=joint_controller_entity_ids,
+        look_through_applied=look_through_applied,
+        promotion_path_entity_ids=tuple(promotion_path_entity_ids),
+        promotion_source_by_entity_id=promotion_source_by_entity_id,
+        promotion_reason_by_entity_id=promotion_reason_by_entity_id,
+        terminal_score_by_entity_id=terminal_score_by_entity_id,
+        terminal_failure_reason=terminal_failure_reason,
+        audit_events=tuple(audit_events),
     )

@@ -30,6 +30,12 @@ class Company(Base):
         back_populates="company",
         cascade="all, delete-orphan",
     )
+    control_inference_runs = relationship(
+        "ControlInferenceRun",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        order_by="ControlInferenceRun.id.asc()",
+    )
     business_segments = relationship(
         "BusinessSegment",
         back_populates="company",

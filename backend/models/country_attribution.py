@@ -13,6 +13,17 @@ class CountryAttribution(Base):
     listing_country = Column(String(100), nullable=False)
     actual_control_country = Column(String(100), nullable=False)
     attribution_type = Column(String(50), nullable=False)
+    actual_controller_entity_id = Column(Integer, nullable=True, index=True)
+    direct_controller_entity_id = Column(Integer, nullable=True, index=True)
+    attribution_layer = Column(String(50), nullable=True, index=True)
+    country_inference_reason = Column(String(100), nullable=True)
+    look_through_applied = Column(Boolean, nullable=False, default=False)
+    inference_run_id = Column(
+        Integer,
+        ForeignKey("control_inference_runs.id"),
+        nullable=True,
+        index=True,
+    )
     basis = Column(Text, nullable=True)
     is_manual = Column(Boolean, nullable=False, default=True)
     notes = Column(Text, nullable=True)
@@ -26,3 +37,7 @@ class CountryAttribution(Base):
     )
 
     company = relationship("Company", back_populates="country_attributions")
+    inference_run = relationship(
+        "ControlInferenceRun",
+        back_populates="country_attributions",
+    )

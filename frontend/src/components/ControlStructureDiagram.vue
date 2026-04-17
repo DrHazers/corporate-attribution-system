@@ -80,6 +80,83 @@ const DISPLAY_MODE_LABELS = {
   'summary-first': '摘要优先',
 }
 
+const displayController = computed(
+  () =>
+    props.controlAnalysis?.display_controller ||
+    props.controlAnalysis?.actual_controller ||
+    props.controlAnalysis?.leading_candidate ||
+    null,
+)
+const summaryControllerRoleKey = computed(() => {
+  if (props.controlAnalysis?.display_controller_role) {
+    return props.controlAnalysis.display_controller_role
+  }
+  if (props.controlAnalysis?.actual_controller || displayController.value?.is_actual_controller) {
+    return 'actual_controller'
+  }
+  if (props.controlAnalysis?.leading_candidate || displayController.value) {
+    return 'leading_candidate'
+  }
+  return null
+})
+const summaryControllerRoleLabel = computed(() => {
+  if (summaryControllerRoleKey.value === 'leading_candidate') {
+    return '重点控制候选'
+  }
+  return '实际控制人'
+})
+const summaryControllerLegendTitle = computed(() => {
+  if (summaryControllerRoleKey.value === 'leading_candidate') {
+    return '重点控制候选'
+  }
+  if (summaryControllerRoleKey.value === 'actual_controller') {
+    return '实际控制人'
+  }
+  return '顶部主轴控制主体'
+})
+const summaryControllerLegendDescription = computed(() => {
+  if (summaryControllerRoleKey.value === 'leading_candidate') {
+    return '顶部主轴节点，表示当前最强控制候选，可向上展开其上游结构。'
+  }
+  if (summaryControllerRoleKey.value === 'actual_controller') {
+    return '顶部主轴节点，表示当前识别到的实际控制人，可向上展开。'
+  }
+  return '当前未识别到实际控制人或重点控制候选时，该位置不渲染节点。'
+})
+const diagramHeaderDescription = computed(() => {
+  if (summaryControllerRoleKey.value === 'leading_candidate') {
+    return '主链保持“重点控制候选 → 目标公司”的向下语义；目标公司下方第一层及其子层统一向上汇聚到父节点，顶部候选主体可继续向上展开其上游结构。'
+  }
+  if (summaryControllerRoleKey.value === 'actual_controller') {
+    return '主链保持“实际控制人 → 目标公司”的向下语义；目标公司下方第一层及其子层统一向上汇聚到父节点，实际控制人可继续向上展开其上游结构。'
+  }
+  return '未识别到实际控制人或重点控制候选时，图中保留目标公司及其上游结构，避免出现误导性的顶部控制主体节点。'
+})
+const diagramFootnote = computed(() => {
+  if (summaryControllerRoleKey.value === 'leading_candidate') {
+    return '顶部主轴节点显示为重点控制候选，目标公司位于中轴，目标公司下方主体继续向上汇聚至父节点。可滚轮缩放、拖拽平移，并用“适应视图”恢复居中。'
+  }
+  if (summaryControllerRoleKey.value === 'actual_controller') {
+    return '顶部主轴节点显示为实际控制人，目标公司位于中轴，目标公司下方主体继续向上汇聚至父节点。可滚轮缩放、拖拽平移，并用“适应视图”恢复居中。'
+  }
+  return '当前未识别到顶部主轴控制主体，图中仅展示目标公司及其上游结构。可滚轮缩放、拖拽平移，并用“适应视图”恢复居中。'
+})
+const interactionHint = computed(() => {
+  if (summaryControllerRoleKey.value === 'leading_candidate') {
+    return '下方节点向下展开，上方重点控制候选向上展开'
+  }
+  if (summaryControllerRoleKey.value === 'actual_controller') {
+    return '下方节点向下展开，上方实际控制人向上展开'
+  }
+  return '当前仅展示目标公司及其上游结构，可继续展开下方节点'
+})
+const summaryLegendRoleClass = computed(() => {
+  if (!summaryControllerRoleKey.value) {
+    return 'legend-role--inactive'
+  }
+  return summaryControllerRoleKey.value === 'leading_candidate' ? 'legend-role--leading' : 'legend-role--actual'
+})
+
 const diagramModel = computed(() =>
   buildControlStructureModel({
     company: props.company,
@@ -259,7 +336,20 @@ function displayModeLabel(value) {
   return DISPLAY_MODE_LABELS[value] || value || '分层展开'
 }
 
+function summaryNodeVariantClass(node) {
+  if (node?.role !== 'actualSummary') {
+    return ''
+  }
+  if (summaryControllerRoleKey.value === 'leading_candidate') {
+    return 'structure-node__box--summary-leading_candidate'
+  }
+  return 'structure-node__box--summary-actual_controller'
+}
+
 function nodeRoleLabel(node) {
+  if (node.role === 'actualSummary') {
+    return summaryControllerRoleLabel.value
+  }
   if (node.role === 'actualSummary') {
     return '实际控制人'
   }
@@ -277,6 +367,9 @@ function nodeRoleLabel(node) {
 
 function resolvedNodeRoleLabel(node) {
   if (node.role === 'actualSummary') {
+    return summaryControllerRoleLabel.value
+  }
+  if (node.role === 'actualSummary') {
     return '实际控制人'
   }
   if (node.role === 'target') {
@@ -286,6 +379,7 @@ function resolvedNodeRoleLabel(node) {
     return '直接上游主体'
   }
   if (node.branchDirection === 'up') {
+    return `${summaryControllerRoleLabel.value}上方第 ${Math.max(1, Math.abs(Number(node.depthFromTarget) || 0) - 1)} 层主体`
     return `实际控制人上方第 ${Math.max(1, Math.abs(Number(node.depthFromTarget) || 0) - 1)} 层主体`
   }
   if (node.isKeyPath) {
@@ -417,6 +511,9 @@ function nodeRectY(node) {
 }
 
 function markerEnd(edge) {
+  if (edge.isPrimary && summaryControllerRoleKey.value === 'leading_candidate') {
+    return 'url(#control-structure-arrow-leading)'
+  }
   return edge.isPrimary || edge.isKeyPath
     ? 'url(#control-structure-arrow-key)'
     : 'url(#control-structure-arrow-normal)'
@@ -545,6 +642,7 @@ onBeforeUnmount(() => {
           主链保持“实际控制人 → 目标公司”的向下语义；目标公司下方第一层及其子层统一向上汇聚到父节点，
           实际控制人则可继续向上展开其上游结构。
         </p>
+        <p class="control-structure-diagram__header-copy">{{ diagramHeaderDescription }}</p>
       </div>
       <el-tag effect="plain" type="danger">{{ displayModeLabel(diagramModel.displayMode) }}</el-tag>
     </header>
@@ -594,6 +692,17 @@ onBeforeUnmount(() => {
               >
                 <path d="M 0 0 L 12 6 L 0 12 z" class="structure-arrow structure-arrow--key" />
               </marker>
+              <marker
+                id="control-structure-arrow-leading"
+                markerWidth="12"
+                markerHeight="12"
+                refX="10"
+                refY="6"
+                orient="auto"
+                markerUnits="strokeWidth"
+              >
+                <path d="M 0 0 L 12 6 L 0 12 z" class="structure-arrow structure-arrow--leading" />
+              </marker>
             </defs>
 
             <rect
@@ -622,6 +731,9 @@ onBeforeUnmount(() => {
                     edge.branchDepth >= 2 ? 'structure-edge--subtree' : '',
                     edge.isKeyPath ? 'structure-edge--key' : '',
                     edge.isPrimary ? 'structure-edge--primary' : '',
+                    edge.isPrimary && summaryControllerRoleKey === 'leading_candidate'
+                      ? 'structure-edge--primary-candidate'
+                      : '',
                     edge.isCollapsed ? 'structure-edge--collapsed' : '',
                   ]"
                   @mousemove="showHover($event, edge)"
@@ -651,6 +763,7 @@ onBeforeUnmount(() => {
                       'structure-node__box',
                       `structure-node__box--${node.entityType}`,
                       `structure-node__box--role-${node.role}`,
+                      summaryNodeVariantClass(node),
                     ]"
                   />
                   <text class="structure-node__label" text-anchor="middle" dominant-baseline="middle">
@@ -691,13 +804,14 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="control-structure-diagram__footnote">
+        <div class="control-structure-diagram__footnote control-structure-diagram__footnote--legacy">
           默认层次：
           <strong>实际控制人</strong>位于顶部主轴并可向上展开，
           <strong>目标公司</strong>位于中轴，
           <strong>直接上游主体</strong>位于目标公司下方并向上指向父节点。
           可滚轮缩放、拖拽空白区域平移，点击“适应视图”可恢复居中。
         </div>
+        <div class="control-structure-diagram__footnote">{{ diagramFootnote }}</div>
       </section>
 
       <aside class="control-structure-diagram__legend" aria-label="控制结构图图例">
@@ -728,7 +842,8 @@ onBeforeUnmount(() => {
         <div class="legend-block">
           <h4>节点角色</h4>
           <div class="legend-row">
-            <span class="legend-role legend-role--actual" />
+            <span :class="['legend-role', summaryLegendRoleClass]" />
+            <span class="legend-row__copy"><strong>{{ summaryControllerLegendTitle }}</strong>{{ summaryControllerLegendDescription }}</span>
             <span><strong>实际控制人</strong>顶部主链节点，可向上展开</span>
           </div>
           <div class="legend-row">
@@ -752,6 +867,7 @@ onBeforeUnmount(() => {
           <h4>交互说明</h4>
           <div class="legend-toggle-row">
             <span class="legend-toggle">+</span>
+            <span class="legend-toggle-row__copy">{{ interactionHint }}</span>
             <span>下方节点向下展开，上方实际控制人向上展开</span>
           </div>
           <div class="legend-toggle-row">
@@ -791,6 +907,10 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.55;
+}
+
+.control-structure-diagram__header p:not(.control-structure-diagram__header-copy) {
+  display: none;
 }
 
 .control-structure-diagram__main {
@@ -930,6 +1050,10 @@ onBeforeUnmount(() => {
   opacity: 0.94;
 }
 
+.structure-edge--primary-candidate {
+  stroke: #5b50ad;
+}
+
 .structure-edge--collapsed {
   stroke-dasharray: 9 6;
 }
@@ -941,6 +1065,10 @@ onBeforeUnmount(() => {
 
 .structure-arrow--key {
   fill: #b91c1c;
+}
+
+.structure-arrow--leading {
+  fill: #5b50ad;
 }
 
 .structure-node__box {
@@ -981,6 +1109,12 @@ onBeforeUnmount(() => {
   stroke: #b91c1c;
   stroke-width: 4.2;
   filter: drop-shadow(0 9px 14px rgba(185, 28, 28, 0.18));
+}
+
+.structure-node__box--summary-leading_candidate {
+  fill: #7666cf;
+  stroke: #5b50ad;
+  filter: drop-shadow(0 9px 14px rgba(91, 80, 173, 0.18));
 }
 
 .structure-node__box--role-focused {
@@ -1058,6 +1192,10 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.control-structure-diagram__footnote--legacy {
+  display: none;
+}
+
 .control-structure-diagram__footnote strong {
   color: #25364a;
 }
@@ -1109,6 +1247,11 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.legend-row__copy + span,
+.legend-toggle-row__copy + span {
+  display: none;
+}
+
 .legend-dot {
   width: 14px;
   height: 14px;
@@ -1144,6 +1287,14 @@ onBeforeUnmount(() => {
 
 .legend-role--actual {
   border-color: #b91c1c;
+}
+
+.legend-role--leading {
+  border-color: #5b50ad;
+}
+
+.legend-role--inactive {
+  border-color: #94a3b8;
 }
 
 .legend-role--target {

@@ -335,6 +335,32 @@ function basisLines(row) {
   return basisLinesFromString(parsed)
 }
 
+function relationshipRoleLabel(row) {
+  if (row?.is_actual_controller) {
+    return '实际控制人'
+  }
+  if (row?.is_leading_candidate) {
+    return '重点控制候选'
+  }
+  if (normalizeKey(row?.controller_status) === 'joint_control_identified') {
+    return '共同控制'
+  }
+  return ''
+}
+
+function relationshipRoleClass(row) {
+  if (row?.is_actual_controller) {
+    return 'actual'
+  }
+  if (row?.is_leading_candidate) {
+    return 'leading'
+  }
+  if (normalizeKey(row?.controller_status) === 'joint_control_identified') {
+    return 'joint'
+  }
+  return 'neutral'
+}
+
 function rowClassName({ row }) {
   return row.is_actual_controller ? 'control-relations-table__row--actual' : ''
 }
@@ -365,8 +391,19 @@ function rowClassName({ row }) {
 
       <el-table-column label="控制主体" min-width="220" show-overflow-tooltip>
         <template #default="{ row }">
-          <div class="controller-name">
-            {{ row.controller_name || EMPTY_TEXT }}
+          <div class="controller-name-cell">
+            <div class="controller-name">
+              {{ row.controller_name || EMPTY_TEXT }}
+            </div>
+            <span
+              v-if="relationshipRoleLabel(row)"
+              :class="[
+                'relationship-role-badge',
+                `relationship-role-badge--${relationshipRoleClass(row)}`,
+              ]"
+            >
+              {{ relationshipRoleLabel(row) }}
+            </span>
           </div>
         </template>
       </el-table-column>
@@ -501,6 +538,43 @@ function rowClassName({ row }) {
 .controller-name {
   color: var(--brand-ink);
   font-weight: 600;
+}
+
+.controller-name-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.relationship-role-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.relationship-role-badge--actual {
+  color: #a33e3e;
+  border-color: rgba(163, 62, 62, 0.2);
+  background: rgba(163, 62, 62, 0.12);
+}
+
+.relationship-role-badge--leading {
+  color: #5b50ad;
+  border-color: rgba(91, 80, 173, 0.2);
+  background: rgba(91, 80, 173, 0.1);
+}
+
+.relationship-role-badge--joint {
+  color: #8a5a11;
+  border-color: rgba(138, 90, 17, 0.22);
+  background: rgba(138, 90, 17, 0.1);
 }
 
 .meta-chip {

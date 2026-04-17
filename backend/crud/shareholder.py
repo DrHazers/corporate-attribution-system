@@ -25,12 +25,14 @@ from backend.schemas.shareholder import (
     ShareholderStructureUpdate,
 )
 from backend.shareholder_relations import (
+    SHAREHOLDER_ENTITY_MUTABLE_FIELDS,
     ENTITY_ALIAS_MUTABLE_FIELDS,
     RELATIONSHIP_SOURCE_MUTABLE_FIELDS,
     STRUCTURE_MUTABLE_FIELDS,
     build_relation_type_clause,
     prepare_entity_alias_values,
     prepare_relationship_source_values,
+    prepare_shareholder_entity_values,
     prepare_shareholder_structure_values,
 )
 
@@ -88,7 +90,10 @@ def create_shareholder_entity(
     db: Session,
     shareholder_entity_in: ShareholderEntityCreate,
 ) -> ShareholderEntity:
-    shareholder_entity = ShareholderEntity(**shareholder_entity_in.model_dump())
+    prepared_values = prepare_shareholder_entity_values(
+        shareholder_entity_in.model_dump(exclude_unset=True)
+    )
+    shareholder_entity = ShareholderEntity(**prepared_values)
     db.add(shareholder_entity)
     db.commit()
     db.refresh(shareholder_entity)
@@ -148,8 +153,12 @@ def update_shareholder_entity(
     shareholder_entity: ShareholderEntity,
     shareholder_entity_in: ShareholderEntityUpdate,
 ) -> ShareholderEntity:
-    for field, value in shareholder_entity_in.model_dump(exclude_unset=True).items():
-        setattr(shareholder_entity, field, value)
+    prepared_values = prepare_shareholder_entity_values(
+        shareholder_entity_in.model_dump(exclude_unset=True),
+        existing=shareholder_entity,
+    )
+    for field in SHAREHOLDER_ENTITY_MUTABLE_FIELDS:
+        setattr(shareholder_entity, field, prepared_values[field])
 
     db.commit()
     db.refresh(shareholder_entity)

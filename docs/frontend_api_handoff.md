@@ -4,12 +4,12 @@
 
 为了覆盖控制分析、国别归属、产业分析、多报告期、变化分析与质量提示，最终演示建议使用：
 
-`DATABASE_URL=sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry.db`
+`DATABASE_URL=sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db`
 
 说明：
 
-- 仓库默认的 `company.db` 数据量很小，不适合作为产业分析与最终演示数据源。
-- 以下推荐的 `company_id` 都基于 `company_test_analysis_industry.db` 验证。
+- 仓库当前联调默认库已切到 `company_test_analysis_industry_v2.db`；`company.db` 仍保留在仓库中，但不建议作为产业分析与最终演示数据源。
+- 以下推荐的 `company_id` 都基于 `company_test_analysis_industry_v2.db` 验证。
 
 ## 2. 推荐给前端直接使用的接口
 

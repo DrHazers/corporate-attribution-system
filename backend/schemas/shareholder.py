@@ -6,17 +6,23 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from backend.shareholder_relations import (
     CONFIDENCE_LEVEL_VALUES,
+    CONTROLLER_CLASS_VALUES,
     ENTITY_ALIAS_TYPE_VALUES,
+    ENTITY_SUBTYPE_VALUES,
     RELATION_ROLE_VALUES,
     RELATIONSHIP_SOURCE_TYPE_VALUES,
     RELATION_TYPE_VALUES,
     STRUCTURE_HISTORY_CHANGE_TYPE_VALUES,
+    TERMINATION_SIGNAL_VALUES,
     normalize_confidence_level,
+    normalize_controller_class,
     normalize_entity_alias_type,
+    normalize_entity_subtype,
     normalize_relation_role,
     normalize_relation_type,
     normalize_relationship_source_type,
     normalize_structure_history_change_type,
+    normalize_termination_signal,
 )
 
 
@@ -44,6 +50,36 @@ ShareholderRelationRole = Literal[
     "nominee",
     "contractual",
     "other",
+]
+ShareholderEntitySubtype = Literal[
+    "operating_company",
+    "holding_company",
+    "spv",
+    "shell_company",
+    "state_owned_vehicle",
+    "founder_vehicle",
+    "family_vehicle",
+    "government_agency",
+    "fund_gp",
+    "fund_lp",
+    "trust",
+    "unknown",
+]
+ControllerClass = Literal[
+    "natural_person",
+    "corporate_group",
+    "state",
+    "fund_complex",
+    "trust_structure",
+    "unknown",
+]
+TerminationSignal = Literal[
+    "none",
+    "ultimate_disclosed",
+    "joint_control",
+    "beneficial_owner_unknown",
+    "nominee_without_disclosure",
+    "protective_right_only",
 ]
 ConfidenceLevel = Literal["high", "medium", "low", "unknown"]
 RelationshipSourceType = Literal[
@@ -79,6 +115,11 @@ class ShareholderEntityCreate(BaseModel):
     company_id: int | None = None
     identifier_code: str | None = None
     is_listed: bool | None = None
+    entity_subtype: ShareholderEntitySubtype | None = None
+    ultimate_owner_hint: bool = False
+    look_through_priority: int = 0
+    controller_class: ControllerClass | None = None
+    beneficial_owner_disclosed: bool = False
     notes: str | None = None
 
 
@@ -89,6 +130,11 @@ class ShareholderEntityUpdate(BaseModel):
     company_id: int | None = None
     identifier_code: str | None = None
     is_listed: bool | None = None
+    entity_subtype: ShareholderEntitySubtype | None = None
+    ultimate_owner_hint: bool | None = None
+    look_through_priority: int | None = None
+    controller_class: ControllerClass | None = None
+    beneficial_owner_disclosed: bool | None = None
     notes: str | None = None
 
 
@@ -102,13 +148,24 @@ class ShareholderEntityRead(BaseModel):
     company_id: int | None = None
     identifier_code: str | None = None
     is_listed: bool | None = None
+    entity_subtype: ShareholderEntitySubtype | None = None
+    ultimate_owner_hint: bool = False
+    look_through_priority: int = 0
+    controller_class: ControllerClass | None = None
+    beneficial_owner_disclosed: bool = False
     notes: str | None = None
     created_at: datetime
     updated_at: datetime
 
 
 class ShareholderStructureBase(BaseModel):
-    @field_validator("holding_ratio", check_fields=False)
+    @field_validator(
+        "holding_ratio",
+        "voting_ratio",
+        "economic_ratio",
+        "effective_control_ratio",
+        check_fields=False,
+    )
     @classmethod
     def validate_holding_ratio(cls, value: Decimal | None) -> Decimal | None:
         if value is None:
@@ -147,15 +204,31 @@ class ShareholderStructureBase(BaseModel):
             raise ValueError(f"Unsupported confidence_level: {value}")
         return normalized
 
+    @field_validator("termination_signal", check_fields=False)
+    @classmethod
+    def validate_termination_signal(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = normalize_termination_signal(value)
+        if normalized not in TERMINATION_SIGNAL_VALUES:
+            raise ValueError(f"Unsupported termination_signal: {value}")
+        return normalized
+
 
 class ShareholderStructureCreate(ShareholderStructureBase):
     from_entity_id: int
     to_entity_id: int
     holding_ratio: Decimal | None = None
+    voting_ratio: Decimal | None = None
+    economic_ratio: Decimal | None = None
     is_direct: bool = True
     control_type: ShareholderRelationType | None = None
     relation_type: ShareholderRelationType | None = None
     has_numeric_ratio: bool | None = None
+    is_beneficial_control: bool = False
+    look_through_allowed: bool = True
+    termination_signal: TerminationSignal | None = None
+    effective_control_ratio: Decimal | None = None
     relation_role: ShareholderRelationRole | None = None
     control_basis: str | None = None
     board_seats: int | None = None
@@ -176,10 +249,16 @@ class ShareholderStructureUpdate(ShareholderStructureBase):
     from_entity_id: int | None = None
     to_entity_id: int | None = None
     holding_ratio: Decimal | None = None
+    voting_ratio: Decimal | None = None
+    economic_ratio: Decimal | None = None
     is_direct: bool | None = None
     control_type: ShareholderRelationType | None = None
     relation_type: ShareholderRelationType | None = None
     has_numeric_ratio: bool | None = None
+    is_beneficial_control: bool | None = None
+    look_through_allowed: bool | None = None
+    termination_signal: TerminationSignal | None = None
+    effective_control_ratio: Decimal | None = None
     relation_role: ShareholderRelationRole | None = None
     control_basis: str | None = None
     board_seats: int | None = None
@@ -203,10 +282,16 @@ class ShareholderStructureRead(BaseModel):
     from_entity_id: int
     to_entity_id: int
     holding_ratio: Decimal | None = None
+    voting_ratio: Decimal | None = None
+    economic_ratio: Decimal | None = None
     is_direct: bool
     control_type: ShareholderRelationType | None = None
     relation_type: ShareholderRelationType | None = None
     has_numeric_ratio: bool
+    is_beneficial_control: bool = False
+    look_through_allowed: bool = True
+    termination_signal: TerminationSignal | None = None
+    effective_control_ratio: Decimal | None = None
     relation_role: ShareholderRelationRole | None = None
     control_basis: str | None = None
     board_seats: int | None = None

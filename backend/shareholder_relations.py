@@ -27,6 +27,48 @@ RELATION_ROLE_VALUES = (
 )
 CONFIDENCE_LEVEL_VALUES = ("high", "medium", "low", "unknown")
 CONTROL_MODE_VALUES = ("numeric", "semantic", "mixed")
+ENTITY_SUBTYPE_VALUES = (
+    "operating_company",
+    "holding_company",
+    "spv",
+    "shell_company",
+    "state_owned_vehicle",
+    "founder_vehicle",
+    "family_vehicle",
+    "government_agency",
+    "fund_gp",
+    "fund_lp",
+    "trust",
+    "unknown",
+)
+CONTROLLER_CLASS_VALUES = (
+    "natural_person",
+    "corporate_group",
+    "state",
+    "fund_complex",
+    "trust_structure",
+    "unknown",
+)
+TERMINATION_SIGNAL_VALUES = (
+    "none",
+    "ultimate_disclosed",
+    "joint_control",
+    "beneficial_owner_unknown",
+    "nominee_without_disclosure",
+    "protective_right_only",
+)
+CONTROL_TIER_VALUES = (
+    "direct",
+    "intermediate",
+    "ultimate",
+    "candidate",
+)
+ATTRIBUTION_LAYER_VALUES = (
+    "direct_controller_country",
+    "ultimate_controller_country",
+    "fallback_incorporation",
+    "joint_control_undetermined",
+)
 CONTROL_TYPE_CANONICAL_VALUES = (
     "equity_control",
     "agreement_control",
@@ -105,10 +147,16 @@ STRUCTURE_MUTABLE_FIELDS = (
     "from_entity_id",
     "to_entity_id",
     "holding_ratio",
+    "voting_ratio",
+    "economic_ratio",
     "is_direct",
     "control_type",
     "relation_type",
     "has_numeric_ratio",
+    "is_beneficial_control",
+    "look_through_allowed",
+    "termination_signal",
+    "effective_control_ratio",
     "relation_role",
     "control_basis",
     "board_seats",
@@ -133,6 +181,19 @@ CONTROL_RELATIONSHIP_MUTABLE_FIELDS = (
     "control_ratio",
     "control_path",
     "is_actual_controller",
+    "control_tier",
+    "is_direct_controller",
+    "is_intermediate_controller",
+    "is_ultimate_controller",
+    "promotion_source_entity_id",
+    "promotion_reason",
+    "control_chain_depth",
+    "is_terminal_inference",
+    "terminal_failure_reason",
+    "immediate_control_ratio",
+    "aggregated_control_score",
+    "terminal_control_score",
+    "inference_run_id",
     "basis",
     "notes",
     "control_mode",
@@ -145,6 +206,12 @@ COUNTRY_ATTRIBUTION_MUTABLE_FIELDS = (
     "listing_country",
     "actual_control_country",
     "attribution_type",
+    "actual_controller_entity_id",
+    "direct_controller_entity_id",
+    "attribution_layer",
+    "country_inference_reason",
+    "look_through_applied",
+    "inference_run_id",
     "basis",
     "is_manual",
     "notes",
@@ -162,6 +229,20 @@ ENTITY_ALIAS_MUTABLE_FIELDS = (
     "alias_name",
     "alias_type",
     "is_primary",
+)
+SHAREHOLDER_ENTITY_MUTABLE_FIELDS = (
+    "entity_name",
+    "entity_type",
+    "country",
+    "company_id",
+    "identifier_code",
+    "is_listed",
+    "entity_subtype",
+    "ultimate_owner_hint",
+    "look_through_priority",
+    "controller_class",
+    "beneficial_owner_disclosed",
+    "notes",
 )
 
 _ORIGINAL_RELATION_TYPE_PATTERN = re.compile(
@@ -231,6 +312,46 @@ def normalize_control_mode(value: str | None) -> str | None:
         value,
         allowed_values=CONTROL_MODE_VALUES,
         field_name="control_mode",
+    )
+
+
+def normalize_entity_subtype(value: str | None) -> str | None:
+    return _normalize_value(
+        value,
+        allowed_values=ENTITY_SUBTYPE_VALUES,
+        field_name="entity_subtype",
+    )
+
+
+def normalize_controller_class(value: str | None) -> str | None:
+    return _normalize_value(
+        value,
+        allowed_values=CONTROLLER_CLASS_VALUES,
+        field_name="controller_class",
+    )
+
+
+def normalize_termination_signal(value: str | None) -> str | None:
+    return _normalize_value(
+        value,
+        allowed_values=TERMINATION_SIGNAL_VALUES,
+        field_name="termination_signal",
+    )
+
+
+def normalize_control_tier(value: str | None) -> str | None:
+    return _normalize_value(
+        value,
+        allowed_values=CONTROL_TIER_VALUES,
+        field_name="control_tier",
+    )
+
+
+def normalize_attribution_layer(value: str | None) -> str | None:
+    return _normalize_value(
+        value,
+        allowed_values=ATTRIBUTION_LAYER_VALUES,
+        field_name="attribution_layer",
     )
 
 
@@ -362,6 +483,33 @@ def serialize_json_text(value: Any) -> str | None:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+def prepare_shareholder_entity_values(
+    values: dict[str, Any],
+    *,
+    existing: Any | None = None,
+) -> dict[str, Any]:
+    prepared: dict[str, Any] = {}
+    if existing is not None:
+        for field in SHAREHOLDER_ENTITY_MUTABLE_FIELDS:
+            prepared[field] = getattr(existing, field)
+
+    prepared.update(values)
+    prepared["entity_subtype"] = (
+        normalize_entity_subtype(prepared.get("entity_subtype")) or "unknown"
+    )
+    prepared["ultimate_owner_hint"] = bool(prepared.get("ultimate_owner_hint", False))
+    prepared["look_through_priority"] = int(
+        prepared.get("look_through_priority", 0) or 0
+    )
+    prepared["controller_class"] = (
+        normalize_controller_class(prepared.get("controller_class")) or "unknown"
+    )
+    prepared["beneficial_owner_disclosed"] = bool(
+        prepared.get("beneficial_owner_disclosed", False)
+    )
+    return prepared
+
+
 def prepare_shareholder_structure_values(
     values: dict[str, Any],
     *,
@@ -391,6 +539,16 @@ def prepare_shareholder_structure_values(
         relation_type=relation_type,
         holding_ratio=prepared.get("holding_ratio"),
         has_numeric_ratio=prepared.get("has_numeric_ratio"),
+    )
+    prepared["is_beneficial_control"] = bool(
+        prepared.get("is_beneficial_control", False)
+    )
+    if prepared.get("look_through_allowed") is None:
+        prepared["look_through_allowed"] = True
+    else:
+        prepared["look_through_allowed"] = bool(prepared.get("look_through_allowed"))
+    prepared["termination_signal"] = (
+        normalize_termination_signal(prepared.get("termination_signal")) or "none"
     )
     prepared["relation_role"] = infer_relation_role(
         relation_type=relation_type,
@@ -434,9 +592,36 @@ def prepare_control_relationship_values(
             prepared[field] = getattr(existing, field)
 
     prepared.update(values)
+    if (
+        prepared.get("is_ultimate_controller") is not None
+        and prepared.get("is_actual_controller") is None
+    ):
+        prepared["is_actual_controller"] = bool(prepared.get("is_ultimate_controller"))
+    prepared["is_actual_controller"] = bool(prepared.get("is_actual_controller", False))
+    prepared["is_direct_controller"] = bool(prepared.get("is_direct_controller", False))
+    prepared["is_intermediate_controller"] = bool(
+        prepared.get("is_intermediate_controller", False)
+    )
+    prepared["is_ultimate_controller"] = bool(
+        prepared.get("is_ultimate_controller", prepared["is_actual_controller"])
+    )
+    prepared["is_terminal_inference"] = bool(
+        prepared.get("is_terminal_inference", False)
+    )
     prepared["control_type"] = (
         canonicalize_control_type(prepared.get("control_type"))
         or prepared.get("control_type")
+    )
+    prepared["control_tier"] = normalize_control_tier(
+        prepared.get("control_tier")
+    ) or (
+        "ultimate"
+        if prepared["is_ultimate_controller"]
+        else "direct"
+        if prepared["is_direct_controller"]
+        else "intermediate"
+        if prepared["is_intermediate_controller"]
+        else "candidate"
     )
     prepared["semantic_flags"] = serialize_json_text(prepared.get("semantic_flags"))
 
@@ -481,6 +666,12 @@ def prepare_country_attribution_values(
     prepared["attribution_type"] = (
         canonicalize_attribution_type(prepared.get("attribution_type"))
         or prepared.get("attribution_type")
+    )
+    prepared["look_through_applied"] = bool(
+        prepared.get("look_through_applied", False)
+    )
+    prepared["attribution_layer"] = normalize_attribution_layer(
+        prepared.get("attribution_layer")
     )
     prepared["source_mode"] = normalize_country_source_mode(
         prepared.get("source_mode")

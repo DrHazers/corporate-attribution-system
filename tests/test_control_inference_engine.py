@@ -43,6 +43,21 @@ def _expected_equity_path(
                     "numeric_factor": path_score,
                     "semantic_factor": "1.0000",
                     "confidence_weight": "0.9000",
+                    "reliability_score": "0.9000",
+                    "reliability_flags": None,
+                    "confidence_weight_source": "edge_reliability_model_v1_1",
+                    "reliability_breakdown": {
+                        "adjustments": [],
+                        "base_confidence": "0.9000",
+                        "caps": [],
+                        "confidence_level": "high",
+                        "matched": ["confidence_level:high", "source_present"],
+                        "metadata_keys": [],
+                        "model": "edge_reliability_model_v1_1",
+                        "notes": [],
+                        "score": "0.9000",
+                        "source_count": 0,
+                    },
                     "flags": ["equity"],
                     "evidence_summary": None,
                 }
@@ -169,14 +184,17 @@ def test_agreement_only_inference_persists_semantic_mode(tmp_path):
             assert len(relationships) == 1
             assert relationships[0].control_mode == "semantic"
             assert relationships[0].control_type == "agreement_control"
-            assert json.loads(relationships[0].semantic_flags) == ["agreement"]
+            assert "agreement" in json.loads(relationships[0].semantic_flags)
             assert relationships[0].is_actual_controller is True
             basis = json.loads(relationships[0].basis)
             assert basis["classification"] == "agreement_control"
             assert basis["selection_reason"] == "actual_controller_strict_control_threshold_met"
             assert basis["control_mode"] == "semantic"
             assert basis["aggregator"] == "sum_cap"
-            assert basis["semantic_flags"] == ["agreement"]
+            assert "agreement" in basis["semantic_flags"]
+            assert basis["top_paths"][0]["edges"][0]["evidence_breakdown"]["model"] == (
+                "semantic_control_evidence_model_v1_1"
+            )
             assert attribution is not None
             assert attribution.attribution_type == "agreement_control"
             assert attribution.actual_control_country == "Cayman Islands"

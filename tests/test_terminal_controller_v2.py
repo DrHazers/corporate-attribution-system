@@ -579,6 +579,213 @@ def test_insufficient_evidence_keeps_only_leading_candidate(tmp_path):
         engine.dispose()
 
 
+def test_strong_vie_control_promotes_to_ultimate_person(tmp_path):
+    _, engine, session_factory = make_session_factory(
+        tmp_path,
+        "terminal_strong_vie_v2.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="Strong VIE Target",
+                stock_code="TERM_VIE",
+                incorporation_country="Cayman Islands",
+                listing_country="NASDAQ",
+            )
+            target = create_entity(
+                db,
+                entity_name="Strong VIE Target Entity",
+                company_id=company.id,
+                entity_subtype="operating_company",
+            )
+            wfoe = create_entity(
+                db,
+                entity_name="VIE Control WFOE",
+                country="China",
+                entity_subtype="operating_company",
+                controller_class="corporate_group",
+            )
+            founder = create_entity(
+                db,
+                entity_name="Founder Person",
+                entity_type="person",
+                country="China",
+                controller_class="natural_person",
+            )
+            public_float = create_entity(
+                db,
+                entity_name="Public Float",
+                entity_type="institution",
+                country="Various",
+            )
+
+            create_structure(
+                db,
+                from_entity_id=wfoe.id,
+                to_entity_id=target.id,
+                relation_type="vie",
+                voting_ratio="62.0000",
+                economic_ratio="95.0000",
+                effective_control_ratio="62.0000",
+                is_beneficial_control=True,
+                control_basis="exclusive business cooperation agreement and equity pledge",
+                agreement_scope=(
+                    "exclusive option, equity pledge, voting proxy and "
+                    "business cooperation"
+                ),
+                relation_metadata={
+                    "effective_voting_ratio": 0.62,
+                    "benefit_capture": 0.95,
+                },
+                remarks="contractual control should enter unified inference",
+            )
+            create_structure(
+                db,
+                from_entity_id=founder.id,
+                to_entity_id=wfoe.id,
+                relation_type="equity",
+                holding_ratio="90.0000",
+                effective_control_ratio="90.0000",
+            )
+            create_structure(
+                db,
+                from_entity_id=public_float.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="20.0000",
+                effective_control_ratio="20.0000",
+                confidence_level="medium",
+            )
+            db.commit()
+
+            inference = infer_controllers(build_control_context(db), company.id)
+            result = refresh_company_control_analysis(db, company.id)
+            relationships = _relationships_by_name(db, company.id)
+            country = get_company_country_attribution_data(db, company.id)
+
+            assert inference.direct_controller_entity_id == wfoe.id
+            assert inference.actual_controller_entity_id == founder.id
+            assert inference.terminal_failure_reason is None
+            assert inference.attribution_type == "mixed_control"
+
+            assert result["direct_controller_entity_id"] == wfoe.id
+            assert result["actual_controller_entity_id"] == founder.id
+            assert result["look_through_applied"] is True
+
+            direct_row = relationships["VIE Control WFOE"]
+            ultimate_row = relationships["Founder Person"]
+            assert direct_row.is_direct_controller is True
+            assert direct_row.control_tier == "direct"
+            assert direct_row.control_type == "agreement_control"
+            assert direct_row.review_status == "auto"
+            assert "needs_review" not in json.loads(direct_row.semantic_flags)
+
+            assert ultimate_row.is_actual_controller is True
+            assert ultimate_row.is_ultimate_controller is True
+            assert ultimate_row.control_tier == "ultimate"
+            assert ultimate_row.control_type == "mixed_control"
+            assert ultimate_row.promotion_source_entity_id == wfoe.id
+
+            assert country["actual_control_country"] == "China"
+            assert country["attribution_type"] == "mixed_control"
+            assert country["actual_controller_entity_id"] == founder.id
+            assert country["direct_controller_entity_id"] == wfoe.id
+            assert country["attribution_layer"] == "ultimate_controller_country"
+    finally:
+        engine.dispose()
+
+
+def test_low_confidence_slim_majority_does_not_write_actual_controller(tmp_path):
+    _, engine, session_factory = make_session_factory(
+        tmp_path,
+        "terminal_low_confidence_slim_majority_v2.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="Low Confidence Slim Majority Target",
+                stock_code="TERM_LOWCONF",
+                incorporation_country="Singapore",
+                listing_country="Singapore",
+            )
+            target = create_entity(
+                db,
+                entity_name="Low Confidence Slim Majority Target Entity",
+                company_id=company.id,
+            )
+            sponsor = create_entity(
+                db,
+                entity_name="Low Confidence Sponsor",
+                country="Singapore",
+            )
+            runner_up = create_entity(
+                db,
+                entity_name="Runner-up Holder",
+                country="Malaysia",
+            )
+
+            create_structure(
+                db,
+                from_entity_id=sponsor.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="51.0000",
+                effective_control_ratio="51.0000",
+                confidence_level="low",
+                remarks="slim majority with low confidence",
+            )
+            create_structure(
+                db,
+                from_entity_id=runner_up.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="27.0000",
+                effective_control_ratio="27.0000",
+                confidence_level="medium",
+            )
+            db.commit()
+
+            inference = infer_controllers(build_control_context(db), company.id)
+            result = refresh_company_control_analysis(db, company.id)
+            relationships = _relationships_by_name(db, company.id)
+            country = get_company_country_attribution_data(db, company.id)
+
+            assert inference.direct_controller_entity_id is None
+            assert inference.actual_controller_entity_id is None
+            assert inference.leading_candidate_entity_id == sponsor.id
+            assert inference.leading_candidate_classification == (
+                "weak_evidence_control_candidate"
+            )
+            assert inference.terminal_failure_reason == "low_confidence_evidence_weak"
+
+            assert result["direct_controller_entity_id"] is None
+            assert result["actual_controller_entity_id"] is None
+            assert result["leading_candidate_entity_id"] == sponsor.id
+            assert result["terminal_failure_reason"] == "low_confidence_evidence_weak"
+
+            sponsor_row = relationships["Low Confidence Sponsor"]
+            assert sponsor_row.is_direct_controller is False
+            assert sponsor_row.is_actual_controller is False
+            assert sponsor_row.is_ultimate_controller is False
+            assert sponsor_row.control_tier == "candidate"
+            assert sponsor_row.basis is not None
+            assert json.loads(sponsor_row.basis)["selection_reason"] == (
+                "leading_candidate_weak_evidence"
+            )
+
+            assert country["actual_control_country"] == "Singapore"
+            assert country["attribution_type"] == "fallback_incorporation"
+            assert country["actual_controller_entity_id"] is None
+            assert country["direct_controller_entity_id"] is None
+            assert country["basis"]["terminal_failure_reason"] == (
+                "low_confidence_evidence_weak"
+            )
+    finally:
+        engine.dispose()
+
+
 def test_spv_direct_controller_promotes_to_parent_ultimate(tmp_path):
     _, engine, session_factory = make_session_factory(
         tmp_path,

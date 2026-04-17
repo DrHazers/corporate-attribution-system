@@ -25,6 +25,7 @@ from backend.analysis.control_inference import (
     DEFAULT_DISCLOSURE_THRESHOLD,
     DEFAULT_MAX_DEPTH,
     DEFAULT_MIN_PATH_SCORE,
+    EDGE_RELIABILITY_MODEL_VERSION,
     DEFAULT_RELATIVE_CONTROL_CANDIDATE_THRESHOLD,
     DEFAULT_RELATIVE_CONTROL_GAP_THRESHOLD,
     DEFAULT_RELATIVE_CONTROL_RATIO_THRESHOLD,
@@ -1061,6 +1062,8 @@ def _candidate_selection_reason(
             return "leading_candidate_close_competition"
         if classification == "significant_influence_candidate":
             return "leading_candidate_significant_influence"
+        if classification == "weak_evidence_control_candidate":
+            return "leading_candidate_weak_evidence"
         if classification == "joint_control":
             return "joint_control_candidate"
         if classification == "absolute_control":
@@ -1152,6 +1155,8 @@ def _build_unified_candidate_payload(
         "classification": _control_type_from_candidate(candidate),
         "control_type": _control_type_from_candidate(candidate),
         "control_mode": candidate.control_mode,
+        "confidence_model": EDGE_RELIABILITY_MODEL_VERSION,
+        "path_confidence_strategy": "multiplicative_edge_reliability_weighted_by_path_score",
         "control_ratio": serialize_pct_score(candidate.total_score),
         "semantic_flags": _semantic_flags_for_storage(candidate.semantic_flags),
         "total_confidence": serialize_unit_score(candidate.total_confidence),
@@ -1196,8 +1201,9 @@ def _build_unified_candidate_payload(
 def _build_canonical_path_edges_from_factors(
     path_state: PathState,
 ) -> list[dict]:
-    return [
-        {
+    edges: list[dict] = []
+    for factor in path_state.edge_factors:
+        edge = {
             "structure_id": factor.structure_id,
             "from_entity_id": factor.from_entity_id,
             "to_entity_id": factor.to_entity_id,
@@ -1206,11 +1212,20 @@ def _build_canonical_path_edges_from_factors(
             "numeric_factor": serialize_unit_score(factor.numeric_factor),
             "semantic_factor": serialize_unit_score(factor.semantic_factor),
             "confidence_weight": serialize_unit_score(factor.confidence_weight),
+            "reliability_score": serialize_unit_score(factor.reliability_score),
+            "reliability_flags": list(factor.reliability_flags) or None,
+            "confidence_weight_source": factor.evidence.get("confidence_weight_source"),
             "flags": list(factor.flags),
             "evidence_summary": factor.evidence.get("evidence_summary"),
         }
-        for factor in path_state.edge_factors
-    ]
+        reliability_breakdown = factor.evidence.get("reliability_breakdown")
+        if reliability_breakdown is not None:
+            edge["reliability_breakdown"] = reliability_breakdown
+        evidence_breakdown = factor.evidence.get("evidence_breakdown")
+        if evidence_breakdown is not None:
+            edge["evidence_breakdown"] = evidence_breakdown
+        edges.append(edge)
+    return edges
 
 
 def _serialize_unified_path(
@@ -1283,6 +1298,8 @@ def _build_unified_basis_payload(
         "as_of": context.as_of.isoformat(),
         "classification": classification,
         "control_mode": candidate.control_mode,
+        "confidence_model": EDGE_RELIABILITY_MODEL_VERSION,
+        "path_confidence_strategy": "multiplicative_edge_reliability_weighted_by_path_score",
         "entity_id": candidate.controller_entity_id,
         "evidence_summary": list(candidate.evidence_summary),
         "path_count": len(candidate.path_states),
@@ -1395,6 +1412,8 @@ def _build_unified_country_basis_payload(
         "as_of": context.as_of.isoformat(),
         "classification": result.attribution_type,
         "attribution_type": result.attribution_type,
+        "confidence_model": EDGE_RELIABILITY_MODEL_VERSION,
+        "path_confidence_strategy": "multiplicative_edge_reliability_weighted_by_path_score",
         "controller_status": result.controller_status,
         "actual_control_country": result.actual_control_country,
         "actual_controller_entity_id": result.actual_controller_entity_id,
@@ -1875,6 +1894,17 @@ def _normalize_path_edges(
                         edge.get("confidence_weight")
                     )
                     or "1.0000",
+                    "reliability_score": _serialize_probability(
+                        edge.get("reliability_score")
+                    )
+                    or _serialize_probability(edge.get("confidence_weight"))
+                    or "1.0000",
+                    "reliability_flags": _parse_json_list(
+                        edge.get("reliability_flags")
+                    ),
+                    "confidence_weight_source": edge.get("confidence_weight_source"),
+                    "reliability_breakdown": edge.get("reliability_breakdown"),
+                    "evidence_breakdown": edge.get("evidence_breakdown"),
                     "flags": _parse_json_list(edge.get("flags")) or [],
                     "evidence_summary": edge.get("evidence_summary"),
                 }
@@ -1909,6 +1939,17 @@ def _normalize_path_edges(
                         edge.get("confidence_weight")
                     )
                     or "1.0000",
+                    "reliability_score": _serialize_probability(
+                        edge.get("reliability_score")
+                    )
+                    or _serialize_probability(edge.get("confidence_weight"))
+                    or "1.0000",
+                    "reliability_flags": _parse_json_list(
+                        edge.get("reliability_flags")
+                    ),
+                    "confidence_weight_source": edge.get("confidence_weight_source"),
+                    "reliability_breakdown": edge.get("reliability_breakdown"),
+                    "evidence_breakdown": edge.get("evidence_breakdown"),
                     "flags": _parse_json_list(edge.get("flags")) or [],
                     "evidence_summary": edge.get("evidence_summary"),
                 }
@@ -1935,6 +1976,11 @@ def _normalize_path_edges(
                 "numeric_factor": _serialize_probability(ratio),
                 "semantic_factor": "1.0000",
                 "confidence_weight": "1.0000",
+                "reliability_score": "1.0000",
+                "reliability_flags": None,
+                "confidence_weight_source": None,
+                "reliability_breakdown": None,
+                "evidence_breakdown": None,
                 "flags": [relation_type_fallback] if relation_type_fallback else [],
                 "evidence_summary": None,
             }

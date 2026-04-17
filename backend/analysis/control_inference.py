@@ -1100,12 +1100,80 @@ def _entity_prefers_terminal_stop(entity: ShareholderEntity | None) -> bool:
     return False
 
 
-def _promotion_block_reason(edge: EdgeFactor | None) -> str | None:
+def _edge_relation_metadata(edge: EdgeFactor | None) -> dict[str, Any]:
+    if edge is None:
+        return {}
+    metadata = edge.evidence.get("relation_metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _joint_control_entity_ids(
+    candidates: list[ControllerCandidate],
+    *,
+    control_threshold: Decimal,
+) -> tuple[int, ...]:
+    explicit_joint_ids = sorted(
+        candidate.controller_entity_id
+        for candidate in candidates
+        if candidate.is_joint_control
+    )
+    if explicit_joint_ids:
+        return tuple(explicit_joint_ids)
+
+    control_candidates = sorted(
+        [
+            candidate
+            for candidate in candidates
+            if candidate.control_level == "control"
+            and candidate.total_score >= control_threshold
+        ],
+        key=_controller_sort_key,
+    )
+    if len(control_candidates) < 2:
+        return tuple()
+
+    leader = control_candidates[0]
+    tied_control_ids = sorted(
+        candidate.controller_entity_id
+        for candidate in control_candidates
+        if abs(candidate.total_score - leader.total_score) <= PROB_QUANT
+    )
+    if len(tied_control_ids) >= 2:
+        return tuple(tied_control_ids)
+    return tuple()
+
+
+def _promotion_block_reason(
+    edge: EdgeFactor | None,
+    *,
+    parent_entity: ShareholderEntity | None = None,
+) -> str | None:
     if edge is None:
         return None
     termination_signal = (edge.termination_signal or "none").strip().lower()
     if termination_signal and termination_signal != "none":
         return termination_signal
+    metadata = _edge_relation_metadata(edge)
+    if _has_truthy_metadata(
+        metadata,
+        "beneficial_owner_unknown",
+        "beneficial_owner_undisclosed",
+        "beneficial_owner_not_disclosed",
+        "ultimate_owner_unknown",
+    ):
+        return "beneficial_owner_unknown"
+    if edge.relation_type == "nominee":
+        disclosed = bool(edge.evidence.get("is_beneficial_control")) or bool(
+            getattr(parent_entity, "beneficial_owner_disclosed", False)
+        ) or _has_truthy_metadata(
+            metadata,
+            "beneficial_owner_disclosed",
+            "beneficial_owner_confirmed",
+            "beneficiary_controls",
+            "beneficial_owner_controls",
+        )
+        if not disclosed:
+            return "nominee_without_disclosure"
     if not edge.look_through_allowed:
         return "look_through_not_allowed"
     return None
@@ -1117,6 +1185,10 @@ def _promotion_reason_for_entity(
 ) -> str:
     if parent_entity is not None and bool(getattr(parent_entity, "ultimate_owner_hint", False)):
         return "beneficial_owner_priority"
+    if parent_entity is not None and bool(
+        getattr(parent_entity, "beneficial_owner_disclosed", False)
+    ):
+        return "disclosed_ultimate_parent"
     entity_subtype = (getattr(current_entity, "entity_subtype", None) or "").strip().lower()
     if entity_subtype in {"holding_company", "spv", "shell_company", "state_owned_vehicle"}:
         return "look_through_holding_vehicle"
@@ -1302,8 +1374,32 @@ def infer_controllers(
         key=_direct_candidate_sort_key,
     )
     direct_candidate = direct_candidates[0] if direct_candidates else None
+    direct_joint_controller_entity_ids = _joint_control_entity_ids(
+        direct_candidates,
+        control_threshold=control_threshold,
+    )
+    direct_candidate_block_reason = (
+        _promotion_block_reason(
+            _candidate_immediate_edge(direct_candidate),
+            parent_entity=(
+                context.entity_map.get(direct_candidate.controller_entity_id)
+                if direct_candidate is not None
+                else None
+            ),
+        )
+        if direct_candidate is not None
+        else None
+    )
     direct_controller_entity_id = (
-        direct_candidate.controller_entity_id if direct_candidate is not None else None
+        direct_candidate.controller_entity_id
+        if (
+            direct_candidate is not None
+            and direct_candidate.control_level == "control"
+            and not direct_joint_controller_entity_ids
+            and direct_candidate_block_reason
+            not in {"beneficial_owner_unknown", "nominee_without_disclosure"}
+        )
+        else None
     )
     direct_controller_country = (
         _resolve_controller_country(
@@ -1330,14 +1426,14 @@ def infer_controllers(
     leading_override_classification: str | None = None
 
     if direct_candidate is not None:
-        promotion_path_entity_ids.append(direct_candidate.controller_entity_id)
-        terminal_score_by_entity_id[direct_candidate.controller_entity_id] = (
-            direct_candidate.total_score
-        )
         audit_events.append(
             InferenceAuditEvent(
                 action_type="candidate_selected",
-                action_reason="direct_controller_candidate",
+                action_reason=(
+                    "direct_controller_candidate"
+                    if direct_controller_entity_id is not None
+                    else "leading_direct_candidate"
+                ),
                 from_entity_id=direct_candidate.controller_entity_id,
                 to_entity_id=target_entity.id,
                 score_before=direct_candidate.total_score,
@@ -1348,33 +1444,62 @@ def infer_controllers(
                     ),
                     "control_level": direct_candidate.control_level,
                     "min_depth": direct_candidate.min_depth,
+                    "is_structural_joint_control": bool(
+                        direct_joint_controller_entity_ids
+                    ),
+                    "direct_block_reason": direct_candidate_block_reason,
                 },
             )
         )
 
     if direct_candidate is None:
         pass
-    elif direct_candidate.is_joint_control:
-        joint_controller_entity_ids = (direct_candidate.controller_entity_id,)
+    elif direct_joint_controller_entity_ids:
+        joint_controller_entity_ids = direct_joint_controller_entity_ids
         terminal_failure_reason = "joint_control"
         actual_control_country = "undetermined"
         attribution_type = "joint_control"
         attribution_layer = "joint_control_undetermined"
         country_inference_reason = "joint_control_no_single_country"
-        leading_override_entity_id = direct_candidate.controller_entity_id
+        leading_override_entity_id = joint_controller_entity_ids[0]
         leading_override_classification = "joint_control"
         audit_events.append(
             InferenceAuditEvent(
                 action_type="joint_control_detected",
                 action_reason="direct_layer_joint_control",
+                from_entity_id=joint_controller_entity_ids[0],
+                to_entity_id=target_entity.id,
+                score_before=direct_candidate.total_score,
+                score_after=None,
+                details={
+                    "joint_controller_entity_ids": list(joint_controller_entity_ids)
+                },
+            )
+        )
+    elif direct_candidate_block_reason in {
+        "beneficial_owner_unknown",
+        "nominee_without_disclosure",
+    }:
+        terminal_failure_reason = direct_candidate_block_reason
+        leading_override_entity_id = direct_candidate.controller_entity_id
+        leading_override_classification = "absolute_control"
+        audit_events.append(
+            InferenceAuditEvent(
+                action_type="promotion_blocked",
+                action_reason=direct_candidate_block_reason,
                 from_entity_id=direct_candidate.controller_entity_id,
                 to_entity_id=target_entity.id,
                 score_before=direct_candidate.total_score,
                 score_after=None,
-                details={},
+                details={"stage": "direct_layer"},
             )
         )
     else:
+        if direct_controller_entity_id is not None:
+            promotion_path_entity_ids.append(direct_candidate.controller_entity_id)
+            terminal_score_by_entity_id[direct_candidate.controller_entity_id] = (
+                direct_candidate.total_score
+            )
         current_company_candidate = direct_candidate
         current_entity_id = direct_candidate.controller_entity_id
         visited_entity_ids = {current_entity_id}
@@ -1426,27 +1551,16 @@ def infer_controllers(
                 if candidate.min_depth == 1
             ]
 
-            parent_company_candidates = [
-                company_candidate_map[candidate.controller_entity_id]
-                for candidate in parent_candidates
-                if candidate.controller_entity_id in company_candidate_map
-            ]
+            parent_joint_controller_entity_ids = _joint_control_entity_ids(
+                parent_candidates,
+                control_threshold=control_threshold,
+            )
 
-            if any(candidate.is_joint_control for candidate in parent_candidates):
-                joint_controller_entity_ids = tuple(
-                    sorted(
-                        candidate.controller_entity_id
-                        for candidate in parent_candidates
-                        if candidate.is_joint_control
-                    )
-                )
+            if parent_joint_controller_entity_ids:
+                joint_controller_entity_ids = parent_joint_controller_entity_ids
                 terminal_failure_reason = "joint_control"
-                leading_override_entity_id, leading_override_classification = (
-                    _override_leading_candidate_from_subset(
-                        parent_company_candidates,
-                        significant_threshold=significant_threshold,
-                    )
-                )
+                leading_override_entity_id = joint_controller_entity_ids[0]
+                leading_override_classification = "joint_control"
                 actual_control_country = "undetermined"
                 attribution_type = "joint_control"
                 attribution_layer = "joint_control_undetermined"
@@ -1478,12 +1592,17 @@ def infer_controllers(
             )
 
             if not parent_control_candidates:
+                stop_reason = (
+                    "upstream_significant_influence_only"
+                    if parent_candidates
+                    else "no_parent_control_above_threshold"
+                )
                 if current_company_candidate.control_level == "control":
                     actual_controller_entity_id = current_entity_id
                     audit_events.append(
                         InferenceAuditEvent(
                             action_type="terminal_confirmed",
-                            action_reason="no_parent_control_above_threshold",
+                            action_reason=stop_reason,
                             from_entity_id=current_entity_id,
                             to_entity_id=target_entity.id,
                             score_before=current_company_candidate.total_score,
@@ -1492,11 +1611,11 @@ def infer_controllers(
                         )
                     )
                 else:
-                    terminal_failure_reason = "no_parent_control_above_threshold"
+                    terminal_failure_reason = "insufficient_evidence"
                     audit_events.append(
                         InferenceAuditEvent(
                             action_type="promotion_blocked",
-                            action_reason="no_parent_control_above_threshold",
+                            action_reason=stop_reason,
                             from_entity_id=current_entity_id,
                             to_entity_id=target_entity.id,
                             score_before=current_company_candidate.total_score,
@@ -1577,40 +1696,22 @@ def infer_controllers(
                     )
                 break
 
-            block_reason = _promotion_block_reason(_candidate_immediate_edge(winner))
-            if block_reason in {"beneficial_owner_unknown", "nominee_without_disclosure"}:
-                terminal_failure_reason = block_reason
-                if winner_company_candidate is not None:
-                    leading_override_entity_id = winner_company_candidate.controller_entity_id
-                    leading_override_classification = (
-                        "significant_influence_candidate"
-                        if winner_company_candidate.control_level
-                        == "significant_influence"
-                        else "absolute_control"
-                    )
-                audit_events.append(
-                    InferenceAuditEvent(
-                        action_type="promotion_blocked",
-                        action_reason=block_reason,
-                        from_entity_id=current_entity_id,
-                        to_entity_id=winner.controller_entity_id,
-                        score_before=current_company_candidate.total_score,
-                        score_after=winner.total_score,
-                        details={},
-                    )
-                )
-                break
-
             if (
                 winner_company_candidate is None
                 or winner_company_candidate.control_level != "control"
             ):
+                stop_reason = "no_parent_control_above_target_threshold"
+                if (
+                    winner_company_candidate is not None
+                    and winner_company_candidate.control_level == "significant_influence"
+                ):
+                    stop_reason = "upstream_significant_influence_only"
                 if current_company_candidate.control_level == "control":
                     actual_controller_entity_id = current_entity_id
                     audit_events.append(
                         InferenceAuditEvent(
                             action_type="terminal_confirmed",
-                            action_reason="no_parent_control_above_target_threshold",
+                            action_reason=stop_reason,
                             from_entity_id=current_entity_id,
                             to_entity_id=target_entity.id,
                             score_before=current_company_candidate.total_score,
@@ -1625,7 +1726,7 @@ def infer_controllers(
                     audit_events.append(
                         InferenceAuditEvent(
                             action_type="promotion_blocked",
-                            action_reason="insufficient_evidence",
+                            action_reason=stop_reason,
                             from_entity_id=current_entity_id,
                             to_entity_id=winner.controller_entity_id,
                             score_before=current_company_candidate.total_score,
@@ -1635,6 +1736,31 @@ def infer_controllers(
                             },
                         )
                     )
+                break
+
+            block_reason = _promotion_block_reason(
+                _candidate_immediate_edge(winner),
+                parent_entity=context.entity_map.get(winner.controller_entity_id),
+            )
+            if block_reason in {"beneficial_owner_unknown", "nominee_without_disclosure"}:
+                terminal_failure_reason = block_reason
+                leading_override_entity_id = winner_company_candidate.controller_entity_id
+                leading_override_classification = (
+                    "significant_influence_candidate"
+                    if winner_company_candidate.control_level == "significant_influence"
+                    else "absolute_control"
+                )
+                audit_events.append(
+                    InferenceAuditEvent(
+                        action_type="promotion_blocked",
+                        action_reason=block_reason,
+                        from_entity_id=current_entity_id,
+                        to_entity_id=winner.controller_entity_id,
+                        score_before=current_company_candidate.total_score,
+                        score_after=winner.total_score,
+                        details={},
+                    )
+                )
                 break
 
             if block_reason in {"protective_right_only", "look_through_not_allowed"}:

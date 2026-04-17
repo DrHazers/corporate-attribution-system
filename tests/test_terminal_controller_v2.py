@@ -8,6 +8,7 @@ os.environ["CONTROL_INFERENCE_DISABLE_LEGACY_FALLBACK"] = "1"
 
 from sqlalchemy.orm import Session
 
+from backend.analysis.control_inference import build_control_context, infer_controllers
 from backend.analysis.control_chain import analyze_control_chain
 from backend.analysis.ownership_penetration import (
     get_company_country_attribution_data,
@@ -227,17 +228,15 @@ def test_terminal_close_competition_keeps_leading_candidate_without_actual(tmp_p
                 db,
                 from_entity_id=parent_c.id,
                 to_entity_id=direct.id,
-                relation_type="equity",
-                holding_ratio="50.0000",
-                effective_control_ratio="50.0000",
+                relation_type="voting_right",
+                voting_ratio="55.0000",
             )
             create_structure(
                 db,
                 from_entity_id=parent_d.id,
                 to_entity_id=direct.id,
-                relation_type="equity",
-                holding_ratio="50.0000",
-                effective_control_ratio="50.0000",
+                relation_type="voting_right",
+                voting_ratio="53.0000",
             )
             db.commit()
 
@@ -306,5 +305,446 @@ def test_fallback_incorporation_still_works_in_v2_layout(tmp_path):
             assert country["actual_control_country"] == "Germany"
             assert country["attribution_type"] == "fallback_incorporation"
             assert country["attribution_layer"] == "fallback_incorporation"
+    finally:
+        engine.dispose()
+
+
+def test_direct_controller_can_also_be_terminal_ultimate(tmp_path):
+    _, engine, session_factory = make_session_factory(
+        tmp_path,
+        "terminal_direct_is_ultimate_v2.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="Direct Ultimate Target",
+                stock_code="TERM004",
+                incorporation_country="China",
+                listing_country="China",
+            )
+            target = create_entity(
+                db,
+                entity_name="Direct Ultimate Target Entity",
+                company_id=company.id,
+                entity_subtype="operating_company",
+                controller_class="corporate_group",
+            )
+            direct = create_entity(
+                db,
+                entity_name="Direct Controller A",
+                country="Singapore",
+                entity_subtype="operating_company",
+                controller_class="corporate_group",
+            )
+            minor = create_entity(
+                db,
+                entity_name="Minor Holder B",
+                country="Japan",
+                controller_class="corporate_group",
+            )
+
+            create_structure(
+                db,
+                from_entity_id=direct.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="65.0000",
+                effective_control_ratio="65.0000",
+            )
+            create_structure(
+                db,
+                from_entity_id=minor.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="35.0000",
+                effective_control_ratio="35.0000",
+            )
+            db.commit()
+
+            inference = infer_controllers(build_control_context(db), company.id)
+            result = refresh_company_control_analysis(db, company.id)
+            control_chain = analyze_control_chain(db, company.id)
+            country = get_company_country_attribution_data(db, company.id)
+            relationships = _relationships_by_name(db, company.id)
+
+            assert inference.direct_controller_entity_id == direct.id
+            assert inference.actual_controller_entity_id == direct.id
+            assert inference.look_through_applied is False
+            assert inference.terminal_failure_reason is None
+
+            assert result["direct_controller_entity_id"] == direct.id
+            assert result["actual_controller_entity_id"] == direct.id
+            assert result["look_through_applied"] is False
+
+            direct_row = relationships["Direct Controller A"]
+            assert direct_row.is_direct_controller is True
+            assert direct_row.is_ultimate_controller is True
+            assert direct_row.is_actual_controller is True
+            assert direct_row.control_tier == "ultimate"
+            assert str(direct_row.terminal_control_score) == "0.650000"
+
+            assert control_chain["direct_controller"] is not None
+            assert control_chain["actual_controller"] is not None
+            assert control_chain["direct_controller"]["controller_name"] == "Direct Controller A"
+            assert control_chain["actual_controller"]["controller_name"] == "Direct Controller A"
+
+            assert country["actual_control_country"] == "Singapore"
+            assert country["actual_controller_entity_id"] == direct.id
+            assert country["direct_controller_entity_id"] == direct.id
+            assert country["attribution_layer"] == "direct_controller_country"
+            assert country["country_inference_reason"] == "derived_from_direct_controller"
+            assert country["look_through_applied"] is False
+    finally:
+        engine.dispose()
+
+
+def test_promotion_blocked_by_structural_joint_control(tmp_path):
+    _, engine, session_factory = make_session_factory(
+        tmp_path,
+        "terminal_structural_joint_control_v2.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="Structural Joint Control Target",
+                stock_code="TERM005",
+                incorporation_country="China",
+                listing_country="China",
+            )
+            target = create_entity(
+                db,
+                entity_name="Structural Joint Control Target Entity",
+                company_id=company.id,
+                entity_subtype="operating_company",
+                controller_class="corporate_group",
+            )
+            direct = create_entity(
+                db,
+                entity_name="Direct Controller A",
+                country="Singapore",
+                entity_subtype="holding_company",
+                controller_class="corporate_group",
+            )
+            parent_c = create_entity(
+                db,
+                entity_name="Joint Parent C",
+                country="USA",
+                controller_class="corporate_group",
+            )
+            parent_d = create_entity(
+                db,
+                entity_name="Joint Parent D",
+                country="Canada",
+                controller_class="corporate_group",
+            )
+
+            create_structure(
+                db,
+                from_entity_id=direct.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="70.0000",
+                effective_control_ratio="70.0000",
+            )
+            create_structure(
+                db,
+                from_entity_id=parent_c.id,
+                to_entity_id=direct.id,
+                relation_type="equity",
+                holding_ratio="50.0000",
+                effective_control_ratio="50.0000",
+            )
+            create_structure(
+                db,
+                from_entity_id=parent_d.id,
+                to_entity_id=direct.id,
+                relation_type="equity",
+                holding_ratio="50.0000",
+                effective_control_ratio="50.0000",
+            )
+            db.commit()
+
+            inference = infer_controllers(build_control_context(db), company.id)
+            result = refresh_company_control_analysis(db, company.id)
+            control_chain = analyze_control_chain(db, company.id)
+            country = get_company_country_attribution_data(db, company.id)
+
+            assert inference.actual_controller_entity_id is None
+            assert inference.direct_controller_entity_id == direct.id
+            assert inference.joint_controller_entity_ids == tuple(sorted((parent_c.id, parent_d.id)))
+            assert inference.terminal_failure_reason == "joint_control"
+
+            assert result["actual_controller_entity_id"] is None
+            assert result["direct_controller_entity_id"] == direct.id
+            assert result["terminal_failure_reason"] == "joint_control"
+
+            assert control_chain["actual_controller"] is None
+            assert control_chain["direct_controller"] is not None
+            assert control_chain["direct_controller"]["controller_name"] == "Direct Controller A"
+            assert control_chain["leading_candidate"] is not None
+            assert control_chain["controller_status"] == "joint_control_identified"
+
+            assert country["actual_control_country"] == "undetermined"
+            assert country["actual_controller_entity_id"] is None
+            assert country["direct_controller_entity_id"] == direct.id
+            assert country["attribution_type"] == "joint_control"
+            assert country["attribution_layer"] == "joint_control_undetermined"
+            assert country["basis"]["joint_controller_entity_ids"] == [parent_c.id, parent_d.id]
+    finally:
+        engine.dispose()
+
+
+def test_insufficient_evidence_keeps_only_leading_candidate(tmp_path):
+    _, engine, session_factory = make_session_factory(
+        tmp_path,
+        "terminal_insufficient_evidence_v2.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="Insufficient Evidence Target",
+                stock_code="TERM006",
+                incorporation_country="Germany",
+                listing_country="Germany",
+            )
+            target = create_entity(
+                db,
+                entity_name="Insufficient Evidence Target Entity",
+                company_id=company.id,
+                entity_subtype="operating_company",
+            )
+            candidate_a = create_entity(
+                db,
+                entity_name="Leading Candidate A",
+                country="USA",
+            )
+            candidate_b = create_entity(
+                db,
+                entity_name="Runner-up Candidate B",
+                country="Japan",
+            )
+
+            create_structure(
+                db,
+                from_entity_id=candidate_a.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="45.0000",
+                effective_control_ratio="45.0000",
+            )
+            create_structure(
+                db,
+                from_entity_id=candidate_b.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="30.0000",
+                effective_control_ratio="30.0000",
+            )
+            db.commit()
+
+            inference = infer_controllers(build_control_context(db), company.id)
+            result = refresh_company_control_analysis(db, company.id)
+            control_chain = analyze_control_chain(db, company.id)
+            country = get_company_country_attribution_data(db, company.id)
+
+            assert inference.direct_controller_entity_id is None
+            assert inference.actual_controller_entity_id is None
+            assert inference.leading_candidate_entity_id == candidate_a.id
+            assert inference.terminal_failure_reason == "insufficient_evidence"
+
+            assert result["direct_controller_entity_id"] is None
+            assert result["actual_controller_entity_id"] is None
+            assert result["leading_candidate_entity_id"] == candidate_a.id
+            assert result["terminal_failure_reason"] == "insufficient_evidence"
+
+            assert control_chain["actual_controller"] is None
+            assert control_chain["direct_controller"] is None
+            assert control_chain["leading_candidate"] is not None
+            assert control_chain["leading_candidate"]["controller_name"] == "Leading Candidate A"
+            assert control_chain["leading_candidate"]["controller_status"] == (
+                "no_actual_controller_but_leading_candidate_found"
+            )
+
+            assert country["actual_control_country"] == "Germany"
+            assert country["attribution_type"] == "fallback_incorporation"
+            assert country["attribution_layer"] == "fallback_incorporation"
+            assert country["actual_controller_entity_id"] is None
+            assert country["direct_controller_entity_id"] is None
+            assert country["basis"]["terminal_failure_reason"] == "insufficient_evidence"
+            assert country["basis"]["leading_candidate_entity_id"] == candidate_a.id
+    finally:
+        engine.dispose()
+
+
+def test_spv_direct_controller_promotes_to_parent_ultimate(tmp_path):
+    _, engine, session_factory = make_session_factory(
+        tmp_path,
+        "terminal_spv_promotion_v2.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="SPV Promotion Target",
+                stock_code="TERM007",
+                incorporation_country="China",
+                listing_country="China",
+            )
+            target = create_entity(
+                db,
+                entity_name="SPV Promotion Target Entity",
+                company_id=company.id,
+                entity_subtype="operating_company",
+                controller_class="corporate_group",
+            )
+            direct_spv = create_entity(
+                db,
+                entity_name="Direct SPV A",
+                country="Cayman Islands",
+                entity_subtype="spv",
+                look_through_priority=3,
+                controller_class="corporate_group",
+            )
+            ultimate = create_entity(
+                db,
+                entity_name="Ultimate Parent C",
+                country="France",
+                controller_class="corporate_group",
+            )
+            other_direct = create_entity(
+                db,
+                entity_name="Other Direct Holder B",
+                country="Japan",
+                controller_class="corporate_group",
+            )
+
+            create_structure(
+                db,
+                from_entity_id=direct_spv.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="70.0000",
+                effective_control_ratio="70.0000",
+            )
+            create_structure(
+                db,
+                from_entity_id=ultimate.id,
+                to_entity_id=direct_spv.id,
+                relation_type="equity",
+                holding_ratio="90.0000",
+                effective_control_ratio="90.0000",
+            )
+            create_structure(
+                db,
+                from_entity_id=other_direct.id,
+                to_entity_id=target.id,
+                relation_type="equity",
+                holding_ratio="30.0000",
+                effective_control_ratio="30.0000",
+            )
+            db.commit()
+
+            result = refresh_company_control_analysis(db, company.id)
+            relationships = _relationships_by_name(db, company.id)
+            country = get_company_country_attribution_data(db, company.id)
+
+            assert result["direct_controller_entity_id"] == direct_spv.id
+            assert result["actual_controller_entity_id"] == ultimate.id
+            assert result["look_through_applied"] is True
+
+            direct_row = relationships["Direct SPV A"]
+            ultimate_row = relationships["Ultimate Parent C"]
+            assert direct_row.is_direct_controller is True
+            assert direct_row.is_intermediate_controller is True
+            assert ultimate_row.is_ultimate_controller is True
+            assert ultimate_row.promotion_source_entity_id == direct_spv.id
+            assert ultimate_row.promotion_reason == "look_through_holding_vehicle"
+            assert str(ultimate_row.terminal_control_score) == "0.900000"
+
+            assert country["actual_control_country"] == "France"
+            assert country["attribution_layer"] == "ultimate_controller_country"
+            assert country["look_through_applied"] is True
+    finally:
+        engine.dispose()
+
+
+def test_nominee_without_disclosed_beneficial_owner_does_not_force_ultimate(tmp_path):
+    _, engine, session_factory = make_session_factory(
+        tmp_path,
+        "terminal_nominee_without_disclosure_v2.db",
+    )
+    try:
+        with session_factory() as db:
+            company = create_company(
+                db,
+                name="Nominee Disclosure Target",
+                stock_code="TERM008",
+                incorporation_country="United Kingdom",
+                listing_country="United Kingdom",
+            )
+            target = create_entity(
+                db,
+                entity_name="Nominee Disclosure Target Entity",
+                company_id=company.id,
+                entity_subtype="operating_company",
+            )
+            nominee_holder = create_entity(
+                db,
+                entity_name="Nominee Holder A",
+                country="British Virgin Islands",
+                entity_subtype="holding_company",
+                controller_class="corporate_group",
+                beneficial_owner_disclosed=False,
+            )
+
+            create_structure(
+                db,
+                from_entity_id=nominee_holder.id,
+                to_entity_id=target.id,
+                relation_type="nominee",
+                control_basis="beneficial owner retains control through nominee arrangement",
+                relation_metadata={"beneficial_owner_disclosed": False},
+                confidence_level="high",
+            )
+            db.commit()
+
+            inference = infer_controllers(build_control_context(db), company.id)
+            result = refresh_company_control_analysis(db, company.id)
+            control_chain = analyze_control_chain(db, company.id)
+            country = get_company_country_attribution_data(db, company.id)
+            relationships = _relationships_by_name(db, company.id)
+
+            assert inference.actual_controller_entity_id is None
+            assert inference.direct_controller_entity_id is None
+            assert inference.leading_candidate_entity_id == nominee_holder.id
+            assert inference.terminal_failure_reason == "nominee_without_disclosure"
+
+            assert result["actual_controller_entity_id"] is None
+            assert result["direct_controller_entity_id"] is None
+            assert result["leading_candidate_entity_id"] == nominee_holder.id
+            assert result["terminal_failure_reason"] == "nominee_without_disclosure"
+
+            nominee_row = relationships["Nominee Holder A"]
+            assert nominee_row.is_actual_controller is False
+            assert nominee_row.is_direct_controller is False
+            assert nominee_row.is_ultimate_controller is False
+            assert nominee_row.control_tier == "candidate"
+            assert nominee_row.terminal_failure_reason == "nominee_without_disclosure"
+
+            assert control_chain["actual_controller"] is None
+            assert control_chain["direct_controller"] is None
+            assert control_chain["leading_candidate"] is not None
+            assert control_chain["leading_candidate"]["controller_name"] == "Nominee Holder A"
+
+            assert country["actual_control_country"] == "United Kingdom"
+            assert country["attribution_type"] == "fallback_incorporation"
+            assert country["attribution_layer"] == "fallback_incorporation"
+            assert country["actual_controller_entity_id"] is None
+            assert country["direct_controller_entity_id"] is None
+            assert country["basis"]["terminal_failure_reason"] == "nominee_without_disclosure"
+            assert country["basis"]["leading_candidate_entity_id"] == nominee_holder.id
     finally:
         engine.dispose()

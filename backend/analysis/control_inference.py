@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from types import SimpleNamespace
@@ -33,6 +33,11 @@ DEFAULT_CLOSE_COMPETITION_GAP_THRESHOLD = Decimal("0.05")
 DEFAULT_CLOSE_COMPETITION_RATIO_THRESHOLD = Decimal("1.1")
 DEFAULT_MIN_ACTUAL_CONFIDENCE = Decimal("0.50")
 DEFAULT_BARE_CONTROL_MARGIN = Decimal("0.10")
+DEFAULT_ROLLUP_NEAR_THRESHOLD_MARGIN = Decimal("0.03")
+DEFAULT_ROLLUP_PARENT_CONTROL_THRESHOLD = Decimal("0.80")
+DEFAULT_ROLLUP_DIRECT_CONTROL_THRESHOLD = Decimal("0.55")
+DEFAULT_TRUST_PARENT_CONTROL_THRESHOLD = Decimal("0.67")
+DEFAULT_TRUST_INDIRECT_CONTROL_THRESHOLD = Decimal("0.35")
 DEFAULT_AGGREGATOR = "sum_cap"
 SEMANTIC_EVIDENCE_MODEL_VERSION = "semantic_control_evidence_model_v1_1"
 EDGE_RELIABILITY_MODEL_VERSION = "edge_reliability_model_v1_1"
@@ -75,6 +80,47 @@ JOINT_CONTROL_KEYWORDS = (
     "all shareholders",
     "together decide",
 )
+ROLLUP_INTERMEDIARY_ENTITY_SUBTYPES = {
+    "holding_company",
+    "spv",
+    "shell_company",
+    "state_owned_vehicle",
+    "investment_vehicle",
+    "control_platform",
+    "sponsor_vehicle",
+    "wfoe",
+}
+TRUST_TERMINAL_ENTITY_SUBTYPES = {
+    "family_trust",
+    "trust_arrangement",
+}
+TRUST_TERMINAL_NAME_KEYWORDS = (
+    "family trust",
+    "beneficiary trust",
+    "controlling beneficiary trust",
+    "disclosed trust arrangement",
+)
+TRUST_VEHICLE_NAME_KEYWORDS = (
+    "trust holding",
+    "trust holdings",
+    "trust vehicle",
+    "trust platform",
+    "trust ventures",
+    "trust venture",
+    "trust partners",
+    "trust capital",
+    "trust integrated",
+    "trust group",
+    "trust next group",
+)
+TERMINAL_CONTROLLER_CLASSES = {
+    "natural_person",
+    "state",
+}
+TRUST_PARENT_SIGNAL_CONTROLLER_CLASSES = {
+    *TERMINAL_CONTROLLER_CLASSES,
+    "family",
+}
 STRONG_CONTROL_KEYWORDS = (
     "full control",
     "exclusive",
@@ -691,6 +737,7 @@ def _score_exclusivity_signals(text: str) -> tuple[Decimal, set[str], dict[str, 
     matched: list[str] = []
     score = ZERO
     exclusive_keywords = (
+        "exclusive operational agreement",
         "exclusive business cooperation",
         "exclusive business cooperation agreement",
         "exclusive option",
@@ -724,6 +771,50 @@ def _score_exclusivity_signals(text: str) -> tuple[Decimal, set[str], dict[str, 
         _clamp_probability(score),
         matched=matched,
     )
+
+
+def _protective_rights_override_profile(
+    relation_type: str,
+    *,
+    power_score: Decimal,
+    economics_score: Decimal,
+    exclusivity_score: Decimal,
+    disclosure_score: Decimal,
+    control_ratio_hint: Decimal,
+    text_ratio: Decimal | None,
+    flags: set[str],
+) -> dict[str, Decimal] | None:
+    if "protective_rights" not in flags or "joint_control_candidate" in flags:
+        return None
+
+    ratio_hint = control_ratio_hint
+    if text_ratio is not None:
+        ratio_hint = max(ratio_hint, text_ratio)
+
+    has_strong_power = power_score >= Decimal("0.65")
+    has_disclosed_control = disclosure_score >= Decimal("0.65")
+    has_majority_like_ratio = ratio_hint >= DEFAULT_CONTROL_THRESHOLD
+    if not (has_strong_power and has_disclosed_control and has_majority_like_ratio):
+        return None
+
+    if relation_type == "voting_right" and ratio_hint >= Decimal("0.55"):
+        return {
+            "semantic_floor": Decimal("0.20"),
+            "reliability_cap": Decimal("0.65"),
+        }
+
+    if relation_type == "agreement":
+        semantic_floor = Decimal("0.52")
+        if exclusivity_score >= Decimal("0.60"):
+            semantic_floor = Decimal("0.60")
+        if economics_score >= Decimal("0.45"):
+            semantic_floor = max(semantic_floor, Decimal("0.65"))
+        return {
+            "semantic_floor": semantic_floor,
+            "reliability_cap": Decimal("0.65"),
+        }
+
+    return None
 
 
 def _score_disclosure_signals(
@@ -784,6 +875,7 @@ def _score_reliability_signals(
     *,
     source_payloads: tuple[dict[str, Any], ...] = tuple(),
     semantic_flags: set[str] | tuple[str, ...] | None = None,
+    protective_rights_profile: dict[str, Decimal] | None = None,
 ) -> EdgeReliabilityScore:
     flags: set[str] = set()
     matched: list[str] = []
@@ -938,7 +1030,16 @@ def _score_reliability_signals(
         PROTECTIVE_RIGHTS_KEYWORDS,
     ):
         flags.add("protective_rights")
-        apply_cap("protective_rights_cap", Decimal("0.45"))
+        protective_cap = Decimal("0.45")
+        protective_cap_signal = "protective_rights_cap"
+        if protective_rights_profile is not None:
+            protective_cap = protective_rights_profile.get(
+                "reliability_cap",
+                protective_cap,
+            )
+            if protective_cap > Decimal("0.45"):
+                protective_cap_signal = "protective_rights_strong_control_cap"
+        apply_cap(protective_cap_signal, protective_cap)
 
     evidence_insufficient = _has_truthy_metadata(
         metadata,
@@ -994,8 +1095,15 @@ def _combine_semantic_evidence_score(
     text_ratio: Decimal | None,
     legacy_ratio_proxy: Decimal,
     flags: set[str],
+    protective_rights_profile: dict[str, Decimal] | None = None,
 ) -> Decimal:
     if "protective_rights" in flags:
+        if "joint_control_candidate" in flags:
+            return Decimal("0.50")
+        if protective_rights_profile is not None:
+            return _clamp_probability(
+                protective_rights_profile.get("semantic_floor", Decimal("0.05"))
+            )
         return Decimal("0.08") if relation_type == "vie" else Decimal("0.05")
 
     if relation_type == "board_control":
@@ -1093,6 +1201,25 @@ def _score_semantic_evidence(
     if _contains_any(text, ("full voting control", "controlling voting rights")):
         flags.add("full_voting_control")
 
+    text_ratio = _try_extract_ratio_from_text(text)
+    protective_rights_profile = _protective_rights_override_profile(
+        relation_type,
+        power_score=power_score,
+        economics_score=economics_score,
+        exclusivity_score=exclusivity_score,
+        disclosure_score=disclosure_score,
+        control_ratio_hint=_metadata_ratio(
+            metadata,
+            "effective_control_ratio",
+            "effective_voting_ratio",
+            "voting_ratio",
+        ),
+        text_ratio=text_ratio,
+        flags=flags,
+    )
+    if protective_rights_profile is not None:
+        flags.add("qualified_protective_rights")
+
     reliability = _score_reliability_signals(
         relation_type,
         structure,
@@ -1100,6 +1227,7 @@ def _score_semantic_evidence(
         text,
         source_payloads=source_payloads,
         semantic_flags=flags,
+        protective_rights_profile=protective_rights_profile,
     )
     flags.update(reliability.flags)
 
@@ -1109,9 +1237,10 @@ def _score_semantic_evidence(
         economics_score=economics_score,
         exclusivity_score=exclusivity_score,
         disclosure_score=disclosure_score,
-        text_ratio=_try_extract_ratio_from_text(text),
+        text_ratio=text_ratio,
         legacy_ratio_proxy=_normalize_ratio_to_unit(metadata.get("legacy_ratio_proxy")),
         flags=flags,
+        protective_rights_profile=protective_rights_profile,
     )
 
     if semantic_strength < DEFAULT_CONTROL_THRESHOLD and "protective_rights" not in flags:
@@ -1728,13 +1857,24 @@ def _is_close_competition(
     )
 
 
-def _entity_prefers_terminal_stop(entity: ShareholderEntity | None) -> bool:
+def _entity_text_blob(entity: ShareholderEntity | None) -> str:
+    if entity is None:
+        return ""
+    return _coalesce_text(
+        getattr(entity, "entity_name", None),
+        getattr(entity, "notes", None),
+        getattr(entity, "entity_subtype", None),
+        getattr(entity, "controller_class", None),
+    )
+
+
+def _entity_has_terminal_identity(entity: ShareholderEntity | None) -> bool:
     if entity is None:
         return False
     if bool(getattr(entity, "ultimate_owner_hint", False)):
         return True
     controller_class = (getattr(entity, "controller_class", None) or "").strip().lower()
-    if controller_class in {"natural_person", "state"}:
+    if controller_class in TERMINAL_CONTROLLER_CLASSES:
         return True
     if entity.entity_type in {"person", "government"}:
         return True
@@ -1745,6 +1885,58 @@ def _entity_prefers_terminal_stop(entity: ShareholderEntity | None) -> bool:
     }:
         return True
     return False
+
+
+def _entity_is_trust_like(entity: ShareholderEntity | None) -> bool:
+    if entity is None:
+        return False
+    entity_subtype = (getattr(entity, "entity_subtype", None) or "").strip().lower()
+    return "trust" in _entity_text_blob(entity) or "trust" in entity_subtype
+
+
+def _entity_is_terminal_trust(entity: ShareholderEntity | None) -> bool:
+    if entity is None or not _entity_is_trust_like(entity):
+        return False
+    entity_subtype = (getattr(entity, "entity_subtype", None) or "").strip().lower()
+    text = _entity_text_blob(entity)
+    if (
+        entity_subtype not in TRUST_TERMINAL_ENTITY_SUBTYPES
+        and not _contains_any(text, TRUST_TERMINAL_NAME_KEYWORDS)
+    ):
+        return False
+    return bool(getattr(entity, "beneficial_owner_disclosed", False)) or bool(
+        getattr(entity, "ultimate_owner_hint", False)
+    ) or (getattr(entity, "controller_class", None) or "").strip().lower() in {
+        "family",
+        "natural_person",
+    }
+
+
+def _entity_is_trust_vehicle(entity: ShareholderEntity | None) -> bool:
+    if entity is None or not _entity_is_trust_like(entity):
+        return False
+    if _entity_is_terminal_trust(entity):
+        return False
+    entity_subtype = (getattr(entity, "entity_subtype", None) or "").strip().lower()
+    if entity_subtype in ROLLUP_INTERMEDIARY_ENTITY_SUBTYPES:
+        return True
+    return _contains_any(_entity_text_blob(entity), TRUST_VEHICLE_NAME_KEYWORDS)
+
+
+def _entity_supports_trust_lookthrough(entity: ShareholderEntity | None) -> bool:
+    if entity is None:
+        return False
+    controller_class = (getattr(entity, "controller_class", None) or "").strip().lower()
+    return (
+        _entity_has_terminal_identity(entity)
+        or _entity_is_terminal_trust(entity)
+        or controller_class in TRUST_PARENT_SIGNAL_CONTROLLER_CLASSES
+        or bool(getattr(entity, "beneficial_owner_disclosed", False))
+    )
+
+
+def _entity_prefers_terminal_stop(entity: ShareholderEntity | None) -> bool:
+    return _entity_has_terminal_identity(entity) or _entity_is_terminal_trust(entity)
 
 
 def _edge_relation_metadata(edge: EdgeFactor | None) -> dict[str, Any]:
@@ -1808,7 +2000,7 @@ def _promotion_block_reason(
         "weak_evidence",
     ):
         return "evidence_insufficient"
-    if "protective_rights" in edge.flags:
+    if "protective_rights" in edge.flags and "qualified_protective_rights" not in edge.flags:
         return "protective_right_only"
     if _has_truthy_metadata(
         metadata,
@@ -1893,12 +2085,88 @@ def _promotion_reason_for_entity(
         getattr(parent_entity, "beneficial_owner_disclosed", False)
     ):
         return "disclosed_ultimate_parent"
+    if _entity_is_trust_vehicle(current_entity) and _entity_supports_trust_lookthrough(
+        parent_entity
+    ):
+        return "trust_vehicle_lookthrough"
     entity_subtype = (getattr(current_entity, "entity_subtype", None) or "").strip().lower()
     if entity_subtype in {"holding_company", "spv", "shell_company", "state_owned_vehicle"}:
         return "look_through_holding_vehicle"
     if current_entity is not None and bool(getattr(current_entity, "beneficial_owner_disclosed", False)):
         return "disclosed_ultimate_parent"
     return "controls_direct_controller"
+
+
+def _is_rollup_intermediary_entity(entity: ShareholderEntity | None) -> bool:
+    if entity is None:
+        return False
+    if entity.entity_type in {"person", "government"}:
+        return False
+    entity_subtype = (getattr(entity, "entity_subtype", None) or "").strip().lower()
+    return entity_subtype in ROLLUP_INTERMEDIARY_ENTITY_SUBTYPES or _entity_is_trust_vehicle(
+        entity
+    )
+
+
+def _promotable_rollup_company_candidate(
+    *,
+    current_entity: ShareholderEntity | None,
+    current_company_candidate: ControllerCandidate,
+    winner: ControllerCandidate,
+    winner_company_candidate: ControllerCandidate | None,
+    parent_entity: ShareholderEntity | None,
+    control_threshold: Decimal,
+) -> ControllerCandidate | None:
+    if winner_company_candidate is None:
+        return None
+    if winner_company_candidate.control_level == "control":
+        return winner_company_candidate
+    if (
+        winner_company_candidate.control_level == "significant_influence"
+        and _entity_is_trust_vehicle(current_entity)
+        and _entity_supports_trust_lookthrough(parent_entity)
+        and current_company_candidate.control_level == "control"
+        and current_company_candidate.control_mode == "numeric"
+        and current_company_candidate.total_score >= DEFAULT_CONTROL_THRESHOLD
+        and winner.control_level == "control"
+        and winner.control_mode == "numeric"
+        and winner.total_score >= DEFAULT_TRUST_PARENT_CONTROL_THRESHOLD
+        and winner_company_candidate.control_mode == "numeric"
+        and winner_company_candidate.total_score >= DEFAULT_TRUST_INDIRECT_CONTROL_THRESHOLD
+        and winner_company_candidate.total_confidence >= DEFAULT_MIN_ACTUAL_CONFIDENCE
+    ):
+        return replace(
+            winner_company_candidate,
+            control_level="control",
+            is_joint_control=False,
+        )
+    if winner_company_candidate.control_level != "significant_influence":
+        return None
+    if not _is_rollup_intermediary_entity(current_entity):
+        return None
+    if current_company_candidate.control_level != "control":
+        return None
+    if current_company_candidate.control_mode != "numeric":
+        return None
+    if current_company_candidate.total_score < DEFAULT_ROLLUP_DIRECT_CONTROL_THRESHOLD:
+        return None
+    if winner.control_level != "control" or winner.control_mode != "numeric":
+        return None
+    if winner.total_score < DEFAULT_ROLLUP_PARENT_CONTROL_THRESHOLD:
+        return None
+    if winner_company_candidate.control_mode != "numeric":
+        return None
+    if winner_company_candidate.total_score < (
+        control_threshold - DEFAULT_ROLLUP_NEAR_THRESHOLD_MARGIN
+    ):
+        return None
+    if winner_company_candidate.total_confidence < DEFAULT_MIN_ACTUAL_CONFIDENCE:
+        return None
+    return replace(
+        winner_company_candidate,
+        control_level="control",
+        is_joint_control=False,
+    )
 
 
 def _override_leading_candidate_from_subset(
@@ -2345,6 +2613,32 @@ def infer_controllers(
             winner_company_candidate = company_candidate_map.get(
                 winner.controller_entity_id
             )
+            rollup_override_applied = False
+            promoted_winner_company_candidate = _promotable_rollup_company_candidate(
+                current_entity=current_entity,
+                current_company_candidate=current_company_candidate,
+                winner=winner,
+                winner_company_candidate=winner_company_candidate,
+                parent_entity=context.entity_map.get(winner.controller_entity_id),
+                control_threshold=control_threshold,
+            )
+            if (
+                promoted_winner_company_candidate is not None
+                and winner_company_candidate is not None
+                and winner_company_candidate.control_level != "control"
+            ):
+                winner_company_candidate = promoted_winner_company_candidate
+                company_candidate_map[winner_company_candidate.controller_entity_id] = (
+                    winner_company_candidate
+                )
+                for idx, candidate in enumerate(candidates):
+                    if (
+                        candidate.controller_entity_id
+                        == winner_company_candidate.controller_entity_id
+                    ):
+                        candidates[idx] = winner_company_candidate
+                        break
+                rollup_override_applied = True
 
             if _is_close_competition(winner, runner_up):
                 terminal_failure_reason = "close_competition"
@@ -2528,7 +2822,8 @@ def infer_controllers(
                     details={
                         "company_target_score_after_promotion": serialize_unit_score(
                             winner_company_candidate.total_score
-                        )
+                        ),
+                        "near_threshold_rollup_override": rollup_override_applied,
                     },
                 )
             )

@@ -255,6 +255,100 @@ function relationshipPath(relationship, context, fallbackIndex = 0) {
   }
 }
 
+function relationshipPaths(relationship, context, fallbackIndex = 0) {
+  const controller = controllerStep(relationship, fallbackIndex)
+  const paths = getControlPaths(relationship)
+
+  if (!paths.length) {
+    return [relationshipPath(relationship, context, fallbackIndex)]
+  }
+
+  return paths.map((pathItem) => ({
+    relationship,
+    pathItem,
+    steps: normalizePathDirection(
+      buildPathSteps(pathItem, {
+        entityLookup: context.entityLookup,
+        controller,
+        target: context.target,
+      }),
+      {
+        controller,
+        target: context.target,
+      },
+    ),
+  }))
+}
+
+function pathScore(pathItem = {}) {
+  return (
+    ratioFromValue(pathItem?.path_score_pct) ??
+    ratioFromValue(pathItem?.path_score) ??
+    null
+  )
+}
+
+function buildPathTextFromSteps(steps = []) {
+  return steps.map((step) => safeText(step?.name, `Entity ${step?.id}`)).filter(Boolean).join(' → ')
+}
+
+function pathKind(path = {}) {
+  return path.steps.length <= 2 ? 'direct' : 'indirect'
+}
+
+function buildPathDescriptor(path = {}, index = 0) {
+  const kind = pathKind(path)
+  return {
+    index,
+    kind,
+    kindLabel: kind === 'direct' ? '直接路径' : '间接路径',
+    text: buildPathTextFromSteps(path.steps),
+    score: pathScore(path.pathItem),
+    nodeCount: path.steps.length,
+  }
+}
+
+function buildMultiPathConvergenceMetadata(relationships = [], context) {
+  return relationships
+    .map((relationship, index) => {
+      const controllerId = toKey(relationship?.controller_entity_id)
+      if (!controllerId) {
+        return null
+      }
+
+      const paths = relationshipPaths(relationship, context, index).filter(
+        (path) => path.steps.length >= 2,
+      )
+      if (paths.length < 2) {
+        return null
+      }
+
+      const directPaths = paths.filter((path) => pathKind(path) === 'direct')
+      const indirectPaths = paths.filter((path) => pathKind(path) === 'indirect')
+      if (!directPaths.length || !indirectPaths.length) {
+        return null
+      }
+
+      const descriptors = paths.map((path, pathIndex) => buildPathDescriptor(path, pathIndex))
+      const primaryPath = descriptors[0]
+      const supplementalPaths = descriptors.slice(1)
+
+      return {
+        nodeId: controllerId,
+        controllerName: safeText(relationship?.controller_name, `Entity ${controllerId}`),
+        pathCount: descriptors.length,
+        directPathCount: directPaths.length,
+        indirectPathCount: indirectPaths.length,
+        supplementalPathCount: supplementalPaths.length,
+        hasDirectAndIndirect: true,
+        primaryPath,
+        supplementalPaths,
+        summary: '同一主体同时存在直接路径与间接路径，图中仅突出主解释路径。',
+      }
+    })
+    .filter(Boolean)
+}
+
 function fallbackPathFromCountryAttribution(countryAttribution = {}, entityLookup, target) {
   const basis = countryAttribution?.basis || {}
   const topPaths = Array.isArray(basis?.top_paths) ? basis.top_paths : []
@@ -718,6 +812,11 @@ export function buildControlStructureModel({
     entityLookup,
     target,
   }
+  const multiPathConvergences = buildMultiPathConvergenceMetadata(relationships, context)
+  const multiPathConvergenceByNodeId = Object.fromEntries(
+    multiPathConvergences.map((item) => [item.nodeId, item]),
+  )
+  const multiPathConvergenceNodeIds = multiPathConvergences.map((item) => item.nodeId)
 
   const primaryPath =
     summaryRelationship ? relationshipPath(summaryRelationship, context, 0) : { steps: [] }
@@ -845,6 +944,7 @@ export function buildControlStructureModel({
       hasUpstream: incomingEdges.length > 0,
       upstreamCount: incomingEdges.length,
       isSummaryController: sameId(node.id, summaryControllerId),
+      multiPathConvergence: multiPathConvergenceByNodeId[node.id] || null,
     }
   })
 
@@ -895,6 +995,9 @@ export function buildControlStructureModel({
     keyPathEdgeIds: Array.from(keyPath.pairKeys),
     keyPathFirstLayerId: keyPath.firstLayerId,
     keyParentByNodeId: Object.fromEntries(keyPath.keyParentByNodeId.entries()),
+    multiPathConvergences,
+    multiPathConvergenceByNodeId,
+    multiPathConvergenceNodeIds,
     defaultExpandedNodeIds,
     omittedRelationshipCount: 0,
     expansionSeed: buildExpansionSeed({

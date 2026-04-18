@@ -9,6 +9,8 @@ export const CONTROL_STRUCTURE_LAYOUT_CONFIG = {
   rootGap: 76,
   branchGap: 42,
   branchPadding: 16,
+  mainAxisCorridorHalfWidth: 188,
+  sideBranchGap: 88,
   nodeSize: {
     actualSummary: { width: 176, height: 72, radius: 36 },
     target: { width: 186, height: 72, radius: 10 },
@@ -21,6 +23,10 @@ export const CONTROL_STRUCTURE_LAYOUT_CONFIG = {
 
 function toKey(value) {
   return value === null || value === undefined ? '' : String(value)
+}
+
+function sameId(left, right) {
+  return toKey(left) !== '' && toKey(left) === toKey(right)
 }
 
 function safeText(value, fallback = '') {
@@ -89,6 +95,43 @@ function buildIncomingMap(edges = []) {
 function buildKeyParentMap(model = {}) {
   const raw = model?.keyParentByNodeId || {}
   return new Map(Object.entries(raw).map(([key, value]) => [toKey(key), toKey(value)]))
+}
+
+function uniqueIds(ids = []) {
+  return Array.from(new Set((Array.isArray(ids) ? ids : []).map((id) => toKey(id)).filter(Boolean)))
+}
+
+function buildMainPathContext(model = {}) {
+  const targetId = toKey(model?.targetId)
+  const summaryControllerId = toKey(model?.summaryControllerId)
+  const keyPathIds = uniqueIds(model?.keyPathNodeIds)
+  const nodeIds =
+    keyPathIds.length >= 2 && (!targetId || keyPathIds[keyPathIds.length - 1] === targetId)
+      ? keyPathIds
+      : uniqueIds([summaryControllerId, targetId])
+  const renderKeyById = new Map()
+  const rowById = new Map()
+  const indexById = new Map()
+  const lastIndex = Math.max(0, nodeIds.length - 1)
+
+  nodeIds.forEach((nodeId, index) => {
+    indexById.set(nodeId, index)
+    rowById.set(nodeId, index - lastIndex)
+    renderKeyById.set(
+      nodeId,
+      nodeId === targetId ? 'target-node' : index === 0 ? 'summary-controller' : `main-path:${index}:${nodeId}`,
+    )
+  })
+
+  return {
+    nodeIds,
+    nodeIdSet: new Set(nodeIds),
+    renderKeyById,
+    rowById,
+    indexById,
+    targetId,
+    summaryControllerId,
+  }
 }
 
 function isExpanded(expandedByNodeId = {}, nodeId) {
@@ -216,12 +259,19 @@ function buildLowerRootInstances({
   expandedByNodeId,
   keyParentByNodeId,
   summaryControllerId,
+  mainPathNodeIds = [],
+  suppressedBranchNodeIds = [],
 }) {
   const targetId = toKey(model?.targetId)
+  const mainPathNodeIdSet = new Set(uniqueIds(mainPathNodeIds))
   const rootIds = (Array.isArray(model?.directUpstreamIds) ? model.directUpstreamIds : [])
     .map((id) => toKey(id))
-    .filter((id) => id && id !== summaryControllerId)
-  const excludedNodeIds = new Set([summaryControllerId].filter(Boolean))
+    .filter((id) => id && id !== summaryControllerId && !mainPathNodeIdSet.has(id))
+  const excludedNodeIds = new Set(
+    [summaryControllerId, ...mainPathNodeIdSet, ...suppressedBranchNodeIds].filter(
+      (id) => id && id !== targetId,
+    ),
+  )
 
   return rootIds
     .map((rootId) =>
@@ -242,44 +292,107 @@ function buildLowerRootInstances({
     .filter(Boolean)
 }
 
-function buildUpperRootInstances({
-  model,
+function mainPathExtraIncomingEdges({
+  anchorId,
+  incomingMap,
+  nodeMap,
+  keyParentByNodeId,
+  excludedNodeIds = new Set(),
+}) {
+  const anchorKey = toKey(anchorId)
+  const keyParentId = keyParentByNodeId.get(anchorKey)
+  return sortUpstreamEdges(
+    (incomingMap.get(anchorKey) || []).filter((edge) => {
+      const sourceId = toKey(edge.source)
+      return sourceId && sourceId !== keyParentId && !excludedNodeIds.has(sourceId)
+    }),
+    nodeMap,
+    anchorKey,
+    keyParentByNodeId,
+  )
+}
+
+function buildMainPathBranchStats({
+  mainPath,
+  incomingMap,
+  nodeMap,
+  keyParentByNodeId,
+  expandedByNodeId,
+  suppressedBranchNodeIds = [],
+}) {
+  const stats = new Map()
+  const excludedNodeIds = new Set([...mainPath.nodeIds, ...suppressedBranchNodeIds])
+
+  mainPath.nodeIds.slice(0, -1).forEach((anchorId) => {
+    const extraEdges = mainPathExtraIncomingEdges({
+      anchorId,
+      incomingMap,
+      nodeMap,
+      keyParentByNodeId,
+      excludedNodeIds,
+    })
+    const expanded = isExpanded(expandedByNodeId, anchorId)
+    stats.set(anchorId, {
+      expandable: extraEdges.length > 0,
+      expanded,
+      hiddenUpstreamCount: expanded ? 0 : extraEdges.length,
+    })
+  })
+
+  return stats
+}
+
+function buildMainPathBranchGroups({
+  mainPath,
   nodeMap,
   incomingMap,
   expandedByNodeId,
   keyParentByNodeId,
-  summaryControllerId,
+  suppressedBranchNodeIds = [],
 }) {
-  const targetId = toKey(model?.targetId)
-  const rootIds = (Array.isArray(model?.summaryControllerUpstreamIds)
-    ? model.summaryControllerUpstreamIds
-    : [])
-    .map((id) => toKey(id))
-    .filter((id) => id && id !== targetId)
+  const excludedNodeIds = new Set([...mainPath.nodeIds, ...suppressedBranchNodeIds])
 
-  if (!summaryControllerId || !rootIds.length || !isExpanded(expandedByNodeId, summaryControllerId)) {
-    return []
-  }
+  return mainPath.nodeIds.slice(0, -1).map((anchorId) => {
+    const anchorRow = mainPath.rowById.get(anchorId)
+    const anchorRenderKey = mainPath.renderKeyById.get(anchorId)
+    if (!anchorRenderKey || anchorRow === undefined || !isExpanded(expandedByNodeId, anchorId)) {
+      return {
+        anchorId,
+        anchorRenderKey,
+        roots: [],
+      }
+    }
 
-  const excludedNodeIds = new Set([targetId].filter(Boolean))
+    const roots = mainPathExtraIncomingEdges({
+      anchorId,
+      incomingMap,
+      nodeMap,
+      keyParentByNodeId,
+      excludedNodeIds,
+    })
+      .map((edge) =>
+        rebuildInstanceTree({
+          canonicalId: edge.source,
+          downstreamId: anchorId,
+          depthFromTarget: anchorRow - 1,
+          branchDirection: 'up',
+          rootId: edge.source,
+          nodeMap,
+          incomingMap,
+          expandedByNodeId,
+          keyParentByNodeId,
+          excludedNodeIds,
+          lineage: new Set(mainPath.nodeIds),
+        }),
+      )
+      .filter(Boolean)
 
-  return rootIds
-    .map((rootId) =>
-      rebuildInstanceTree({
-        canonicalId: rootId,
-        downstreamId: summaryControllerId,
-        depthFromTarget: -2,
-        branchDirection: 'up',
-        rootId,
-        nodeMap,
-        incomingMap,
-        expandedByNodeId,
-        keyParentByNodeId,
-        excludedNodeIds,
-        lineage: new Set([targetId, summaryControllerId]),
-      }),
-    )
-    .filter(Boolean)
+    return {
+      anchorId,
+      anchorRenderKey,
+      roots,
+    }
+  })
 }
 
 function measureInstanceTree(instance, nodeMap) {
@@ -424,6 +537,39 @@ function placeRootBands(roots, nodeMap, rootEdgeBySourceId, centerRootId = '') {
   return placements
 }
 
+function placeSideBranchBands(roots, nodeMap, rootEdgeBySourceId) {
+  const corridorHalfWidth = CONTROL_STRUCTURE_LAYOUT_CONFIG.mainAxisCorridorHalfWidth
+  const sideGap = CONTROL_STRUCTURE_LAYOUT_CONFIG.sideBranchGap
+  const ordered = [...roots].sort((left, right) => {
+    const priorityDelta =
+      rootPriority(left, rootEdgeBySourceId) - rootPriority(right, rootEdgeBySourceId)
+    if (priorityDelta !== 0) {
+      return priorityDelta
+    }
+    return safeText(nodeMap.get(toKey(left.canonicalId))?.name).localeCompare(
+      safeText(nodeMap.get(toKey(right.canonicalId))?.name),
+    )
+  })
+  const placements = []
+  let rightCursor = corridorHalfWidth
+  let leftCursor = -corridorHalfWidth
+
+  ordered.forEach((root, index) => {
+    if (index % 2 === 0) {
+      const centerX = rightCursor + root.bandWidth / 2
+      placements.push({ instance: root, centerX })
+      rightCursor = centerX + root.bandWidth / 2 + sideGap
+      return
+    }
+
+    const centerX = leftCursor - root.bandWidth / 2
+    placements.push({ instance: root, centerX })
+    leftCursor = centerX - root.bandWidth / 2 - sideGap
+  })
+
+  return placements
+}
+
 function collectPlacedTreeNodes(rootPlacements = [], rootDownstreamRenderKey = 'target-node') {
   const placed = []
   rootPlacements.forEach(({ instance, centerX }) => {
@@ -444,56 +590,74 @@ function buildRenderNodes({
   edgeMap,
   placedTreeNodes,
   expandedByNodeId,
+  mainPath,
+  mainPathBranchStats,
 }) {
   const renderNodes = []
   const summaryControllerId = toKey(model?.summaryControllerId)
   const targetId = toKey(model?.targetId)
-  const summaryControllerUpstreamIds = (
-    Array.isArray(model?.summaryControllerUpstreamIds) ? model.summaryControllerUpstreamIds : []
-  )
-    .map((id) => toKey(id))
-    .filter(Boolean)
-  const summaryControllerNode = summaryControllerId
-    ? nodeMap.get(summaryControllerId) || {
-        id: summaryControllerId,
-        name: model?.summaryControllerName || '控制主体',
-        entityType: model?.summaryControllerType || 'other',
-      }
-    : null
-  const summaryExpanded = summaryControllerId
-    ? isExpanded(expandedByNodeId, summaryControllerId)
-    : false
+  const mainPathIds =
+    mainPath?.nodeIds?.length >= 2 ? mainPath.nodeIds : uniqueIds([summaryControllerId, targetId])
+  const parentOfTargetId = mainPathIds[mainPathIds.length - 2] || summaryControllerId
 
-  if (summaryControllerNode) {
-    const size = getNodeSize('actualSummary')
-    const relationEdge = edgeMap.get(`${summaryControllerId}->${targetId}`)
+  mainPathIds.slice(0, -1).forEach((nodeId, index) => {
+    const isTopController = index === 0
+    const role = isTopController
+      ? 'actualSummary'
+      : index === mainPathIds.length - 2
+        ? 'direct'
+        : 'intermediate'
+    const canonical =
+      nodeMap.get(nodeId) ||
+      (sameId(nodeId, summaryControllerId)
+        ? {
+            id: nodeId,
+            name: model?.summaryControllerName || '控制主体',
+            entityType: model?.summaryControllerType || 'other',
+          }
+        : null)
+
+    if (!canonical) {
+      return
+    }
+
+    const size = getNodeSize(role)
+    const nextId = mainPathIds[index + 1] || targetId
+    const relationEdge = edgeMap.get(`${nodeId}->${nextId}`)
+    const branchStats = mainPathBranchStats?.get(nodeId) || {}
     renderNodes.push({
-      renderKey: 'summary-controller',
-      id: summaryControllerId,
-      name: summaryControllerNode.name || model?.summaryControllerName || 'Controller',
-      entityType: summaryControllerNode.entityType || model?.summaryControllerType || 'other',
-      country: summaryControllerNode.country || null,
-      role: 'actualSummary',
+      renderKey: mainPath.renderKeyById.get(nodeId) || `main-path:${index}:${nodeId}`,
+      id: nodeId,
+      name: canonical.name || model?.summaryControllerName || 'Controller',
+      entityType: canonical.entityType || model?.summaryControllerType || 'other',
+      country: canonical.country || null,
+      role,
       width: size.width,
       height: size.height,
       radius: size.radius,
-      row: -1,
+      row: mainPath.rowById.get(nodeId) ?? index - Math.max(1, mainPathIds.length - 1),
       x: 0,
       branchDirection: 'up',
-      expandable: summaryControllerUpstreamIds.length > 0,
-      expanded: summaryExpanded,
-      hiddenUpstreamCount: summaryExpanded ? 0 : summaryControllerUpstreamIds.length,
+      expandable: Boolean(branchStats.expandable),
+      expanded: Boolean(branchStats.expanded),
+      hiddenUpstreamCount: branchStats.hiddenUpstreamCount || 0,
       isKeyPath: true,
-      depthFromTarget: -1,
+      isMainPath: true,
+      keyPathIndex: index,
+      depthFromTarget: mainPath.rowById.get(nodeId) ?? index - Math.max(1, mainPathIds.length - 1),
       relationType: relationEdge?.relationType || null,
       controlRatio: relationEdge?.controlRatio ?? null,
-      relatedEntityId: targetId,
-      relatedEntityName: model?.targetName || '目标公司',
+      multiPathConvergence: canonical.multiPathConvergence || null,
+      relatedEntityId: nextId,
+      relatedEntityName:
+        nextId === targetId
+          ? model?.targetName || '目标公司'
+          : nodeMap.get(nextId)?.name || `Entity ${nextId}`,
       relationDirection: 'controls',
     })
-  }
+  })
 
-  const targetRelationEdge = summaryControllerId ? edgeMap.get(`${summaryControllerId}->${targetId}`) : null
+  const targetRelationEdge = parentOfTargetId ? edgeMap.get(`${parentOfTargetId}->${targetId}`) : null
   renderNodes.push({
     renderKey: 'target-node',
     id: targetId,
@@ -509,11 +673,13 @@ function buildRenderNodes({
     expanded: false,
     hiddenUpstreamCount: 0,
     isKeyPath: Array.isArray(model?.keyPathNodeIds) && model.keyPathNodeIds.includes(targetId),
+    isMainPath: mainPath?.nodeIdSet?.has(targetId) || false,
     depthFromTarget: 0,
     relationType: targetRelationEdge?.relationType || null,
     controlRatio: targetRelationEdge?.controlRatio ?? null,
-    relatedEntityId: summaryControllerId || null,
-    relatedEntityName: model?.summaryControllerName || null,
+    multiPathConvergence: null,
+    relatedEntityId: parentOfTargetId || null,
+    relatedEntityName: nodeMap.get(parentOfTargetId)?.name || model?.summaryControllerName || null,
     relationDirection: 'controlledBy',
   })
 
@@ -547,6 +713,7 @@ function buildRenderNodes({
       rootId: instance.rootId,
       relationType: relationEdge?.relationType || null,
       controlRatio: relationEdge?.controlRatio ?? null,
+      multiPathConvergence: canonical.multiPathConvergence || null,
       relatedEntityId: toKey(instance.downstreamId),
       relatedEntityName:
         toKey(instance.downstreamId) === targetId
@@ -562,41 +729,47 @@ function buildRenderNodes({
   }))
 }
 
-function buildPrimaryKeyEdge({
-  model,
+function buildMainPathEdges({
+  mainPath,
   renderNodes,
   edgeMap,
 }) {
-  const summaryControllerId = toKey(model?.summaryControllerId)
-  const targetId = toKey(model?.targetId)
-  if (!summaryControllerId) {
-    return null
-  }
+  const renderNodeByKey = new Map(renderNodes.map((node) => [node.renderKey, node]))
+  const edges = []
+  const mainPathIds = Array.isArray(mainPath?.nodeIds) ? mainPath.nodeIds : []
 
-  const anchorNode = renderNodes.find((node) => node.role === 'target')
-  const summaryNode = renderNodes.find((node) => node.role === 'actualSummary')
+  mainPathIds.forEach((nodeId, index) => {
+    const nextId = mainPathIds[index + 1]
+    if (!nextId) {
+      return
+    }
 
-  if (!summaryNode || !anchorNode) {
-    return null
-  }
+    const sourceRenderKey = mainPath.renderKeyById.get(nodeId)
+    const targetRenderKey = mainPath.renderKeyById.get(nextId)
+    const sourceNode = renderNodeByKey.get(sourceRenderKey)
+    const targetNode = renderNodeByKey.get(targetRenderKey)
+    if (!sourceNode || !targetNode) {
+      return
+    }
 
-  const pair = `${summaryControllerId}->${targetId}`
-  const directEdge = edgeMap.get(pair)
+    const edge = edgeMap.get(`${nodeId}->${nextId}`)
+    edges.push({
+      id: `main-path:${sourceRenderKey}->${targetRenderKey}`,
+      sourceRenderKey,
+      targetRenderKey,
+      relationType: edge?.relationType || 'equity',
+      controlRatio: edge?.controlRatio ?? null,
+      isKeyPath: true,
+      isPrimary: true,
+      isCollapsed: false,
+      controlSubjectId: nodeId,
+      controlSubjectName: sourceNode.name,
+      controlObjectId: nextId,
+      controlObjectName: targetNode.name,
+    })
+  })
 
-  return {
-    id: `summary-key:${summaryControllerId}->${targetId}`,
-    sourceRenderKey: summaryNode.renderKey,
-    targetRenderKey: anchorNode.renderKey,
-    relationType: directEdge?.relationType || 'equity',
-    controlRatio: directEdge?.controlRatio ?? null,
-    isKeyPath: true,
-    isPrimary: true,
-    isCollapsed: false,
-    controlSubjectId: summaryControllerId,
-    controlSubjectName: summaryNode.name,
-    controlObjectId: targetId,
-    controlObjectName: anchorNode.name,
-  }
+  return edges
 }
 
 function buildTreeEdges({ placedTreeNodes, renderNodes, edgeMap }) {
@@ -739,6 +912,16 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
   const incomingMap = buildIncomingMap(model?.edges)
   const keyParentByNodeId = buildKeyParentMap(model)
   const summaryControllerId = toKey(model?.summaryControllerId)
+  const suppressedBranchNodeIds = uniqueIds(model?.multiPathConvergenceNodeIds)
+  const mainPath = buildMainPathContext(model)
+  const mainPathBranchStats = buildMainPathBranchStats({
+    mainPath,
+    incomingMap,
+    nodeMap,
+    keyParentByNodeId,
+    expandedByNodeId,
+    suppressedBranchNodeIds,
+  })
   const lowerRootInstances = buildLowerRootInstances({
     model,
     nodeMap,
@@ -746,15 +929,20 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     expandedByNodeId,
     keyParentByNodeId,
     summaryControllerId,
+    mainPathNodeIds: mainPath.nodeIds,
+    suppressedBranchNodeIds,
   }).map((root) => measureInstanceTree(root, nodeMap))
-  const upperRootInstances = buildUpperRootInstances({
-    model,
+  const mainPathBranchGroups = buildMainPathBranchGroups({
+    mainPath,
     nodeMap,
     incomingMap,
     expandedByNodeId,
     keyParentByNodeId,
-    summaryControllerId,
-  }).map((root) => measureInstanceTree(root, nodeMap))
+    suppressedBranchNodeIds,
+  }).map((group) => ({
+    ...group,
+    roots: group.roots.map((root) => measureInstanceTree(root, nodeMap)),
+  }))
 
   const lowerRootPlacements = placeRootBands(
     lowerRootInstances,
@@ -762,13 +950,14 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     buildRootEdgeLookup(model?.targetId, incomingMap),
     model?.keyPathFirstLayerId,
   )
-  const upperRootPlacements = placeRootBands(
-    upperRootInstances,
-    nodeMap,
-    buildRootEdgeLookup(summaryControllerId, incomingMap),
+  const mainPathBranchPlacedNodes = mainPathBranchGroups.flatMap((group) =>
+    collectPlacedTreeNodes(
+      placeSideBranchBands(group.roots, nodeMap, buildRootEdgeLookup(group.anchorId, incomingMap)),
+      group.anchorRenderKey,
+    ),
   )
   const placedTreeNodes = [
-    ...collectPlacedTreeNodes(upperRootPlacements, 'summary-controller'),
+    ...mainPathBranchPlacedNodes,
     ...collectPlacedTreeNodes(lowerRootPlacements, 'target-node'),
   ]
   const renderNodes = buildRenderNodes({
@@ -777,6 +966,8 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     edgeMap,
     placedTreeNodes,
     expandedByNodeId,
+    mainPath,
+    mainPathBranchStats,
   })
 
   const treeEdges = buildTreeEdges({
@@ -785,15 +976,15 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     edgeMap,
   })
 
-  const primaryKeyEdge = buildPrimaryKeyEdge({
-    model,
+  const mainPathEdges = buildMainPathEdges({
+    mainPath,
     renderNodes,
     edgeMap,
   })
 
   const viewport = translateToViewport(
     renderNodes,
-    primaryKeyEdge ? [primaryKeyEdge, ...treeEdges] : treeEdges,
+    [...mainPathEdges, ...treeEdges],
   )
 
   return {
@@ -810,5 +1001,6 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     expandedNodeCount: Object.keys(expandedByNodeId || {}).filter((key) => expandedByNodeId[key]).length,
     nodes: viewport.nodes,
     edges: viewport.edges,
+    mainPathNodeIds: mainPath.nodeIds,
   }
 }

@@ -57,7 +57,7 @@ let resizeObserver = null
 const ENTITY_TYPE_LABELS = {
   company: '公司主体',
   person: '自然人',
-  fund: '基金 / 公众持股',
+  fund: '基金 / 公众持股集合',
   government: '政府 / 国资主体',
   other: '其他主体',
 }
@@ -116,39 +116,39 @@ const summaryControllerLegendTitle = computed(() => {
 })
 const summaryControllerLegendDescription = computed(() => {
   if (summaryControllerRoleKey.value === 'leading_candidate') {
-    return '顶部主轴节点，表示当前最强控制候选，可向上展开其上游结构。'
+    return '未形成唯一实际控制人时保留的 leading candidate；不等同于 actual controller，如有上游结构可继续展开。'
   }
   if (summaryControllerRoleKey.value === 'actual_controller') {
-    return '顶部主轴节点，表示当前识别到的实际控制人，可向上展开。'
+    return '当前识别到的 ultimate / actual controller；如存在上游结构，可继续向上展开。'
   }
-  return '当前未识别到实际控制人或重点控制候选时，该位置不渲染节点。'
+  return '当前未识别到唯一实际控制人或领先候选主体时，顶部主轴不渲染控制主体节点。'
 })
 const diagramHeaderDescription = computed(() => {
   if (summaryControllerRoleKey.value === 'leading_candidate') {
-    return '主链保持“重点控制候选 → 目标公司”的向下语义；目标公司下方第一层及其子层统一向上汇聚到父节点，顶部候选主体可继续向上展开其上游结构。'
+    return '主链保持“Leading Candidate → 中间层 → 目标公司”的向下语义；目标公司下方仅保留非主链路的并列上游主体。'
   }
   if (summaryControllerRoleKey.value === 'actual_controller') {
-    return '主链保持“实际控制人 → 目标公司”的向下语义；目标公司下方第一层及其子层统一向上汇聚到父节点，实际控制人可继续向上展开其上游结构。'
+    return '主链保持“Ultimate / Actual Controller → 中间层 → 目标公司”的向下语义；若存在中间控股平台，会在主轴上逐层显示。'
   }
-  return '未识别到实际控制人或重点控制候选时，图中保留目标公司及其上游结构，避免出现误导性的顶部控制主体节点。'
+  return '未识别到唯一实际控制人或领先候选主体时，图中保留目标公司及其上游结构，避免出现误导性的顶部控制主体节点。'
 })
 const diagramFootnote = computed(() => {
   if (summaryControllerRoleKey.value === 'leading_candidate') {
-    return '顶部主轴节点显示为重点控制候选，目标公司位于中轴，目标公司下方主体继续向上汇聚至父节点。可滚轮缩放、拖拽平移，并用“适应视图”恢复居中。'
+    return '顶部主轴节点显示为领先候选主体，主链路中间层会沿中轴逐层展开；目标公司下方仅展示非主链路的并列上游主体。'
   }
   if (summaryControllerRoleKey.value === 'actual_controller') {
-    return '顶部主轴节点显示为实际控制人，目标公司位于中轴，目标公司下方主体继续向上汇聚至父节点。可滚轮缩放、拖拽平移，并用“适应视图”恢复居中。'
+    return '顶部主轴节点显示为 ultimate / actual controller，中间控股平台会保留在主轴上，避免把多层控制链误读为直接控制。'
   }
   return '当前未识别到顶部主轴控制主体，图中仅展示目标公司及其上游结构。可滚轮缩放、拖拽平移，并用“适应视图”恢复居中。'
 })
 const interactionHint = computed(() => {
   if (summaryControllerRoleKey.value === 'leading_candidate') {
-    return '下方节点向下展开，上方重点控制候选向上展开'
+    return '目标公司下方节点可向下展开；顶部领先候选如存在上游结构，可继续向上展开。'
   }
   if (summaryControllerRoleKey.value === 'actual_controller') {
-    return '下方节点向下展开，上方实际控制人向上展开'
+    return '目标公司下方节点可向下展开；顶部实际控制人如存在上游结构，可继续向上展开。'
   }
-  return '当前仅展示目标公司及其上游结构，可继续展开下方节点'
+  return '当前仅展示目标公司及其上游结构，可继续展开下方上游节点。'
 })
 const summaryLegendRoleClass = computed(() => {
   if (!summaryControllerRoleKey.value) {
@@ -223,6 +223,12 @@ const diagramState = computed(() => {
 
 const diagramLayout = computed(() => diagramState.value.layout)
 const shouldFallback = computed(() => Boolean(diagramState.value.error || !diagramLayout.value))
+const pathConvergenceItems = computed(() =>
+  Array.isArray(diagramModel.value?.multiPathConvergences)
+    ? diagramModel.value.multiPathConvergences
+    : [],
+)
+const primaryPathConvergence = computed(() => pathConvergenceItems.value[0] || null)
 
 const viewportWidth = computed(() =>
   Math.max(1, Math.round(viewportSize.width || diagramLayout.value?.width || 1)),
@@ -332,6 +338,15 @@ function relationTypeLabel(value) {
   return RELATION_TYPE_LABELS[value] || String(value)
 }
 
+function pathKindLabel(value) {
+  return value === 'direct' ? '直接路径' : '间接路径'
+}
+
+function pathScoreLabel(path) {
+  const rendered = formatPercent(path?.score)
+  return rendered ? `约 ${rendered}` : ''
+}
+
 function displayModeLabel(value) {
   return DISPLAY_MODE_LABELS[value] || value || '分层展开'
 }
@@ -350,11 +365,11 @@ function nodeRoleLabel(node) {
   if (node.role === 'actualSummary') {
     return summaryControllerRoleLabel.value
   }
-  if (node.role === 'actualSummary') {
-    return '实际控制人'
-  }
   if (node.role === 'target') {
     return '目标公司'
+  }
+  if (node.isMainPath && node.isKeyPath) {
+    return node.role === 'direct' ? '主链路直接控制人' : '主链路中间层'
   }
   if (node.depthFromTarget === 1) {
     return '直接上游主体'
@@ -369,18 +384,17 @@ function resolvedNodeRoleLabel(node) {
   if (node.role === 'actualSummary') {
     return summaryControllerRoleLabel.value
   }
-  if (node.role === 'actualSummary') {
-    return '实际控制人'
-  }
   if (node.role === 'target') {
     return '目标公司'
+  }
+  if (node.isMainPath && node.isKeyPath) {
+    return node.role === 'direct' ? '主链路直接控制人' : '主链路中间层'
   }
   if (node.depthFromTarget === 1) {
     return '直接上游主体'
   }
   if (node.branchDirection === 'up') {
     return `${summaryControllerRoleLabel.value}上方第 ${Math.max(1, Math.abs(Number(node.depthFromTarget) || 0) - 1)} 层主体`
-    return `实际控制人上方第 ${Math.max(1, Math.abs(Number(node.depthFromTarget) || 0) - 1)} 层主体`
   }
   if (node.isKeyPath) {
     return '关键路径节点'
@@ -407,6 +421,7 @@ function yesNo(value) {
 
 function buildTooltipLines(item) {
   if (item?.sourceRenderKey && item?.targetRenderKey) {
+    const convergence = diagramModel.value?.multiPathConvergenceByNodeId?.[toKey(item.controlSubjectId)]
     return [
       item.controlSubjectName ? `控制主体：${item.controlSubjectName}` : null,
       item.controlObjectName ? `控制对象：${item.controlObjectName}` : null,
@@ -415,10 +430,14 @@ function buildTooltipLines(item) {
         ? `控制 / 持股比例：${formatPercent(item.controlRatio)}`
         : null,
       `关键路径：${yesNo(item.isPrimary || item.isKeyPath)}`,
+      convergence
+        ? `路径结构：直接 + 间接多路径汇聚，另有 ${convergence.supplementalPathCount} 条补充路径`
+        : null,
       item.isCollapsed ? '说明：中间路径已折叠显示' : null,
     ].filter(Boolean)
   }
 
+  const convergence = item?.multiPathConvergence || null
   return [
     `节点角色：${resolvedNodeRoleLabel(item)}`,
     `主体类型：${entityTypeLabel(item.entityType)}`,
@@ -431,6 +450,15 @@ function buildTooltipLines(item) {
       ? `${item.relationDirection === 'controlledBy' ? '关联主体' : '控制对象'}：${item.relatedEntityName}`
       : null,
     `关键路径：${yesNo(item.isKeyPath)}`,
+    convergence
+      ? `路径结构：直接 + 间接多路径汇聚，图中仅突出主解释路径`
+      : null,
+    convergence?.primaryPath?.text
+      ? `主路径：${pathKindLabel(convergence.primaryPath.kind)}，${convergence.primaryPath.text}`
+      : null,
+    ...(convergence?.supplementalPaths || []).slice(0, 2).map((path) =>
+      `补充路径：${pathKindLabel(path.kind)}，${path.text}`,
+    ),
     item.expandable
       ? item.expanded
         ? '展开状态：已展开'
@@ -522,6 +550,10 @@ function markerEnd(edge) {
 function toggleTransform(node) {
   const direction = node?.branchDirection === 'up' || node?.role === 'actualSummary' ? -1 : 1
   return `translate(0, ${direction * (node.height / 2 + 18)})`
+}
+
+function pathBadgeTransform(node) {
+  return `translate(${node.width / 2 - 34}, ${-node.height / 2 - 10})`
 }
 
 function handleWheel(event) {
@@ -778,6 +810,15 @@ onBeforeUnmount(() => {
                   </text>
 
                   <g
+                    v-if="node.multiPathConvergence"
+                    class="structure-node__path-badge"
+                    :transform="pathBadgeTransform(node)"
+                  >
+                    <rect x="-31" y="-11" width="62" height="22" rx="8" />
+                    <text text-anchor="middle" dominant-baseline="middle">多路径</text>
+                  </g>
+
+                  <g
                     v-if="node.expandable"
                     class="structure-node__toggle"
                     :transform="toggleTransform(node)"
@@ -804,6 +845,47 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <div v-if="primaryPathConvergence" class="control-path-convergence-panel">
+          <div class="control-path-convergence-panel__head">
+            <strong>控制路径说明</strong>
+            <span>direct + indirect</span>
+          </div>
+          <p>
+            {{ primaryPathConvergence.controllerName }} 同时通过直接路径与间接路径对目标公司形成控制影响；
+            图中仅突出主解释路径，其余路径列为补充路径。
+          </p>
+          <div class="control-path-convergence-panel__rows">
+            <div class="control-path-convergence-row">
+              <span>主路径</span>
+              <strong>{{ pathKindLabel(primaryPathConvergence.primaryPath.kind) }}</strong>
+              <small>
+                {{ primaryPathConvergence.primaryPath.text }}
+                <template v-if="pathScoreLabel(primaryPathConvergence.primaryPath)">
+                  · {{ pathScoreLabel(primaryPathConvergence.primaryPath) }}
+                </template>
+              </small>
+            </div>
+            <div
+              v-for="path in primaryPathConvergence.supplementalPaths.slice(0, 2)"
+              :key="`${primaryPathConvergence.nodeId}-supplement-${path.index}`"
+              class="control-path-convergence-row"
+            >
+              <span>补充路径</span>
+              <strong>{{ pathKindLabel(path.kind) }}</strong>
+              <small>
+                {{ path.text }}
+                <template v-if="pathScoreLabel(path)"> · {{ pathScoreLabel(path) }}</template>
+              </small>
+            </div>
+          </div>
+          <div
+            v-if="primaryPathConvergence.supplementalPathCount > 2"
+            class="control-path-convergence-panel__more"
+          >
+            另有 {{ primaryPathConvergence.supplementalPathCount - 2 }} 条补充路径，可在下方控制结论明细表展开查看。
+          </div>
+        </div>
+
         <div class="control-structure-diagram__footnote control-structure-diagram__footnote--legacy">
           默认层次：
           <strong>实际控制人</strong>位于顶部主轴并可向上展开，
@@ -819,7 +901,7 @@ onBeforeUnmount(() => {
           <h4>主体类型</h4>
           <div class="legend-row">
             <span class="legend-dot legend-dot--company" />
-            <span><strong>公司主体</strong>企业、控股平台或经营主体</span>
+            <span><strong>公司主体</strong>经营主体、控股平台、SPV 或 holding company</span>
           </div>
           <div class="legend-row">
             <span class="legend-dot legend-dot--person" />
@@ -827,7 +909,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="legend-row">
             <span class="legend-dot legend-dot--fund" />
-            <span><strong>基金 / 公众持股</strong>基金、公众流通股等</span>
+            <span><strong>基金 / 公众持股</strong>基金、Public Float、分散流通股或公众持股集合</span>
           </div>
           <div class="legend-row">
             <span class="legend-dot legend-dot--government" />
@@ -835,44 +917,57 @@ onBeforeUnmount(() => {
           </div>
           <div class="legend-row">
             <span class="legend-dot legend-dot--other" />
-            <span><strong>其他主体</strong>暂未归类的上游主体</span>
+            <span><strong>其他主体</strong>暂未归类的上游主体；nominee、trust vehicle 等可能暂列此类</span>
           </div>
         </div>
 
         <div class="legend-block">
           <h4>节点角色</h4>
-          <div class="legend-row">
+          <div class="legend-row legend-row--role">
             <span :class="['legend-role', summaryLegendRoleClass]" />
-            <span class="legend-row__copy"><strong>{{ summaryControllerLegendTitle }}</strong>{{ summaryControllerLegendDescription }}</span>
-            <span><strong>实际控制人</strong>顶部主链节点，可向上展开</span>
+            <span class="legend-role-copy">
+              <strong>{{ summaryControllerLegendTitle }}</strong>
+              <small>{{ summaryControllerLegendDescription }}</small>
+            </span>
           </div>
-          <div class="legend-row">
+          <div class="legend-row legend-row--role">
             <span class="legend-role legend-role--target" />
-            <span><strong>目标公司</strong>中轴锚点节点，承接上下汇聚关系</span>
+            <span class="legend-role-copy">
+              <strong>目标公司</strong>
+              <small>中轴锚点节点，承接上下游聚类关系。</small>
+            </span>
           </div>
-          <div class="legend-row">
+          <div class="legend-row legend-row--role">
             <span class="legend-role legend-role--key" />
-            <span><strong>关键路径节点</strong>控制主路径上的节点</span>
+            <span class="legend-role-copy">
+              <strong>关键路径节点</strong>
+              <small>后端判定重点参考的路径节点，可能包含 direct controller、穿透中间层、ultimate / leading candidate。</small>
+            </span>
           </div>
         </div>
 
         <div class="legend-block">
           <h4>边样式</h4>
-          <div class="legend-line-row"><span class="legend-line legend-line--plain" /><span>普通控制关系</span></div>
-          <div class="legend-line-row"><span class="legend-line legend-line--key" /><span>关键路径</span></div>
-          <div class="legend-line-row"><span class="legend-line legend-line--collapsed" /><span>折叠路径提示</span></div>
+          <div class="legend-line-row"><span class="legend-line legend-line--plain" /><span>普通控制关系：一般上游持股、协议或治理控制连接</span></div>
+          <div class="legend-line-row"><span class="legend-line legend-line--key" /><span>关键路径：后端判定时重点参考的主解释路径</span></div>
+          <div class="legend-line-row"><span class="legend-line legend-line--collapsed" /><span>折叠路径提示：局部收起后的视觉连接，不代表新的控制类型</span></div>
         </div>
 
         <div class="legend-block">
           <h4>交互说明</h4>
-          <div class="legend-toggle-row">
+          <div class="legend-toggle-row legend-toggle-row--item">
             <span class="legend-toggle">+</span>
-            <span class="legend-toggle-row__copy">{{ interactionHint }}</span>
-            <span>下方节点向下展开，上方实际控制人向上展开</span>
+            <span class="legend-role-copy">
+              <strong>展开节点</strong>
+              <small>{{ interactionHint }}</small>
+            </span>
           </div>
-          <div class="legend-toggle-row">
+          <div class="legend-toggle-row legend-toggle-row--item">
             <span class="legend-toggle">-</span>
-            <span>仅收起该节点的局部子树</span>
+            <span class="legend-role-copy">
+              <strong>收起节点</strong>
+              <small>仅收起该节点的局部子树，不影响当前主链路与其它已展开分支。</small>
+            </span>
           </div>
         </div>
       </aside>
@@ -1139,6 +1234,23 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
+.structure-node__path-badge {
+  pointer-events: none;
+}
+
+.structure-node__path-badge rect {
+  fill: #ffffff;
+  stroke: rgba(31, 59, 87, 0.22);
+  stroke-width: 1;
+  filter: drop-shadow(0 3px 8px rgba(15, 23, 42, 0.1));
+}
+
+.structure-node__path-badge text {
+  fill: #36506a;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .structure-node__toggle {
   cursor: pointer;
 }
@@ -1184,6 +1296,78 @@ onBeforeUnmount(() => {
   line-height: 1.55;
 }
 
+.control-path-convergence-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(31, 59, 87, 0.1);
+  border-radius: 8px;
+  background: rgba(31, 59, 87, 0.035);
+}
+
+.control-path-convergence-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.control-path-convergence-panel__head strong {
+  color: var(--brand-ink);
+  font-size: 13px;
+}
+
+.control-path-convergence-panel__head span {
+  color: #5b50ad;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.control-path-convergence-panel p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.control-path-convergence-panel__rows {
+  display: grid;
+  gap: 6px;
+}
+
+.control-path-convergence-row {
+  display: grid;
+  grid-template-columns: 58px 68px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: #314255;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.control-path-convergence-row span {
+  color: var(--text-secondary);
+}
+
+.control-path-convergence-row strong {
+  color: #243648;
+  font-size: 12px;
+}
+
+.control-path-convergence-row small {
+  color: #526579;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.control-path-convergence-panel__more {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .control-structure-diagram__footnote {
   padding: 10px 12px;
   border-top: 1px solid rgba(31, 59, 87, 0.08);
@@ -1227,6 +1411,14 @@ onBeforeUnmount(() => {
   min-height: 28px;
 }
 
+.legend-row--role {
+  align-items: start;
+}
+
+.legend-toggle-row--item {
+  align-items: start;
+}
+
 .legend-row + .legend-row,
 .legend-line-row + .legend-line-row,
 .legend-toggle-row + .legend-toggle-row {
@@ -1247,7 +1439,25 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.legend-row__copy + span,
+.legend-toggle-row strong {
+  display: block;
+  color: #25364a;
+  font-size: 12px;
+}
+
+.legend-role-copy {
+  min-width: 0;
+}
+
+.legend-role-copy small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
 .legend-toggle-row__copy + span {
   display: none;
 }
@@ -1323,12 +1533,14 @@ onBeforeUnmount(() => {
 .legend-toggle {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
   border-radius: 999px;
   border: 1px solid rgba(37, 54, 74, 0.25);
   background: #fff;
   color: #0f172a;
+  font-size: 13px;
   font-weight: 800;
 }
 

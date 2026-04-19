@@ -58,6 +58,7 @@ const ENTITY_TYPE_LABELS = {
   company: '公司主体',
   person: '自然人',
   fund: '基金 / 公众持股集合',
+  institution: '机构投资者',
   government: '政府 / 国资主体',
   other: '其他主体',
 }
@@ -87,7 +88,86 @@ const displayController = computed(
     props.controlAnalysis?.leading_candidate ||
     null,
 )
+
+const controlRelationships = computed(() =>
+  Array.isArray(props.controlAnalysis?.control_relationships)
+    ? props.controlAnalysis.control_relationships
+    : [],
+)
+const actualControllerFromRows = computed(() =>
+  controlRelationships.value.find(
+    (relationship) =>
+      isTruthy(relationship?.is_actual_controller) && !isOwnershipPatternRelationship(relationship),
+  ) || null,
+)
+const hasConfirmedActualAxis = computed(() =>
+  Boolean(
+    (!isOwnershipPatternRelationship(props.controlAnalysis?.actual_controller) &&
+      (props.controlAnalysis?.actual_controller?.controller_entity_id ||
+        props.controlAnalysis?.actual_controller?.controller_name)) ||
+      actualControllerFromRows.value?.controller_entity_id ||
+      actualControllerFromRows.value?.controller_name,
+  ),
+)
+const countryBasis = computed(() => parseMaybeJson(props.countryAttribution?.basis) || {})
+
+function isOwnershipPatternRelationship(relationship) {
+  if (!relationship) {
+    return false
+  }
+
+  const terminalIdentifiability = normalizeKey(firstAvailable(relationship, 'terminal_identifiability'))
+  const terminalSuitability = normalizeKey(firstAvailable(relationship, 'terminal_suitability'))
+  const terminalFailureReason = normalizeKey(firstAvailable(relationship, 'terminal_failure_reason'))
+  const selectionReason = normalizeKey(firstAvailable(relationship, 'selection_reason'))
+
+  return (
+    isTruthy(firstAvailable(relationship, 'ownership_pattern_signal')) ||
+    terminalIdentifiability === 'aggregation_like' ||
+    terminalSuitability === 'pattern_only' ||
+    terminalFailureReason === 'ownership_aggregation_pattern' ||
+    selectionReason === 'excluded_from_actual_race_due_to_terminal_profile'
+  )
+}
+
+const structuralAxisRelationship = computed(() => {
+  if (hasConfirmedActualAxis.value) {
+    return null
+  }
+
+  const candidates = [
+    props.controlAnalysis?.display_controller,
+    props.controlAnalysis?.leading_candidate,
+    controlRelationships.value[0],
+    displayController.value,
+  ].filter(Boolean)
+
+  return candidates.find((relationship) => isOwnershipPatternRelationship(relationship)) || null
+})
+const isOwnershipAggregationFallback = computed(() => {
+  const terminalFailureReason = normalizeKey(
+    props.controlAnalysis?.terminal_failure_reason ||
+      countryBasis.value?.terminal_failure_reason ||
+      props.countryAttribution?.terminal_failure_reason,
+  )
+  const countryInferenceReason = normalizeKey(props.countryAttribution?.country_inference_reason)
+  const attributionType = normalizeKey(props.countryAttribution?.attribution_type)
+
+  return (
+    !hasConfirmedActualAxis.value &&
+    (terminalFailureReason === 'ownership_aggregation_pattern' ||
+      countryInferenceReason === 'fallback_no_identifiable_terminal_controller' ||
+      (attributionType === 'fallback_incorporation' &&
+        normalizeKey(countryBasis.value?.controller_status) === 'no_identifiable_terminal_controller'))
+  )
+})
+const isStructuralAxis = computed(() =>
+  Boolean(structuralAxisRelationship.value || isOwnershipAggregationFallback.value),
+)
 const summaryControllerRoleKey = computed(() => {
+  if (isStructuralAxis.value) {
+    return 'structural_signal'
+  }
   if (props.controlAnalysis?.display_controller_role) {
     return props.controlAnalysis.display_controller_role
   }
@@ -100,12 +180,18 @@ const summaryControllerRoleKey = computed(() => {
   return null
 })
 const summaryControllerRoleLabel = computed(() => {
+  if (summaryControllerRoleKey.value === 'structural_signal') {
+    return '结构信号主轴'
+  }
   if (summaryControllerRoleKey.value === 'leading_candidate') {
     return '重点控制候选'
   }
   return '实际控制人'
 })
 const summaryControllerLegendTitle = computed(() => {
+  if (summaryControllerRoleKey.value === 'structural_signal') {
+    return '结构信号主轴'
+  }
   if (summaryControllerRoleKey.value === 'leading_candidate') {
     return '重点控制候选'
   }
@@ -115,6 +201,9 @@ const summaryControllerLegendTitle = computed(() => {
   return '顶部主轴控制主体'
 })
 const summaryControllerLegendDescription = computed(() => {
+  if (summaryControllerRoleKey.value === 'structural_signal') {
+    return '未识别唯一实际控制人时保留的研究展示主轴；用于解释 ownership aggregation / 分散持股结构，不等同于 actual controller。'
+  }
   if (summaryControllerRoleKey.value === 'leading_candidate') {
     return '未形成唯一实际控制人时保留的 leading candidate；不等同于 actual controller，如有上游结构可继续展开。'
   }
@@ -124,6 +213,9 @@ const summaryControllerLegendDescription = computed(() => {
   return '当前未识别到唯一实际控制人或领先候选主体时，顶部主轴不渲染控制主体节点。'
 })
 const diagramHeaderDescription = computed(() => {
+  if (summaryControllerRoleKey.value === 'structural_signal') {
+    return '当前顶部主轴仅表示研究展示路径 / ownership aggregation path；它不代表已确认实际控制主体，目标公司国别结论仍按后端 fallback 口径解释。'
+  }
   if (summaryControllerRoleKey.value === 'leading_candidate') {
     return '主链保持“Leading Candidate → 中间层 → 目标公司”的向下语义；目标公司下方仅保留非主链路的并列上游主体。'
   }
@@ -133,6 +225,9 @@ const diagramHeaderDescription = computed(() => {
   return '未识别到唯一实际控制人或领先候选主体时，图中保留目标公司及其上游结构，避免出现误导性的顶部控制主体节点。'
 })
 const diagramFootnote = computed(() => {
+  if (summaryControllerRoleKey.value === 'structural_signal') {
+    return '顶部主轴节点为结构信号 / 研究主轴，连线以虚线弱化显示；它用于解释公众持股或分散持股聚合路径，不表示已确认实际控制。'
+  }
   if (summaryControllerRoleKey.value === 'leading_candidate') {
     return '顶部主轴节点显示为领先候选主体，主链路中间层会沿中轴逐层展开；目标公司下方仅展示非主链路的并列上游主体。'
   }
@@ -142,6 +237,9 @@ const diagramFootnote = computed(() => {
   return '当前未识别到顶部主轴控制主体，图中仅展示目标公司及其上游结构。可滚轮缩放、拖拽平移，并用“适应视图”恢复居中。'
 })
 const interactionHint = computed(() => {
+  if (summaryControllerRoleKey.value === 'structural_signal') {
+    return '顶部结构信号主轴仅用于研究解释；可展开节点查看其上游结构，但不要将其理解为 actual controller。'
+  }
   if (summaryControllerRoleKey.value === 'leading_candidate') {
     return '目标公司下方节点可向下展开；顶部领先候选如存在上游结构，可继续向上展开。'
   }
@@ -153,6 +251,9 @@ const interactionHint = computed(() => {
 const summaryLegendRoleClass = computed(() => {
   if (!summaryControllerRoleKey.value) {
     return 'legend-role--inactive'
+  }
+  if (summaryControllerRoleKey.value === 'structural_signal') {
+    return 'legend-role--structural'
   }
   return summaryControllerRoleKey.value === 'leading_candidate' ? 'legend-role--leading' : 'legend-role--actual'
 })
@@ -256,6 +357,49 @@ function toKey(value) {
   return value === null || value === undefined ? '' : String(value)
 }
 
+function normalizeKey(value) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function parseMaybeJson(value) {
+  if (!value) {
+    return null
+  }
+  if (typeof value === 'object') {
+    return value
+  }
+  if (typeof value !== 'string') {
+    return null
+  }
+  const trimmed = value.trim()
+  if (!trimmed || !['{', '['].includes(trimmed[0])) {
+    return null
+  }
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+}
+
+function isTruthy(value) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'number') {
+    return value !== 0
+  }
+  if (typeof value === 'string') {
+    return ['1', 'true', 'yes', 'y'].includes(normalizeKey(value))
+  }
+  return false
+}
+
+function firstAvailable(row, key) {
+  const basis = parseMaybeJson(row?.basis)
+  return row?.[key] ?? basis?.[key]
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
 }
@@ -355,10 +499,16 @@ function summaryNodeVariantClass(node) {
   if (node?.role !== 'actualSummary') {
     return ''
   }
+  if (summaryControllerRoleKey.value === 'structural_signal') {
+    return 'structure-node__box--summary-structural_signal'
+  }
   if (summaryControllerRoleKey.value === 'leading_candidate') {
     return 'structure-node__box--summary-leading_candidate'
   }
-  return 'structure-node__box--summary-actual_controller'
+  if (summaryControllerRoleKey.value === 'actual_controller') {
+    return 'structure-node__box--summary-actual_controller'
+  }
+  return 'structure-node__box--summary-focused'
 }
 
 function nodeRoleLabel(node) {
@@ -403,6 +553,9 @@ function resolvedNodeRoleLabel(node) {
 }
 
 function edgeTitle(edge) {
+  if (edge.isPrimary && summaryControllerRoleKey.value === 'structural_signal') {
+    return '结构信号路径'
+  }
   if (edge.isPrimary && edge.isCollapsed) {
     return '折叠关键路径提示'
   }
@@ -422,6 +575,21 @@ function yesNo(value) {
 function buildTooltipLines(item) {
   if (item?.sourceRenderKey && item?.targetRenderKey) {
     const convergence = diagramModel.value?.multiPathConvergenceByNodeId?.[toKey(item.controlSubjectId)]
+    if (item.isPrimary && summaryControllerRoleKey.value === 'structural_signal') {
+      return [
+        item.controlSubjectName ? `结构信号主体：${item.controlSubjectName}` : null,
+        item.controlObjectName ? `展示对象：${item.controlObjectName}` : null,
+        '路径语义：研究展示主轴 / ownership aggregation path',
+        '结论状态：非实际控制主体，未进入 actual/direct/leading 主表达',
+        '结果影响：当前未识别唯一实际控制人，国别按 fallback 口径处理',
+        item.controlRatio !== null && item.controlRatio !== undefined && item.controlRatio !== ''
+          ? `聚合比例 / 控制强度：${formatPercent(item.controlRatio)}`
+          : null,
+        convergence
+          ? `路径结构：直接 + 间接多路径汇聚，另有 ${convergence.supplementalPathCount} 条补充路径`
+          : null,
+      ].filter(Boolean)
+    }
     return [
       item.controlSubjectName ? `控制主体：${item.controlSubjectName}` : null,
       item.controlObjectName ? `控制对象：${item.controlObjectName}` : null,
@@ -438,6 +606,22 @@ function buildTooltipLines(item) {
   }
 
   const convergence = item?.multiPathConvergence || null
+  if (item?.role === 'actualSummary' && summaryControllerRoleKey.value === 'structural_signal') {
+    return [
+      '节点角色：结构信号主轴',
+      `主体类型：${entityTypeLabel(item.entityType)}`,
+      item.country ? `国家 / 地区：${item.country}` : null,
+      '结论状态：非实际控制主体',
+      '用途：解释 ownership aggregation / dispersed ownership 结构特征',
+      '结果影响：未进入 actual/direct/leading 主表达',
+      normalizeKey(props.countryAttribution?.attribution_type) === 'fallback_incorporation'
+        ? '国别结论：当前按注册地 fallback 处理'
+        : null,
+      item.controlRatio !== null && item.controlRatio !== undefined && item.controlRatio !== ''
+        ? `聚合比例 / 控制强度：${formatPercent(item.controlRatio)}`
+        : null,
+    ].filter(Boolean)
+  }
   return [
     `节点角色：${resolvedNodeRoleLabel(item)}`,
     `主体类型：${entityTypeLabel(item.entityType)}`,
@@ -539,8 +723,14 @@ function nodeRectY(node) {
 }
 
 function markerEnd(edge) {
+  if (edge.isPrimary && summaryControllerRoleKey.value === 'structural_signal') {
+    return 'url(#control-structure-arrow-structural)'
+  }
   if (edge.isPrimary && summaryControllerRoleKey.value === 'leading_candidate') {
     return 'url(#control-structure-arrow-leading)'
+  }
+  if (edge.isPrimary && summaryControllerRoleKey.value !== 'actual_controller') {
+    return 'url(#control-structure-arrow-normal)'
   }
   return edge.isPrimary || edge.isKeyPath
     ? 'url(#control-structure-arrow-key)'
@@ -671,8 +861,8 @@ onBeforeUnmount(() => {
       <div>
         <h3>控制结构示意图</h3>
         <p>
-          主链保持“实际控制人 → 目标公司”的向下语义；目标公司下方第一层及其子层统一向上汇聚到父节点，
-          实际控制人则可继续向上展开其上游结构。
+          主链自上游解释主体向目标公司向下展示；顶部节点的控制语义以当前状态说明为准。
+          目标公司下方第一层及其子层统一向上汇聚到父节点。
         </p>
         <p class="control-structure-diagram__header-copy">{{ diagramHeaderDescription }}</p>
       </div>
@@ -735,6 +925,17 @@ onBeforeUnmount(() => {
               >
                 <path d="M 0 0 L 12 6 L 0 12 z" class="structure-arrow structure-arrow--leading" />
               </marker>
+              <marker
+                id="control-structure-arrow-structural"
+                markerWidth="11"
+                markerHeight="11"
+                refX="9"
+                refY="5.5"
+                orient="auto"
+                markerUnits="strokeWidth"
+              >
+                <path d="M 0 0 L 11 5.5 L 0 11 z" class="structure-arrow structure-arrow--structural" />
+              </marker>
             </defs>
 
             <rect
@@ -766,6 +967,13 @@ onBeforeUnmount(() => {
                     edge.isPrimary && summaryControllerRoleKey === 'leading_candidate'
                       ? 'structure-edge--primary-candidate'
                       : '',
+                    edge.isPrimary && summaryControllerRoleKey === 'structural_signal'
+                      ? 'structure-edge--primary-structural'
+                      : '',
+                    edge.isPrimary &&
+                    !['actual_controller', 'leading_candidate', 'structural_signal'].includes(summaryControllerRoleKey)
+                      ? 'structure-edge--primary-focused'
+                      : '',
                     edge.isCollapsed ? 'structure-edge--collapsed' : '',
                   ]"
                   @mousemove="showHover($event, edge)"
@@ -781,6 +989,9 @@ onBeforeUnmount(() => {
                     'structure-node',
                     `structure-node--${node.role}`,
                     node.isKeyPath ? 'structure-node--key' : '',
+                    node.role === 'actualSummary' && summaryControllerRoleKey === 'structural_signal'
+                      ? 'structure-node--structural-axis'
+                      : '',
                   ]"
                   @mousemove="showHover($event, node)"
                   @pointerdown.stop
@@ -888,7 +1099,7 @@ onBeforeUnmount(() => {
 
         <div class="control-structure-diagram__footnote control-structure-diagram__footnote--legacy">
           默认层次：
-          <strong>实际控制人</strong>位于顶部主轴并可向上展开，
+          顶部主轴在已识别时表示<strong>实际控制人</strong>，未识别唯一实际控制人时可降级为<strong>结构信号主轴</strong>；
           <strong>目标公司</strong>位于中轴，
           <strong>直接上游主体</strong>位于目标公司下方并向上指向父节点。
           可滚轮缩放、拖拽空白区域平移，点击“适应视图”可恢复居中。
@@ -950,6 +1161,7 @@ onBeforeUnmount(() => {
           <h4>边样式</h4>
           <div class="legend-line-row"><span class="legend-line legend-line--plain" /><span>普通控制关系：一般上游持股、协议或治理控制连接</span></div>
           <div class="legend-line-row"><span class="legend-line legend-line--key" /><span>关键路径：后端判定时重点参考的主解释路径</span></div>
+          <div class="legend-line-row"><span class="legend-line legend-line--structural" /><span>结构信号主轴：研究展示路径，不代表已确认实际控制</span></div>
           <div class="legend-line-row"><span class="legend-line legend-line--collapsed" /><span>折叠路径提示：局部收起后的视觉连接，不代表新的控制类型</span></div>
         </div>
 
@@ -1149,6 +1361,19 @@ onBeforeUnmount(() => {
   stroke: #5b50ad;
 }
 
+.structure-edge--primary-structural {
+  stroke: #60758a;
+  stroke-width: 3;
+  stroke-dasharray: 10 7;
+  opacity: 0.78;
+}
+
+.structure-edge--primary-focused {
+  stroke: #60758a;
+  stroke-width: 3;
+  opacity: 0.72;
+}
+
 .structure-edge--collapsed {
   stroke-dasharray: 9 6;
 }
@@ -1164,6 +1389,11 @@ onBeforeUnmount(() => {
 
 .structure-arrow--leading {
   fill: #5b50ad;
+}
+
+.structure-arrow--structural {
+  fill: #60758a;
+  opacity: 0.78;
 }
 
 .structure-node__box {
@@ -1210,6 +1440,25 @@ onBeforeUnmount(() => {
   fill: #7666cf;
   stroke: #5b50ad;
   filter: drop-shadow(0 9px 14px rgba(91, 80, 173, 0.18));
+}
+
+.structure-node__box--summary-focused {
+  fill: #6f7f91;
+  stroke: #475569;
+  stroke-width: 3;
+  filter: drop-shadow(0 7px 12px rgba(71, 85, 105, 0.12));
+}
+
+.structure-node__box--summary-structural_signal {
+  fill: #eef4f7;
+  stroke: #60758a;
+  stroke-width: 3;
+  stroke-dasharray: 9 5;
+  filter: drop-shadow(0 7px 12px rgba(71, 85, 105, 0.12));
+}
+
+.structure-node--structural-axis .structure-node__label {
+  fill: #2d3f51;
 }
 
 .structure-node__box--role-focused {
@@ -1503,6 +1752,11 @@ onBeforeUnmount(() => {
   border-color: #5b50ad;
 }
 
+.legend-role--structural {
+  border-color: #60758a;
+  border-style: dashed;
+}
+
 .legend-role--inactive {
   border-color: #94a3b8;
 }
@@ -1523,6 +1777,12 @@ onBeforeUnmount(() => {
 .legend-line--key {
   border-top-color: #b91c1c;
   border-top-width: 4px;
+}
+
+.legend-line--structural {
+  border-top-color: #60758a;
+  border-top-style: dashed;
+  border-top-width: 3px;
 }
 
 .legend-line--collapsed {

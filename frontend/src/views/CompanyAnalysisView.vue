@@ -222,7 +222,13 @@ const currentSummaryNote = computed(() => {
             :graph-error="sectionErrors.graph"
           />
 
-          <ControlRelationsTable :relationships="controlRelationships" :loading="loading" />
+          <ControlRelationsTable
+            :relationships="controlRelationships"
+            :loading="loading"
+            :control-analysis="controlAnalysis"
+            :country-attribution="countryAttribution"
+            :company="company"
+          />
 
           <IndustrySummaryCard :industry-analysis="industryAnalysis" />
 

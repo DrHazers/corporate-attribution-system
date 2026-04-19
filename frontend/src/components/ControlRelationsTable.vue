@@ -10,6 +10,18 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  controlAnalysis: {
+    type: Object,
+    default: () => ({}),
+  },
+  countryAttribution: {
+    type: Object,
+    default: () => ({}),
+  },
+  company: {
+    type: Object,
+    default: () => ({}),
+  },
 })
 
 const EMPTY_TEXT = '—'
@@ -19,6 +31,7 @@ const ENTITY_TYPE_LABELS = {
   company: '公司主体',
   person: '自然人',
   fund: '基金 / 公众持股',
+  institution: '机构投资者',
   government: '政府 / 国资主体',
   other: '其他主体',
 }
@@ -87,14 +100,47 @@ const TERMINAL_FAILURE_REASON_LABELS = {
   protective_right_only: '仅发现保护性权利，尚不足以构成实际控制。',
   no_control_relationships: '缺少可用于判定的控制关系数据。',
   no_candidate: '未发现达到控制判定条件的候选主体。',
+  insufficient_evidence: '证据不足，暂未形成唯一实际控制人。',
+  evidence_insufficient: '证据不足，暂未形成唯一实际控制人。',
+  ownership_aggregation_pattern: '公众持股/分散持股聚合表达，不适合作为实际控制主体。',
 }
 
 const SELECTION_REASON_LABELS = {
   actual_controller_strict_control_threshold_met: '控制强度达到实际控制人判定条件。',
   leading_candidate: '当前为控制信号最强的候选主体。',
+  leading_candidate_absolute_control: '数值信号较强，但仍需结合终局适格性和阻断规则判断。',
+  leading_candidate_significant_influence: '达到显著影响水平，保留为候选观察项。',
   leading_candidate_weak_evidence: '控制比例较高，但证据强度不足以确认唯一实际控制人。',
   leading_candidate_relative_control_signal: '相对控制信号较强，暂作为领先候选保留。',
   leading_candidate_close_competition: '候选主体之间差距较小，暂未形成唯一实际控制人。',
+  excluded_from_actual_race_due_to_terminal_profile: '已因终局主体画像排除出实际控制人竞选，仅保留为结构信号。',
+  supporting_candidate: '作为辅助候选保留，用于解释控制链和竞争格局。',
+  joint_control_candidate: '作为共同控制候选保留，不单独认定为实际控制人。',
+  direct_controller_candidate: '作为直接控制层主体进入判定。',
+}
+
+const TERMINAL_IDENTIFIABILITY_LABELS = {
+  identifiable_single_or_group: '可识别控制主体',
+  aggregation_like: '聚合表达',
+  unknown_or_blocked: '未知或阻断',
+}
+
+const TERMINAL_SUITABILITY_LABELS = {
+  suitable_terminal: '适合终局停留',
+  prefer_rollup: '优先继续上卷',
+  blocked_terminal: '终局阻断',
+  pattern_only: '仅结构信号',
+}
+
+const TERMINAL_PROFILE_REASON_LABELS = {
+  terminal_identity_signal: '存在明确终局主体画像',
+  default_identifiable_entity: '主体可识别并可归责',
+  rollup_intermediary_entity: '更像中间层或控股平台',
+  ownership_pattern_entity_profile: '主体画像接近公众持股/分散持股池',
+  ownership_pattern_edge_signal: '关系证据指向 ownership aggregation',
+  reused_non_terminal_ownership_bucket: '复用型非终局持股池',
+  weak_name_hint: '名称仅作为弱辅助提示',
+  high_ratio_but_no_terminal_governance: '比例较高但缺少终局治理控制证据',
 }
 
 const expandedPathRows = reactive({})
@@ -117,9 +163,9 @@ const sortedRelationships = computed(() =>
       _sourceIndex: index,
     }))
     .sort((left, right) => {
-      const actualPriority = Number(isActualRow(right)) - Number(isActualRow(left))
-      if (actualPriority !== 0) {
-        return actualPriority
+      const displayPriority = rowDisplayPriority(left) - rowDisplayPriority(right)
+      if (displayPriority !== 0) {
+        return displayPriority
       }
 
       const ratioPriority = sortRatioValue(right.control_ratio) - sortRatioValue(left.control_ratio)
@@ -143,6 +189,31 @@ const highestDirectControllerRatio = computed(() => {
     .filter((ratio) => ratio !== null)
 
   return ratios.length ? Math.max(...ratios) : null
+})
+
+const tableEmptyExplanation = computed(() => {
+  const attributionType = normalizeKey(props.countryAttribution?.attribution_type)
+  const countryBasis = tryParseJson(props.countryAttribution?.basis)
+  const basis = countryBasis && typeof countryBasis === 'object' && !Array.isArray(countryBasis)
+    ? countryBasis
+    : {}
+  const failure = normalizeKey(
+    props.controlAnalysis?.terminal_failure_reason ||
+      basis.terminal_failure_reason ||
+      props.countryAttribution?.country_inference_reason,
+  )
+
+  if (attributionType === 'fallback_incorporation') {
+    if (failure === 'ownership_aggregation_pattern') {
+      return '当前无唯一实际控制人；主要控制信号来自公众持股/分散持股聚合表达，国别按注册地回退。'
+    }
+    if (failure === 'beneficial_owner_unknown' || failure === 'nominee_without_disclosure') {
+      return '当前候选存在受益人不明或代持不透明，未形成唯一实际控制人，国别按注册地回退。'
+    }
+    return '当前未识别唯一实际控制人，国别按注册地回退。'
+  }
+
+  return '当前无控制关系明细；可结合上方控制摘要查看是否为共同控制、证据阻断或暂无有效输入。'
 })
 
 function buildRelationshipKey(relationship, index) {
@@ -192,6 +263,25 @@ function toPercentNumber(value) {
 
 function sortRatioValue(value) {
   return toPercentNumber(value) ?? -1
+}
+
+function rowDisplayPriority(row) {
+  if (isActualRow(row)) {
+    return 0
+  }
+  if (isPreferRollupRow(row) || isDirectRow(row)) {
+    return 1
+  }
+  if (isLeadingRow(row)) {
+    return 2
+  }
+  if (isBlockedCandidateRow(row)) {
+    return 3
+  }
+  if (isOwnershipPatternRow(row)) {
+    return 4
+  }
+  return 5
 }
 
 function formatRatio(value) {
@@ -256,6 +346,84 @@ function boolField(row, key) {
   return isTruthy(row?.[key]) || isTruthy(basis?.[key])
 }
 
+function terminalIdentifiability(row) {
+  return normalizeKey(firstAvailable(row, 'terminal_identifiability'))
+}
+
+function terminalSuitability(row) {
+  return normalizeKey(firstAvailable(row, 'terminal_suitability'))
+}
+
+function terminalProfileReasons(row) {
+  const value = firstAvailable(row, 'terminal_profile_reasons')
+  const parsed = tryParseJson(value)
+  return Array.isArray(parsed) ? parsed.map((item) => normalizeKey(item)).filter(Boolean) : []
+}
+
+function terminalProfileText(row) {
+  const identifiability = terminalIdentifiability(row)
+  const suitability = terminalSuitability(row)
+  const parts = []
+  if (identifiability) {
+    parts.push(TERMINAL_IDENTIFIABILITY_LABELS[identifiability] || identifiability)
+  }
+  if (suitability) {
+    parts.push(TERMINAL_SUITABILITY_LABELS[suitability] || suitability)
+  }
+  return parts.join(' / ')
+}
+
+function terminalProfileReasonText(row) {
+  return terminalProfileReasons(row)
+    .map((reason) => TERMINAL_PROFILE_REASON_LABELS[reason] || reason)
+    .filter(Boolean)
+    .join('；')
+}
+
+function terminalFailureReason(row) {
+  return normalizeKey(firstAvailable(row, 'terminal_failure_reason'))
+}
+
+function isOwnershipPatternRow(row) {
+  return (
+    isTruthy(firstAvailable(row, 'ownership_pattern_signal')) ||
+    terminalIdentifiability(row) === 'aggregation_like' ||
+    terminalSuitability(row) === 'pattern_only' ||
+    terminalFailureReason(row) === 'ownership_aggregation_pattern'
+  )
+}
+
+function isJointControlRow(row) {
+  return (
+    terminalFailureReason(row) === 'joint_control' ||
+    normalizeKey(row?.control_type) === 'joint_control'
+  )
+}
+
+function isBeneficialOwnerBlockedRow(row) {
+  return ['beneficial_owner_unknown', 'nominee_without_disclosure'].includes(terminalFailureReason(row))
+}
+
+function isLowConfidenceRow(row) {
+  return terminalFailureReason(row) === 'low_confidence_evidence_weak' || semanticFlags(row).includes('low_confidence')
+}
+
+function isEvidenceBlockedRow(row) {
+  return ['insufficient_evidence', 'evidence_insufficient', 'close_competition'].includes(terminalFailureReason(row))
+}
+
+function isBlockedCandidateRow(row) {
+  return (
+    !isOwnershipPatternRow(row) &&
+    !isActualRow(row) &&
+    (isJointControlRow(row) || isBeneficialOwnerBlockedRow(row) || isLowConfidenceRow(row) || isEvidenceBlockedRow(row))
+  )
+}
+
+function isPreferRollupRow(row) {
+  return terminalSuitability(row) === 'prefer_rollup' || (isDirectRow(row) && hasPromotionSignal(row))
+}
+
 function isDirectRow(row) {
   return boolField(row, 'is_direct_controller') || normalizeKey(firstAvailable(row, 'control_tier')) === 'direct'
 }
@@ -272,6 +440,9 @@ function isUltimateRow(row) {
 }
 
 function isActualRow(row) {
+  if (isOwnershipPatternRow(row)) {
+    return false
+  }
   return (
     boolField(row, 'is_actual_controller') ||
     isUltimateRow(row) ||
@@ -280,6 +451,9 @@ function isActualRow(row) {
 }
 
 function isLeadingRow(row) {
+  if (isOwnershipPatternRow(row) || isBlockedCandidateRow(row)) {
+    return false
+  }
   const status = normalizeKey(firstAvailable(row, 'controller_status'))
   return (
     boolField(row, 'is_leading_candidate') ||
@@ -581,6 +755,25 @@ function dedupeList(items) {
 }
 
 function relationshipRoleTags(row) {
+  if (isOwnershipPatternRow(row)) {
+    return [
+      { label: '结构信号', type: 'pattern' },
+      { label: '非实际控制主体', type: 'not-controller' },
+    ]
+  }
+
+  if (isJointControlRow(row) && !isActualRow(row)) {
+    return [{ label: '共同控制', type: 'boundary' }]
+  }
+
+  if (isBeneficialOwnerBlockedRow(row) && !isActualRow(row)) {
+    return [{ label: '受益人未明', type: 'boundary' }]
+  }
+
+  if (isLowConfidenceRow(row) && !isActualRow(row)) {
+    return [{ label: '低置信候选', type: 'boundary' }]
+  }
+
   const tags = []
   if (isActualRow(row)) {
     tags.push({ label: '实际控制人', type: 'actual' })
@@ -590,6 +783,9 @@ function relationshipRoleTags(row) {
   }
   if (isIntermediateRow(row)) {
     tags.push({ label: '中间层', type: 'intermediate' })
+  }
+  if (isPreferRollupRow(row) && !isActualRow(row)) {
+    tags.push({ label: '继续上卷', type: 'promotion' })
   }
   if (isLeadingRow(row) && !isActualRow(row)) {
     tags.push({ label: '领先候选', type: 'leading' })
@@ -605,6 +801,15 @@ function relationshipRoleTags(row) {
 }
 
 function roleNote(row) {
+  if (isOwnershipPatternRow(row)) {
+    return 'ownership pattern signal：保留研究价值，不参与 actual/direct/leading 主表达'
+  }
+  if (isBlockedCandidateRow(row)) {
+    return `阻断候选：${terminalFailureText(row) || determinationStatus(row).note}`
+  }
+  if (isPreferRollupRow(row) && !isActualRow(row)) {
+    return '中间层主体，当前结果继续向上穿透'
+  }
   const tier = controlTierLabel(row)
   if (tier) {
     return tier
@@ -613,6 +818,118 @@ function roleNote(row) {
     return '控制路径主体'
   }
   return ''
+}
+
+function determinationStatus(row) {
+  const profile = terminalProfileText(row)
+  if (isOwnershipPatternRow(row)) {
+    return {
+      label: '结构信号',
+      type: 'pattern',
+      note: profile || 'pattern only',
+    }
+  }
+  if (isActualRow(row)) {
+    return {
+      label: isDirectRow(row) ? '已采纳' : '上卷采纳',
+      type: 'accepted',
+      note: isDirectRow(row) ? '计入 actual/direct 结论' : '计入 actual/ultimate 结论',
+    }
+  }
+  if (isPreferRollupRow(row)) {
+    return {
+      label: '继续上卷',
+      type: 'rollup',
+      note: profile || 'prefer rollup',
+    }
+  }
+  if (isJointControlRow(row)) {
+    return {
+      label: '共同控制',
+      type: 'blocked',
+      note: '不硬选单一实际控制人',
+    }
+  }
+  if (isBeneficialOwnerBlockedRow(row)) {
+    return {
+      label: '受益人未明',
+      type: 'blocked',
+      note: '受益所有人披露不足',
+    }
+  }
+  if (isLowConfidenceRow(row)) {
+    return {
+      label: '低置信',
+      type: 'warning',
+      note: '证据强度不足',
+    }
+  }
+  if (isEvidenceBlockedRow(row)) {
+    return {
+      label: '证据阻断',
+      type: 'blocked',
+      note: terminalFailureText(row) || '未形成唯一控制结论',
+    }
+  }
+  if (isLeadingRow(row)) {
+    return {
+      label: '候选保留',
+      type: 'candidate',
+      note: '未进入 actual 结论',
+    }
+  }
+  return {
+    label: '辅助候选',
+    type: 'neutral',
+    note: profile || '用于解释控制链',
+  }
+}
+
+function ratioMeaning(row) {
+  if (isOwnershipPatternRow(row)) {
+    return '股权聚合比例，不参与实际控制人竞选'
+  }
+  const mode = normalizeKey(firstAvailable(row, 'control_mode'))
+  const type = normalizeKey(row?.control_type)
+  if (isActualRow(row)) {
+    return isDirectRow(row) ? '终局控制得分，已采纳' : '上卷后终局控制得分'
+  }
+  if (isPreferRollupRow(row)) {
+    return '中间层控制比例，需继续上卷'
+  }
+  if (mode === 'semantic' || ['agreement_control', 'board_control', 'voting_right_control', 'vie_control'].includes(type)) {
+    return '语义控制强度，不等同于持股比例'
+  }
+  if (mode === 'mixed' || type === 'mixed_control') {
+    return '股权与治理语义综合得分'
+  }
+  if (type === 'significant_influence') {
+    return '显著影响水平，非实际控制结论'
+  }
+  return '控制路径折算得分'
+}
+
+function pathSemanticLabel(row, path) {
+  if (isOwnershipPatternRow(row)) {
+    return 'ownership aggregation path'
+  }
+  const flags = semanticFlags(row)
+  if (flags.includes('vie')) {
+    return 'VIE 控制路径'
+  }
+  if (flags.includes('board_control')) {
+    return '董事会控制路径'
+  }
+  if (flags.includes('voting_right')) {
+    return '表决权控制路径'
+  }
+  if (flags.includes('agreement')) {
+    return '协议控制路径'
+  }
+  if (hasPromotionSignal(row) || pathKind(row, path) === 'indirect') {
+    return '股权上卷路径'
+  }
+  return '股权控制路径'
 }
 
 function recognitionExplanation(row) {
@@ -625,16 +942,37 @@ function recognitionExplanation(row) {
   const immediateText = immediateRatioNote(row)
   const convergenceText = multiPathConvergenceNote(row)
 
-  if (isActualRow(row)) {
+  if (isOwnershipPatternRow(row)) {
+    headline = '结构信号：非实际控制主体'
+    details.push('该主体更像公众持股/分散持股聚合表达，不代表统一控制意志。')
+    details.push(terminalProfileText(row) || '缺少可归责的终局主体画像。')
+    details.push('已排除出 actual/direct/leading 主表达，仅保留为研究结构信号。')
+  } else if (isJointControlRow(row) && !isActualRow(row)) {
+    headline = '共同控制阻断'
+    details.push(terminalText || '存在共同控制结构，后端不硬选单一实际控制人。')
+    details.push('该主体保留用于解释共同控制格局。')
+    details.push('结果影响：未单独计入 actual controller 结论。')
+  } else if (isBeneficialOwnerBlockedRow(row) && !isActualRow(row)) {
+    headline = '受益人未明 / 穿透阻断'
+    details.push(terminalText || '受益所有人或代持披露不足，暂不形成唯一实际控制人。')
+    details.push('结果影响：不进入 actual controller 结论，需后续补充披露线索。')
+  } else if (isLowConfidenceRow(row) && !isActualRow(row)) {
+    headline = '低置信候选'
+    details.push(terminalText || '控制证据强度不足，仅保留为候选或辅助说明。')
+    details.push('结果影响：未计入 actual controller 结论。')
+  } else if (isActualRow(row)) {
     if (isDirectRow(row)) {
       headline = '直接控制并认定为实际控制人'
       details.push('该主体位于直接控制层，且满足最终控制判定条件。')
+      details.push('结果影响：已计入 actual/direct controller 结论。')
     } else if (hasPromotionSignal(row)) {
       headline = '上卷后认定为实际控制人'
       details.push(promotionText || '直接控制层继续向上穿透，最终控制归属落在该上层主体。')
+      details.push('结果影响：已计入 actual/ultimate controller 结论。')
     } else {
       headline = '认定为实际控制人'
       details.push('后端已形成唯一实际控制人结论。')
+      details.push('结果影响：已计入 actual controller 结论。')
     }
 
     if (hasHigherDirectLayerRatio(row)) {
@@ -679,7 +1017,7 @@ function recognitionExplanation(row) {
 
   return {
     headline,
-    details: dedupeList(details).slice(0, 3),
+    details: dedupeList(details).slice(0, 4),
   }
 }
 
@@ -699,6 +1037,41 @@ function basisLinesFromObject(row, basis) {
     lines.push({
       label: '依据方式',
       value: basisModeLabel(basis.control_mode || basis.aggregator),
+    })
+  }
+
+  if (firstAvailable(row, 'selection_reason')) {
+    lines.push({
+      label: '判定原因',
+      value: selectionReasonText(row),
+    })
+  }
+
+  if (terminalProfileText(row)) {
+    lines.push({
+      label: '终局画像',
+      value: terminalProfileText(row),
+    })
+  }
+
+  if (terminalProfileReasonText(row)) {
+    lines.push({
+      label: '画像理由',
+      value: terminalProfileReasonText(row),
+    })
+  }
+
+  if (isOwnershipPatternRow(row)) {
+    lines.push({
+      label: '结构信号',
+      value: '是，非实际控制主体',
+    })
+  }
+
+  if (terminalFailureText(row)) {
+    lines.push({
+      label: '阻断原因',
+      value: terminalFailureText(row),
     })
   }
 
@@ -816,7 +1189,19 @@ function basisLines(row) {
 }
 
 function rowClassName({ row }) {
-  return isActualRow(row) ? 'control-relations-table__row--actual' : ''
+  if (isActualRow(row)) {
+    return 'control-relations-table__row--actual'
+  }
+  if (isOwnershipPatternRow(row)) {
+    return 'control-relations-table__row--pattern'
+  }
+  if (isBlockedCandidateRow(row)) {
+    return 'control-relations-table__row--blocked'
+  }
+  if (isPreferRollupRow(row)) {
+    return 'control-relations-table__row--rollup'
+  }
+  return ''
 }
 </script>
 
@@ -826,7 +1211,7 @@ function rowClassName({ row }) {
       <div class="section-heading">
         <div>
           <h2>控制结论明细表</h2>
-          <p>展示主要控制主体、控制方式、控制路径摘要与认定依据，便于结合上方控制结构图进行讲解。</p>
+          <p>展示谁被采纳、谁被排除，以及候选主体、结构信号和控制路径的判定依据。</p>
         </div>
       </div>
     </template>
@@ -848,6 +1233,9 @@ function rowClassName({ row }) {
           <div class="controller-name-cell">
             <div class="controller-name">
               {{ row.controller_name || EMPTY_TEXT }}
+            </div>
+            <div v-if="isOwnershipPatternRow(row)" class="controller-subnote">
+              ownership pattern signal / 非实际控制主体
             </div>
           </div>
         </template>
@@ -891,11 +1279,34 @@ function rowClassName({ row }) {
         </template>
       </el-table-column>
 
-      <el-table-column label="控制比例" min-width="110" align="center" header-align="center">
+      <el-table-column label="判定状态" min-width="170">
         <template #default="{ row }">
-          <span class="ratio-text">
-            {{ formatRatio(row.control_ratio) }}
-          </span>
+          <div class="decision-status">
+            <span
+              :class="[
+                'decision-badge',
+                `decision-badge--${determinationStatus(row).type}`,
+              ]"
+            >
+              {{ determinationStatus(row).label }}
+            </span>
+            <div class="decision-note">
+              {{ determinationStatus(row).note }}
+            </div>
+          </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="控制强度" min-width="142" align="center" header-align="center">
+        <template #default="{ row }">
+          <div class="ratio-stack">
+            <span class="ratio-text">
+              {{ formatRatio(row.control_ratio) }}
+            </span>
+            <span class="ratio-note">
+              {{ ratioMeaning(row) }}
+            </span>
+          </div>
         </template>
       </el-table-column>
 
@@ -904,17 +1315,22 @@ function rowClassName({ row }) {
           <div class="control-path-cell">
             <template v-if="pathSummary(row).pathCount">
               <div class="table-text table-multi-line path-summary">
+                <div v-if="isOwnershipPatternRow(row)" class="path-structure-note path-structure-note--pattern">
+                  结构信号路径：保留用于研究，不作为 actual controller 路径。
+                </div>
                 <div v-if="pathSummary(row).hasDirectAndIndirect" class="path-structure-note">
                   路径结构：直接 + 间接多路径汇聚；图中突出主路径，其余作为补充路径。
                 </div>
                 <template v-if="pathSummary(row).hasMultiplePaths">
                   <div class="path-primary">
-                    主路径（{{ pathKindLabel(pathSummary(row).primaryPathKind) }}）：{{ pathSummary(row).primaryPathText }}
+                    主路径（{{ pathKindLabel(pathSummary(row).primaryPathKind) }} / {{ pathSemanticLabel(row, pathSummary(row).paths[0]) }}）：{{ pathSummary(row).primaryPathText }}
                   </div>
                   <div class="path-secondary">另有 {{ pathSummary(row).extraPathCount }} 条补充路径</div>
                 </template>
                 <template v-else>
-                  <div class="path-primary">{{ pathSummary(row).primaryPathText }}</div>
+                  <div class="path-primary">
+                    {{ pathSemanticLabel(row, pathSummary(row).paths[0]) }}：{{ pathSummary(row).primaryPathText }}
+                  </div>
                 </template>
               </div>
 
@@ -936,7 +1352,7 @@ function rowClassName({ row }) {
                 >
                   <div class="path-list-head">
                     <span class="path-index">
-                      路径 {{ pathIndex + 1 }} · {{ pathKindLabel(pathKind(row, path)) }}
+                      路径 {{ pathIndex + 1 }} · {{ pathKindLabel(pathKind(row, path)) }} · {{ pathSemanticLabel(row, path) }}
                     </span>
                     <span v-if="pathScoreText(path) !== EMPTY_TEXT" class="path-score">
                       约 {{ pathScoreText(path) }}
@@ -997,6 +1413,13 @@ function rowClassName({ row }) {
           <span v-else class="table-text table-text--muted">{{ EMPTY_TEXT }}</span>
         </template>
       </el-table-column>
+
+      <template #empty>
+        <div class="table-empty-explanation">
+          <div class="table-empty-title">暂无控制结论明细</div>
+          <p>{{ tableEmptyExplanation }}</p>
+        </div>
+      </template>
     </el-table>
   </el-card>
 </template>
@@ -1029,6 +1452,30 @@ function rowClassName({ row }) {
   background: rgba(168, 73, 73, 0.085) !important;
 }
 
+.control-relations-table :deep(.control-relations-table__row--pattern > td) {
+  background: rgba(71, 99, 126, 0.055);
+}
+
+.control-relations-table :deep(.control-relations-table__row--pattern:hover > td) {
+  background: rgba(71, 99, 126, 0.085) !important;
+}
+
+.control-relations-table :deep(.control-relations-table__row--blocked > td) {
+  background: rgba(138, 90, 17, 0.045);
+}
+
+.control-relations-table :deep(.control-relations-table__row--blocked:hover > td) {
+  background: rgba(138, 90, 17, 0.075) !important;
+}
+
+.control-relations-table :deep(.control-relations-table__row--rollup > td) {
+  background: rgba(48, 95, 131, 0.035);
+}
+
+.control-relations-table :deep(.control-relations-table__row--rollup:hover > td) {
+  background: rgba(48, 95, 131, 0.065) !important;
+}
+
 .controller-name {
   color: var(--brand-ink);
   font-weight: 600;
@@ -1041,6 +1488,12 @@ function rowClassName({ row }) {
 .controller-name-cell {
   display: grid;
   gap: 6px;
+}
+
+.controller-subnote {
+  color: #647486;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .role-stack {
@@ -1104,6 +1557,13 @@ function rowClassName({ row }) {
   background: rgba(138, 90, 17, 0.1);
 }
 
+.relationship-role-badge--pattern,
+.relationship-role-badge--not-controller {
+  color: #486071;
+  border-color: rgba(72, 96, 113, 0.2);
+  background: rgba(72, 96, 113, 0.1);
+}
+
 .relationship-role-badge--neutral {
   color: #738398;
   border-color: rgba(115, 131, 152, 0.18);
@@ -1141,10 +1601,77 @@ function rowClassName({ row }) {
   background: rgba(48, 95, 131, 0.08);
 }
 
+.decision-status {
+  display: grid;
+  gap: 6px;
+}
+
+.decision-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-height: 26px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.decision-badge--accepted {
+  color: #a33e3e;
+  border-color: rgba(163, 62, 62, 0.2);
+  background: rgba(163, 62, 62, 0.12);
+}
+
+.decision-badge--pattern {
+  color: #486071;
+  border-color: rgba(72, 96, 113, 0.22);
+  background: rgba(72, 96, 113, 0.1);
+}
+
+.decision-badge--blocked,
+.decision-badge--warning,
+.decision-badge--rollup {
+  color: #8a5a11;
+  border-color: rgba(138, 90, 17, 0.22);
+  background: rgba(138, 90, 17, 0.1);
+}
+
+.decision-badge--candidate,
+.decision-badge--neutral {
+  color: #5a6878;
+  border-color: rgba(90, 104, 120, 0.16);
+  background: rgba(90, 104, 120, 0.07);
+}
+
+.decision-note {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ratio-stack {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+}
+
 .ratio-text {
   color: #243648;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.ratio-note {
+  max-width: 128px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
 }
 
 .control-path-cell {
@@ -1169,6 +1696,10 @@ function rowClassName({ row }) {
   color: #5b50ad;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.path-structure-note--pattern {
+  color: #486071;
 }
 
 .path-secondary {
@@ -1291,5 +1822,20 @@ function rowClassName({ row }) {
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+.table-empty-explanation {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 20px 12px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+.table-empty-title {
+  color: var(--brand-ink);
+  font-weight: 700;
 }
 </style>

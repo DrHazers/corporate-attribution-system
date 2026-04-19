@@ -107,9 +107,10 @@ def create_shareholder_entity_endpoint(
 def list_shareholder_entities(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=100),
+    q: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    return get_shareholder_entities(db, skip=skip, limit=limit)
+    return get_shareholder_entities(db, skip=skip, limit=limit, q=q)
 
 
 @router.get("/entities/{shareholder_entity_id}", response_model=ShareholderEntityRead)

@@ -23,10 +23,14 @@ export function manualControllerLabel({ controllerEntityId = null, controllerNam
   return '待填写实际控制人'
 }
 
-export function hasManualController({ controllerEntityId = null, controllerName = '' } = {}) {
+export function hasManualController({
+  controllerEntityId = null,
+  controllerName = '',
+  allowNameOnlyStart = false,
+} = {}) {
   return (
     (controllerEntityId !== null && controllerEntityId !== undefined && controllerEntityId !== '') ||
-    Boolean(normalizeManualPathName(controllerName))
+    (allowNameOnlyStart && Boolean(normalizeManualPathName(controllerName)))
   )
 }
 
@@ -34,9 +38,14 @@ export function deriveManualPathDisplay({
   paths = [],
   controllerEntityId = null,
   controllerName = '',
+  allowNameOnlyStart = false,
   targetCompanyName = '当前目标公司',
 } = {}) {
-  const controllerReady = hasManualController({ controllerEntityId, controllerName })
+  const controllerReady = hasManualController({
+    controllerEntityId,
+    controllerName,
+    allowNameOnlyStart,
+  })
   const startLabel = manualControllerLabel({ controllerEntityId, controllerName })
   const targetLabel = normalizeManualPathName(targetCompanyName) || '当前目标公司'
   const pathRows = Array.isArray(paths) && paths.length ? paths : [{ intermediate_nodes: [] }]
@@ -61,6 +70,7 @@ export function buildManualPathPayloads({
   paths = [],
   controllerEntityId = null,
   controllerName = '',
+  allowNameOnlyStart = false,
   targetCompanyId = null,
   targetCompanyName = '当前目标公司',
 } = {}) {
@@ -68,6 +78,7 @@ export function buildManualPathPayloads({
     paths,
     controllerEntityId,
     controllerName,
+    allowNameOnlyStart,
     targetCompanyName,
   })
   if (!display.hasController) {

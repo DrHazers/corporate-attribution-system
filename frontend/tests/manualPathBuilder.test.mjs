@@ -16,6 +16,47 @@ assert.equal(defaultDisplay.pathTexts.length, 1)
 assert.equal(defaultDisplay.pathCount, 0)
 assert.equal(defaultDisplay.pathDepth, null)
 
+const snapshotOnlyDisplay = deriveManualPathDisplay({
+  paths: defaultPathRows,
+  controllerName: 'Unbound Snapshot Controller',
+  targetCompanyName: 'Shengda Securities Industrial Group Co., Ltd.',
+})
+
+assert.equal(snapshotOnlyDisplay.hasController, false)
+assert.equal(snapshotOnlyDisplay.summary, '')
+assert.deepEqual(
+  buildManualPathPayloads({
+    paths: defaultPathRows,
+    controllerName: 'Unbound Snapshot Controller',
+    targetCompanyId: 170,
+    targetCompanyName: 'Shengda Securities Industrial Group Co., Ltd.',
+  }),
+  [],
+)
+
+const newEntityDisplay = deriveManualPathDisplay({
+  paths: defaultPathRows,
+  controllerName: 'New Controller Pending Insert',
+  allowNameOnlyStart: true,
+  targetCompanyName: 'Shengda Securities Industrial Group Co., Ltd.',
+})
+
+assert.equal(newEntityDisplay.hasController, true)
+assert.equal(
+  newEntityDisplay.summary,
+  'New Controller Pending Insert → Shengda Securities Industrial Group Co., Ltd.',
+)
+
+const pendingNewEntityPayload = buildManualPathPayloads({
+  paths: defaultPathRows,
+  controllerName: 'New Controller Pending Insert',
+  allowNameOnlyStart: true,
+  targetCompanyId: 170,
+  targetCompanyName: 'Shengda Securities Industrial Group Co., Ltd.',
+})
+
+assert.deepEqual(pendingNewEntityPayload[0].entity_ids, [null, 170])
+
 const display = deriveManualPathDisplay({
   paths: [{ intermediate_nodes: [{ name: 'Intermediate Holding Platform' }], path_ratio: '63.5%' }],
   controllerEntityId: 10005,
@@ -149,10 +190,69 @@ const confirmedModel = buildControlStructureModel({
   countryAttribution: {},
   relationshipGraph: {
     target_entity_id: 170,
-    nodes: [],
-    edges: [],
+    target_company: { name: 'Shengda Securities Industrial Group Co., Ltd.' },
+    nodes: [
+      { entity_id: 170, name: 'Shengda Securities Industrial Group Co., Ltd.', entity_type: 'company' },
+      { entity_id: 200, name: 'Existing Parent', entity_type: 'company' },
+    ],
+    edges: [
+      { id: 1, from_entity_id: 200, to_entity_id: 170, relation_type: 'equity' },
+    ],
   },
 })
 
 assert.equal(confirmedModel.isManualPathDriven, false)
 assert.equal(confirmedModel.primaryPathSource, 'automatic_paths')
+
+const unboundManualRelationship = {
+  controller_entity_id: null,
+  controller_name: 'Unbound Snapshot Controller',
+  controller_type: 'other',
+  control_type: 'manual_override',
+  result_source: 'manual_override',
+  source_type: 'manual_override',
+  is_actual_controller: true,
+  control_path: [
+    {
+      path_entity_ids: [null, 170],
+      path_entity_names: [
+        'Unbound Snapshot Controller',
+        'Shengda Securities Industrial Group Co., Ltd.',
+      ],
+      path_kind: 'manual_override',
+      source_type: 'manual_override',
+      is_primary: true,
+    },
+  ],
+}
+
+const unboundManualModel = buildControlStructureModel({
+  company: {
+    id: 170,
+    name: 'Shengda Securities Industrial Group Co., Ltd.',
+  },
+  controlAnalysis: {
+    is_manual_effective: true,
+    result_source: 'manual_override',
+    actual_controller: unboundManualRelationship,
+    control_relationships: [unboundManualRelationship],
+  },
+  countryAttribution: {},
+  relationshipGraph: {
+    target_entity_id: 170,
+    target_company: { name: 'Shengda Securities Industrial Group Co., Ltd.' },
+    nodes: [
+      { entity_id: 170, name: 'Shengda Securities Industrial Group Co., Ltd.', entity_type: 'company' },
+      { entity_id: 200, name: 'Existing Parent', entity_type: 'company' },
+    ],
+    edges: [
+      { id: 1, from_entity_id: 200, to_entity_id: 170, relation_type: 'equity' },
+    ],
+  },
+})
+
+assert.equal(unboundManualModel.actualControllerId, '')
+assert.equal(
+  unboundManualModel.nodes.some((node) => node.name === 'Unbound Snapshot Controller'),
+  false,
+)

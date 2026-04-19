@@ -18,8 +18,20 @@ export function fetchCompanyAutomaticControlChain(companyId) {
   })
 }
 
+export function fetchShareholderEntities(params = {}) {
+  return http.get('/shareholders/entities', { params })
+}
+
 export function submitManualControlOverride(companyId, payload) {
   return http.post(`/companies/${companyId}/manual-control-override`, payload)
+}
+
+export function submitManualControlJudgment(companyId, payload) {
+  return http.post(`/companies/${companyId}/manual-control-judgment`, payload)
+}
+
+export function restoreManualControlJudgment(companyId, payload = {}) {
+  return http.post(`/companies/${companyId}/manual-control-judgment/restore`, payload)
 }
 
 export function restoreAutomaticControlResult(companyId, payload = {}) {

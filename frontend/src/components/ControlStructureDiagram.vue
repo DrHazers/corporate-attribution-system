@@ -114,6 +114,9 @@ const manualSourceLabel = computed(() => {
   if (source === 'manual_confirmed') {
     return '人工确认'
   }
+  if (source === 'manual_judgment') {
+    return '人工判定'
+  }
   if (source === 'manual_override') {
     return '人工征订'
   }
@@ -130,6 +133,12 @@ const isManualConfirmedResult = computed(
     isManualEffectiveResult.value &&
     (props.controlAnalysis?.result_source || props.countryAttribution?.result_source) ===
       'manual_confirmed',
+)
+const isManualJudgmentResult = computed(
+  () =>
+    isManualEffectiveResult.value &&
+    (props.controlAnalysis?.result_source || props.countryAttribution?.result_source) ===
+      'manual_judgment',
 )
 
 function isOwnershipPatternRelationship(relationship) {
@@ -236,6 +245,9 @@ const summaryControllerLegendDescription = computed(() => {
     if (isManualConfirmedResult.value) {
       return `当前主轴为人工确认后的自动分析结果；自动分析结果为 ${autoName}。`
     }
+    if (isManualJudgmentResult.value) {
+      return `当前主轴为基于候选的人工判定结果；自动分析结果为 ${autoName}。`
+    }
     return `当前主轴由${manualSourceLabel.value}确定，并非算法自动识别；自动分析结果为 ${autoName}。`
   }
   if (summaryControllerRoleKey.value === 'structural_signal') {
@@ -253,6 +265,9 @@ const diagramHeaderDescription = computed(() => {
   if (isManualEffectiveResult.value && summaryControllerRoleKey.value === 'actual_controller') {
     if (isManualConfirmedResult.value) {
       return '当前顶部主轴为人工确认后的自动分析结果；路径仍沿用自动分析识别的控制路径。'
+    }
+    if (isManualJudgmentResult.value) {
+      return '当前顶部主轴为基于候选的人工判定结果；路径复用该候选主体的自动分析路径。'
     }
     return `当前顶部主轴已切换为${manualSourceLabel.value}结果；主路径来自人工征订 Path Builder，不是算法自动识别路径。`
   }
@@ -272,6 +287,9 @@ const diagramFootnote = computed(() => {
     if (isManualConfirmedResult.value) {
       return '当前主轴高亮的是经人工确认继续生效的自动分析实际控制人；自动分析原始结果保留用于对照。'
     }
+    if (isManualJudgmentResult.value) {
+      return '当前主轴高亮的是人工判定确定的实际控制人；自动分析结果仍保留用于对照。'
+    }
     return `当前主轴高亮的是${manualSourceLabel.value}确定的实际控制人；第一条人工征订路径作为图中主路径，自动分析结果仍保留，可在人工征订结果层中查看。`
   }
   if (summaryControllerRoleKey.value === 'structural_signal') {
@@ -289,6 +307,9 @@ const interactionHint = computed(() => {
   if (isManualEffectiveResult.value && summaryControllerRoleKey.value === 'actual_controller') {
     if (isManualConfirmedResult.value) {
       return 'hover 顶部主轴节点可查看人工确认说明、依据和自动分析对照。'
+    }
+    if (isManualJudgmentResult.value) {
+      return 'hover 顶部主轴节点可查看人工判定说明、依据和自动分析对照。'
     }
     return 'hover 顶部主轴节点可查看人工征订说明、依据和自动分析对照。'
   }
@@ -387,6 +408,9 @@ const pathConvergenceItems = computed(() =>
 const primaryPathConvergence = computed(() => pathConvergenceItems.value[0] || null)
 const isManualPathExplanation = computed(() =>
   Boolean(primaryPathConvergence.value?.isManualPathDriven && isManualOverrideResult.value),
+)
+const isManualJudgmentPathExplanation = computed(() =>
+  Boolean(primaryPathConvergence.value && isManualJudgmentResult.value),
 )
 const manualDisplayControlStrength = computed(() => {
   if (!isManualPathExplanation.value) {
@@ -719,6 +743,18 @@ function buildTooltipLines(item) {
           : '自动分析：未形成可展示的实际控制人',
       ].filter(Boolean)
     }
+    if (item.isPrimary && isManualJudgmentResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+      return [
+        item.controlSubjectName ? `人工判定主体：${item.controlSubjectName}` : null,
+        item.controlObjectName ? `展示对象：${item.controlObjectName}` : null,
+        '结果来源：人工判定',
+        '结论状态：基于现有候选人工判定为当前实际控制人',
+        '路径来源：复用该候选主体的自动分析路径',
+        manualOverride.value?.automatic_control_snapshot?.actual_controller?.controller_name
+          ? `自动分析：${manualOverride.value.automatic_control_snapshot.actual_controller.controller_name}`
+          : '自动分析：未形成可展示的实际控制人',
+      ].filter(Boolean)
+    }
     if (item.isPrimary && summaryControllerRoleKey.value === 'structural_signal') {
       return [
         item.controlSubjectName ? `结构信号主体：${item.controlSubjectName}` : null,
@@ -771,6 +807,21 @@ function buildTooltipLines(item) {
       '结果影响：优先作为当前生效 actual controller 展示',
       manualOverride.value?.reason ? `征订说明：${manualOverride.value.reason}` : null,
       manualOverride.value?.evidence ? `征订依据：${manualOverride.value.evidence}` : null,
+      manualOverride.value?.automatic_control_snapshot?.actual_controller?.controller_name
+        ? `自动分析：${manualOverride.value.automatic_control_snapshot.actual_controller.controller_name}`
+        : null,
+    ].filter(Boolean)
+  }
+  if (item?.role === 'actualSummary' && isManualJudgmentResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    return [
+      '节点角色：人工判定实际控制人',
+      `主体类型：${entityTypeLabel(item.entityType)}`,
+      item.country ? `国家 / 地区：${item.country}` : null,
+      '结论状态：基于现有候选人工判定',
+      '路径来源：复用候选主体原有控制路径',
+      '结果影响：优先作为当前生效 actual controller 展示',
+      manualOverride.value?.reason ? `判定说明：${manualOverride.value.reason}` : null,
+      manualOverride.value?.evidence ? `判定依据：${manualOverride.value.evidence}` : null,
       manualOverride.value?.automatic_control_snapshot?.actual_controller?.controller_name
         ? `自动分析：${manualOverride.value.automatic_control_snapshot.actual_controller.controller_name}`
         : null,
@@ -1233,6 +1284,9 @@ onBeforeUnmount(() => {
           <p v-if="isManualPathExplanation">
             当前控制路径由人工征订构建，用于支撑当前实际控制人结论；主路径为人工征订主解释路径，
             其余路径为人工补充支持路径。{{ manualControlStrengthExplanation }}
+          </p>
+          <p v-else-if="isManualJudgmentPathExplanation">
+            当前控制路径复用被选候选主体的自动分析路径；人工判定只切换当前实际控制人，不编辑 Path Builder。
           </p>
           <p v-else>
             {{ primaryPathConvergence.controllerName }} 同时通过直接路径与间接路径对目标公司形成控制影响；

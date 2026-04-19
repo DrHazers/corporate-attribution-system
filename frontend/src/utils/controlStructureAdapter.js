@@ -129,12 +129,16 @@ function buildEntityLookup(relationshipGraph = {}) {
 
 function pickActualController(controlAnalysis = {}) {
   const direct = controlAnalysis?.actual_controller
+  if (isUnboundManualSnapshotRelationship(direct)) {
+    return null
+  }
   if (direct?.controller_entity_id || direct?.controller_name) {
     return direct
   }
 
   return (controlAnalysis?.control_relationships || []).find(
-    (relationship) => relationship?.is_actual_controller,
+    (relationship) =>
+      relationship?.is_actual_controller && !isUnboundManualSnapshotRelationship(relationship),
   )
 }
 
@@ -143,9 +147,10 @@ function pickFocusedRelationship(controlAnalysis = {}, actualController = null) 
     return actualController
   }
 
-  const relationships = Array.isArray(controlAnalysis?.control_relationships)
+  const relationships = (Array.isArray(controlAnalysis?.control_relationships)
     ? controlAnalysis.control_relationships
     : []
+  ).filter((relationship) => !isUnboundManualSnapshotRelationship(relationship))
   return relationships[0] || null
 }
 
@@ -344,6 +349,15 @@ function isManualRelationshipPath(relationship = {}, paths = []) {
       (isManualOverrideType(path?.pathItem?.path_kind) && !relationshipIsManualConfirmed),
     )
   )
+}
+
+function isUnboundManualSnapshotRelationship(relationship = {}) {
+  const isManual =
+    isManualOverrideType(relationship?.result_source) ||
+    isManualOverrideType(relationship?.source_type) ||
+    isManualOverrideType(relationship?.manual_result_source)
+
+  return isManual && !toKey(relationship?.controller_entity_id)
 }
 
 function buildMultiPathConvergenceMetadata(relationships = [], context) {
@@ -585,6 +599,10 @@ function applyRelationshipPaths({
   keyPathNodeIndex,
 }) {
   relationships.forEach((relationship, index) => {
+    if (isUnboundManualSnapshotRelationship(relationship)) {
+      return
+    }
+
     const path = relationshipPath(relationship, context, index)
     const relationshipControllerId = toKey(relationship?.controller_entity_id)
     const isActualRelationship = actualControllerId && sameId(relationshipControllerId, actualControllerId)

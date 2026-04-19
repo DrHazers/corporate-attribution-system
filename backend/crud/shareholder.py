@@ -115,14 +115,17 @@ def get_shareholder_entities(
     db: Session,
     skip: int = 0,
     limit: int = 10,
+    q: str | None = None,
 ) -> list[ShareholderEntity]:
-    return (
-        db.query(ShareholderEntity)
-        .order_by(ShareholderEntity.id.asc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    query = db.query(ShareholderEntity)
+    normalized_query = str(q or "").strip()
+    if normalized_query:
+        filters = [ShareholderEntity.entity_name.ilike(f"%{normalized_query}%")]
+        if normalized_query.isdigit():
+            filters.append(ShareholderEntity.id == int(normalized_query))
+        query = query.filter(or_(*filters))
+
+    return query.order_by(ShareholderEntity.id.asc()).offset(skip).limit(limit).all()
 
 
 def get_shareholder_entity_by_name(

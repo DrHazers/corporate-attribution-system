@@ -1,7 +1,19 @@
 <script setup>
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+
+import {
+  restoreManualControlJudgment,
+  submitManualControlJudgment,
+} from '@/api/analysis'
+import { mergeControlRelationRows } from '@/utils/controlRelationsMerge'
+import { isManualJudgmentCandidateRow } from '@/utils/manualJudgment'
 
 const props = defineProps({
+  companyId: {
+    type: [Number, String],
+    default: null,
+  },
   relationships: {
     type: Array,
     default: () => [],
@@ -23,6 +35,8 @@ const props = defineProps({
     default: () => ({}),
   },
 })
+
+const emit = defineEmits(['manual-judgment-change'])
 
 const EMPTY_TEXT = '—'
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
@@ -55,6 +69,7 @@ const CONTROL_TYPE_LABELS = {
   joint_control: '共同控制',
   manual_override: '人工征订',
   manual_confirmed: '人工确认',
+  manual_judgment: '人工判定',
   unknown: EMPTY_TEXT,
   null: EMPTY_TEXT,
 }
@@ -146,6 +161,13 @@ const TERMINAL_PROFILE_REASON_LABELS = {
 }
 
 const expandedPathRows = reactive({})
+const judgmentDialogVisible = ref(false)
+const judgmentSaving = ref(false)
+const judgmentTargetRow = ref(null)
+const judgmentForm = reactive({
+  reason: '',
+  evidence: '',
+})
 
 watch(
   () => props.relationships,
@@ -158,7 +180,7 @@ watch(
 )
 
 const sortedRelationships = computed(() =>
-  [...props.relationships]
+  mergeControlRelationRows(props.relationships)
     .map((relationship, index) => ({
       ...relationship,
       _tableKey: buildRelationshipKey(relationship, index),
@@ -198,6 +220,9 @@ const manualSourceLabel = computed(() => {
   if (source === 'manual_confirmed') {
     return '人工确认'
   }
+  if (source === 'manual_judgment') {
+    return '人工判定'
+  }
   if (source === 'manual_override') {
     return '人工征订'
   }
@@ -207,6 +232,11 @@ const isManualConfirmedResult = computed(
   () =>
     (props.controlAnalysis?.result_source || props.countryAttribution?.result_source) ===
     'manual_confirmed',
+)
+const isManualJudgmentResult = computed(
+  () =>
+    (props.controlAnalysis?.result_source || props.countryAttribution?.result_source) ===
+    'manual_judgment',
 )
 
 const highestDirectControllerRatio = computed(() => {
@@ -501,12 +531,24 @@ function isManualEffectiveRow(row) {
   )
 }
 
+function isManualJudgmentEffectiveRow(row) {
+  return (
+    normalizeKey(firstAvailable(row, 'source_type')) === 'manual_judgment' ||
+    normalizeKey(firstAvailable(row, 'result_source')) === 'manual_judgment' ||
+    normalizeKey(firstAvailable(row, 'manual_result_source')) === 'manual_judgment'
+  )
+}
+
 function isManualCountryOnlyRow(row) {
   return manualCountryEffective.value && isActualRow(row) && !isAutomaticSupersededRow(row)
 }
 
 function isAutomaticSupersededRow(row) {
   return isTruthy(row?.automatic_result_superseded) || isTruthy(firstAvailable(row, 'automatic_result_superseded'))
+}
+
+function hasMergedAutoReference(row) {
+  return Boolean(row?._hasMergedAutoReference)
 }
 
 function isCurrentEffectiveResultRow(row) {
@@ -520,6 +562,76 @@ function isCurrentEffectiveResultRow(row) {
     return isActualRow(row)
   }
   return !manualEffective.value && isActualRow(row)
+}
+
+function canManualJudgeRow(row) {
+  return isManualJudgmentCandidateRow(row, {
+    isCurrentEffective: isCurrentEffectiveResultRow(row),
+    isAutomaticSuperseded: isAutomaticSupersededRow(row),
+  })
+}
+
+function openManualJudgmentDialog(row) {
+  judgmentTargetRow.value = row
+  judgmentForm.reason = ''
+  judgmentForm.evidence = ''
+  judgmentDialogVisible.value = true
+}
+
+async function handleSubmitManualJudgment() {
+  const companyId = props.companyId || props.company?.id
+  const target = judgmentTargetRow.value
+  const reason = String(judgmentForm.reason ?? '').trim()
+  if (!companyId) {
+    ElMessage.warning('缺少 company_id，无法写入人工判定。')
+    return
+  }
+  if (!target?.controller_entity_id) {
+    ElMessage.warning('该行缺少主体 entity_id，无法人工判定。')
+    return
+  }
+  if (!reason) {
+    ElMessage.warning('请填写人工判定说明。')
+    return
+  }
+  judgmentSaving.value = true
+  try {
+    await submitManualControlJudgment(companyId, {
+      selected_controller_entity_id: Number(target.controller_entity_id),
+      reason,
+      evidence: String(judgmentForm.evidence ?? '').trim() || null,
+      operator: 'researcher',
+    })
+    judgmentDialogVisible.value = false
+    ElMessage.success('已将候选主体设为当前实际控制人（人工判定）。')
+    emit('manual-judgment-change')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    judgmentSaving.value = false
+  }
+}
+
+async function handleRestoreManualJudgment() {
+  const companyId = props.companyId || props.company?.id
+  if (!companyId) {
+    ElMessage.warning('缺少 company_id，无法撤销人工判定。')
+    return
+  }
+  judgmentSaving.value = true
+  try {
+    await restoreManualControlJudgment(companyId, {
+      action_type: 'restore_manual_judgment',
+      reason: '撤销人工判定，恢复更高优先级结果或自动分析结果。',
+      operator: 'researcher',
+    })
+    ElMessage.success('已撤销人工判定。')
+    emit('manual-judgment-change')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    judgmentSaving.value = false
+  }
 }
 
 function isLeadingRow(row) {
@@ -559,6 +671,13 @@ function terminalFailureText(row) {
 
 function selectionReasonText(row) {
   if (isManualEffectiveRow(row)) {
+    if (isManualJudgmentEffectiveRow(row)) {
+      return (
+        manualField(row, 'manual_decision_reason') ||
+        firstAvailable(row, 'manual_reason') ||
+        '基于现有候选主体人工判定为当前实际控制人。'
+      )
+    }
     return (
       manualField(row, 'manual_decision_reason') ||
       (normalizeKey(firstAvailable(row, 'source_type')) === 'manual_confirmed'
@@ -670,6 +789,7 @@ function displayControlStrength(row) {
   if (isManualEffectiveRow(row)) {
     const backendValue = manualField(row, 'manual_display_control_strength')
     const backendSource = normalizeKey(manualField(row, 'manual_display_control_strength_source'))
+    const backendSourceLabel = manualField(row, 'manual_display_control_strength_source_label')
     if (backendValue) {
       return {
         value: backendValue,
@@ -681,7 +801,7 @@ function displayControlStrength(row) {
         note:
           backendSource === 'manual_primary_path_ratio'
             ? '来自主路径'
-            : '人工征订',
+            : backendSourceLabel || manualSourceLabel.value || '人工征订',
       }
     }
 
@@ -691,7 +811,7 @@ function displayControlStrength(row) {
         value: finalStrength,
         text: formatRatio(finalStrength),
         source: 'manual_final_strength',
-        note: '人工征订',
+        note: manualSourceLabel.value || '人工征订',
       }
     }
 
@@ -902,13 +1022,26 @@ function dedupeList(items) {
 
 function relationshipRoleTags(row) {
   if (isManualEffectiveRow(row)) {
-    return [
+    const tags = [
       { label: '实际控制人', type: 'actual' },
-      { label: `${manualSourceLabel.value}生效`, type: 'manual' },
+      {
+        label: isManualJudgmentEffectiveRow(row) ? '人工判定生效' : `${manualSourceLabel.value}生效`,
+        type: 'manual',
+      },
     ]
+    if (hasMergedAutoReference(row)) {
+      tags.push({ label: row._autoReferenceIsSamePath ? '自动分析一致' : '自动分析参考', type: 'neutral' })
+    }
+    return tags
   }
 
   if (isAutomaticSupersededRow(row)) {
+    if (isManualJudgmentResult.value) {
+      return [
+        { label: '自动分析结果', type: 'neutral' },
+        { label: '已被人工判定覆盖', type: 'boundary' },
+      ]
+    }
     return isManualConfirmedResult.value
       ? [
           { label: '自动分析原始行', type: 'neutral' },
@@ -972,6 +1105,12 @@ function relationshipRoleTags(row) {
 
 function roleNote(row) {
   if (isManualEffectiveRow(row)) {
+    if (isManualJudgmentEffectiveRow(row)) {
+      if (hasMergedAutoReference(row)) {
+        return '当前生效结论由人工判定确定；自动分析同主体结果已合并为参考信息。'
+      }
+      return '当前生效结论由研究人员从现有候选主体中人工判定。'
+    }
     return isManualConfirmedResult.value
       ? '当前生效结论为人工确认后的自动分析结果。'
       : '当前生效结论由人工征订写回数据库，非算法自动识别。'
@@ -980,6 +1119,9 @@ function roleNote(row) {
     return '控制主体沿用当前结论，实际控制国别经人工征订调整。'
   }
   if (isAutomaticSupersededRow(row)) {
+    if (isManualJudgmentResult.value) {
+      return '自动分析结果仍保留用于查看，但当前已被人工判定结果覆盖。'
+    }
     return isManualConfirmedResult.value
       ? '自动分析原始行仍保留用于查看，当前已由人工确认行承接为生效结论。'
       : '自动分析结果仍保留用于查看，但当前已被人工征订结果覆盖。'
@@ -1006,6 +1148,15 @@ function roleNote(row) {
 function determinationStatus(row) {
   const profile = terminalProfileText(row)
   if (isManualEffectiveRow(row)) {
+    if (isManualJudgmentEffectiveRow(row)) {
+      return {
+        label: '当前生效结论',
+        type: 'manual',
+        note: hasMergedAutoReference(row)
+          ? '人工判定结果（自动分析同主体参考已合并）'
+          : '人工判定结果，基于现有候选，非算法自动识别唯一控制人',
+      }
+    }
     const label = manualSourceLabel.value || '人工征订'
     return {
       label: '当前生效结论',
@@ -1023,6 +1174,13 @@ function determinationStatus(row) {
     }
   }
   if (isAutomaticSupersededRow(row)) {
+    if (isManualJudgmentResult.value) {
+      return {
+        label: '自动分析结果（参考）',
+        type: 'neutral',
+        note: '已被人工判定覆盖，非当前生效结果',
+      }
+    }
     return {
       label: isManualConfirmedResult.value ? '自动分析结果（已确认）' : '自动分析结果（参考）',
       type: 'neutral',
@@ -1123,6 +1281,9 @@ function ratioMeaning(row) {
 
 function pathSemanticLabel(row, path) {
   if (isManualEffectiveRow(row)) {
+    if (isManualJudgmentEffectiveRow(row)) {
+      return '人工判定复用路径'
+    }
     return isManualConfirmedResult.value ? '人工确认自动路径' : '人工征订路径'
   }
   if (isOwnershipPatternRow(row)) {
@@ -1158,6 +1319,40 @@ function recognitionExplanation(row) {
   const convergenceText = multiPathConvergenceNote(row)
 
   if (isManualEffectiveRow(row)) {
+    if (isManualJudgmentEffectiveRow(row)) {
+      headline = '人工判定确定实际控制人'
+      details.push('当前实际控制人为人工判定确定，基于现有候选主体选择。')
+      details.push(
+        hasMergedAutoReference(row)
+          ? '自动分析结果与该主体一致，已合并为本行参考信息。'
+          : '该结论非算法自动形成的唯一实际控制人，自动分析结果保留用于参考。',
+      )
+      details.push('当前展示以人工判定生效结果为准。')
+      details.push(`人工判定说明：${manualOverride.value?.reason || firstAvailable(row, 'manual_reason') || '未填写'}`)
+      details.push(`人工判定依据：${manualOverride.value?.evidence || firstAvailable(row, 'manual_evidence') || '未填写'}`)
+      const primaryPathText = pathSummary(row).primaryPathText
+      if (primaryPathText && primaryPathText !== EMPTY_TEXT) {
+        details.push(`当前生效路径摘要：${primaryPathText}。`)
+      }
+      if (hasMergedAutoReference(row) && row._autoReferencePathText && row._autoReferencePathText !== primaryPathText) {
+        details.push(`自动分析路径摘要：${row._autoReferencePathText}。`)
+      }
+      const autoName = firstAvailable(row, 'automatic_actual_controller_name')
+      if (autoName && !hasMergedAutoReference(row)) {
+        details.push(`自动分析结果为：${autoName}。`)
+      }
+      if (hasMergedAutoReference(row)) {
+        details.push(
+          row._autoReferenceIsSamePath
+            ? '自动分析路径与当前生效路径一致。'
+            : '自动分析路径作为参考补充，不再拆分为第二行。',
+        )
+      }
+      return {
+        headline,
+        details: dedupeList(details).slice(0, 7),
+      }
+    }
     const isConfirmed = manualSourceLabel.value === '人工确认'
     headline = isConfirmed ? '人工确认自动结果' : '人工征订确定实际控制人'
     details.push(
@@ -1210,7 +1405,9 @@ function recognitionExplanation(row) {
     headline = isManualConfirmedResult.value ? '自动分析结果（已确认）' : '自动分析结果（参考）'
     details.push('该行来自自动分析结果，当前仅供查看。')
     details.push(
-      isManualConfirmedResult.value
+      isManualJudgmentResult.value
+        ? '当前生效结论已由人工判定结果优先覆盖。'
+        : isManualConfirmedResult.value
         ? '当前生效结论已由人工确认行承接展示。'
         : '当前生效结论已由人工征订结果优先覆盖。',
     )
@@ -1311,7 +1508,9 @@ function basisLinesFromObject(row, basis) {
     })
     lines.push({
       label: '依据方式',
-      value: manualSourceLabel.value,
+      value: hasMergedAutoReference(row)
+        ? `${manualSourceLabel.value}；自动分析同主体参考`
+        : manualSourceLabel.value,
     })
     lines.push({
       label: '判定原因',
@@ -1354,6 +1553,26 @@ function basisLinesFromObject(row, basis) {
         label: '征订时间',
         value: basis.manual_decided_at,
       })
+    }
+    if (hasMergedAutoReference(row)) {
+      lines.push({
+        label: '自动参考',
+        value: row._autoReferenceIsSamePath
+          ? '自动分析同主体且路径一致，已合并展示'
+          : '自动分析同主体，路径作为参考补充',
+      })
+      if (row._autoReferencePathText) {
+        lines.push({
+          label: '自动路径',
+          value: row._autoReferencePathText,
+        })
+      }
+      if (row._autoReferenceControlRatio !== null && row._autoReferenceControlRatio !== undefined && row._autoReferenceControlRatio !== '') {
+        lines.push({
+          label: '自动强度',
+          value: formatRatio(row._autoReferenceControlRatio),
+        })
+      }
     }
     return lines
   }
@@ -1591,11 +1810,13 @@ function rowClassName({ row }) {
       show-icon
       :closable="false"
       :title="manualCountryEffective ? '实际控制国别人工征订当前生效' : `${manualSourceLabel}结果当前生效`"
-      :description="manualCountryEffective
+          :description="manualCountryEffective
         ? '控制主体沿用当前结论，实际控制国别以人工征订结果为准。'
         : isManualConfirmedResult
           ? '控制结论明细表已优先展示人工确认后的自动结果；自动分析原始行仍保留用于对照。'
-          : `控制结论明细表已优先展示${manualSourceLabel}结果，并使用人工构建路径作为主路径；自动分析行仍保留用于查看。`"
+          : isManualJudgmentResult
+            ? '控制结论明细表已优先展示人工判定结果；同主体同语义的自动分析结果会合并为参考信息。'
+            : `控制结论明细表已优先展示${manualSourceLabel}结果，并使用人工构建路径作为主路径；自动分析行仍保留用于查看。`"
     />
 
     <el-table
@@ -1802,6 +2023,26 @@ function rowClassName({ row }) {
         </template>
       </el-table-column>
 
+      <el-table-column label="人工判定" min-width="156" fixed="right" align="center" header-align="center">
+        <template #default="{ row }">
+          <div class="judgment-actions">
+            <el-button
+              v-if="canManualJudgeRow(row)"
+              size="small"
+              type="primary"
+              plain
+              @click="openManualJudgmentDialog(row)"
+            >
+              设为实际控制人
+            </el-button>
+            <span v-else-if="isManualJudgmentEffectiveRow(row)" class="judgment-current">
+              人工判定生效
+            </span>
+            <span v-else class="table-text table-text--muted">—</span>
+          </div>
+        </template>
+      </el-table-column>
+
       <template #empty>
         <div class="table-empty-explanation">
           <div class="table-empty-title">暂无控制结论明细</div>
@@ -1809,6 +2050,51 @@ function rowClassName({ row }) {
         </div>
       </template>
     </el-table>
+
+    <div v-if="isManualJudgmentResult" class="manual-judgment-restore">
+      <el-button size="small" plain type="warning" :loading="judgmentSaving" @click="handleRestoreManualJudgment">
+        撤销人工判定
+      </el-button>
+      <span>撤销后恢复为人工征订结果或自动分析结果。</span>
+    </div>
+
+    <el-dialog
+      v-model="judgmentDialogVisible"
+      title="人工判定为实际控制人"
+      width="520px"
+      destroy-on-close
+    >
+      <div class="manual-judgment-dialog">
+        <p>
+          将 <strong>{{ judgmentTargetRow?.controller_name || EMPTY_TEXT }}</strong>
+          设为当前实际控制人。该操作基于现有候选主体，不修改人工征订路径。
+        </p>
+        <el-form label-position="top">
+          <el-form-item label="人工判定说明">
+            <el-input
+              v-model="judgmentForm.reason"
+              type="textarea"
+              :rows="3"
+              placeholder="请说明为什么在当前候选中选择该主体"
+            />
+          </el-form-item>
+          <el-form-item label="人工判定依据（可选）">
+            <el-input
+              v-model="judgmentForm.evidence"
+              type="textarea"
+              :rows="2"
+              placeholder="例如披露文件、研究记录或补充材料"
+            />
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="judgmentDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="judgmentSaving" @click="handleSubmitManualJudgment">
+          确认人工判定
+        </el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
@@ -1834,6 +2120,33 @@ function rowClassName({ row }) {
 
 .manual-table-alert {
   margin-bottom: 14px;
+}
+
+.manual-judgment-restore {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.manual-judgment-dialog p {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.judgment-actions {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+}
+
+.judgment-current {
+  color: #8a4b12;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .control-relations-table :deep(.control-relations-table__row--manual > td) {

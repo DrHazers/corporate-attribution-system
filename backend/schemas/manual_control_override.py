@@ -6,17 +6,54 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+ManualControllerSubjectMode = Literal[
+    "existing_entity",
+    "new_entity",
+    "name_snapshot",
+]
+
+ManualControllerEntityType = Literal[
+    "company",
+    "person",
+    "institution",
+    "fund",
+    "government",
+    "other",
+]
+
 ManualControlActionType = Literal[
     "confirm_auto",
     "override_result",
+    "manual_judgment",
+    "restore_manual_judgment",
     "restore_auto",
 ]
 
 
+class ManualControlJudgmentRequest(BaseModel):
+    selected_controller_entity_id: int
+    reason: str = Field(min_length=1)
+    evidence: str | None = None
+    operator: str | None = "system"
+
+    @field_validator("reason", "evidence", "operator")
+    @classmethod
+    def normalize_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class ManualControlOverrideRequest(BaseModel):
     action_type: ManualControlActionType = "override_result"
+    actual_controller_subject_mode: ManualControllerSubjectMode | None = None
     actual_controller_entity_id: int | None = None
     actual_controller_name: str | None = None
+    new_actual_controller_name: str | None = None
+    new_actual_controller_type: ManualControllerEntityType | None = None
+    new_actual_controller_country: str | None = None
+    new_actual_controller_notes: str | None = None
     actual_control_country: str | None = None
     manual_control_ratio: str | None = None
     manual_control_strength_label: str | None = None
@@ -32,6 +69,9 @@ class ManualControlOverrideRequest(BaseModel):
 
     @field_validator(
         "actual_controller_name",
+        "new_actual_controller_name",
+        "new_actual_controller_country",
+        "new_actual_controller_notes",
         "actual_control_country",
         "manual_control_ratio",
         "manual_control_strength_label",
@@ -57,9 +97,11 @@ class ManualControlOverrideRead(BaseModel):
     company_id: int
     action_type: str
     source_type: str
+    actual_controller_subject_mode: str | None = None
     actual_controller_entity_id: int | None = None
     actual_controller_name: str | None = None
     actual_controller_type: str | None = None
+    created_actual_controller_entity_id: int | None = None
     actual_control_country: str | None = None
     attribution_type: str | None = None
     manual_control_ratio: str | None = None

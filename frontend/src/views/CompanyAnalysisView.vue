@@ -7,6 +7,7 @@ import {
   fetchCompanyAnalysisSummary,
   fetchCompanyControlChain,
   fetchCompanyIndustryAnalysis,
+  fetchShareholderEntities,
   restoreAutomaticControlResult,
   submitManualControlOverride,
 } from '@/api/analysis'
@@ -38,8 +39,14 @@ const summaryData = ref(null)
 const relationshipGraph = ref(null)
 const manualPanelExpanded = ref(false)
 const manualSaving = ref(false)
+const shareholderEntityOptions = ref([])
+const shareholderEntityLoading = ref(false)
 let manualPathKeySeed = 0
 let manualNodeKeySeed = 0
+
+const SUBJECT_MODE_EXISTING_ENTITY = 'existing_entity'
+const SUBJECT_MODE_NEW_ENTITY = 'new_entity'
+const SUBJECT_MODE_NAME_SNAPSHOT = 'name_snapshot'
 
 function createManualPathNode(name = '') {
   manualNodeKeySeed += 1
@@ -59,8 +66,13 @@ function createManualPathRow(intermediateNames = [], pathRatio = '') {
 }
 
 const manualForm = reactive({
+  actual_controller_subject_mode: SUBJECT_MODE_EXISTING_ENTITY,
   actual_controller_entity_id: '',
   actual_controller_name: '',
+  new_actual_controller_name: '',
+  new_actual_controller_type: 'other',
+  new_actual_controller_country: '',
+  new_actual_controller_notes: '',
   actual_control_country: '',
   manual_control_ratio: '',
   manual_control_strength_label: '',
@@ -200,6 +212,15 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => manualPanelExpanded.value,
+  (expanded) => {
+    if (expanded && !shareholderEntityOptions.value.length) {
+      searchShareholderEntityOptions()
+    }
+  },
+)
+
 const company = computed(() => summaryData.value?.company || null)
 const controlAnalysis = computed(() => summaryData.value?.control_analysis || {})
 const countryAttribution = computed(() => summaryData.value?.country_attribution || {})
@@ -231,6 +252,14 @@ const manualEffective = computed(
     Boolean(summaryData.value?.control_analysis?.is_manual_effective) ||
     Boolean(summaryData.value?.country_attribution?.is_manual_effective),
 )
+const manualSnapshotOnlyActive = computed(() => {
+  const override = manualOverride.value
+  return Boolean(
+    override?.actual_controller_subject_mode === SUBJECT_MODE_NAME_SNAPSHOT &&
+      override?.actual_controller_name &&
+      !override?.actual_controller_entity_id,
+  )
+})
 const automaticControlAnalysis = computed(
   () => summaryData.value?.automatic_control_analysis || {},
 )
@@ -245,24 +274,52 @@ const currentResultSourceLabel = computed(() => {
   if (source === 'manual_confirmed') {
     return '人工确认自动结果'
   }
+  if (source === 'manual_judgment') {
+    return '人工判定生效'
+  }
   if (source === 'manual_override') {
     return '人工征订生效'
   }
   return '自动分析结果'
 })
 
+const manualSubjectMode = computed(() => manualForm.actual_controller_subject_mode)
+const isExistingEntityMode = computed(() => manualSubjectMode.value === SUBJECT_MODE_EXISTING_ENTITY)
+const isNewEntityMode = computed(() => manualSubjectMode.value === SUBJECT_MODE_NEW_ENTITY)
+const isNameSnapshotMode = computed(() => manualSubjectMode.value === SUBJECT_MODE_NAME_SNAPSHOT)
+
 const manualControllerEntityId = computed(() => {
   const rawValue = String(manualForm.actual_controller_entity_id ?? '').trim()
   return /^\d+$/.test(rawValue) ? Number(rawValue) : null
 })
 
+const manualPathControllerEntityId = computed(() => {
+  if (isExistingEntityMode.value || isNewEntityMode.value) {
+    return manualControllerEntityId.value
+  }
+  return null
+})
+
+const manualPathControllerName = computed(() => {
+  if (isNewEntityMode.value) {
+    return String(manualForm.new_actual_controller_name ?? '').trim()
+  }
+  if (isNameSnapshotMode.value) {
+    return ''
+  }
+  return String(manualForm.actual_controller_name ?? '').trim()
+})
+
 const manualControllerLabel = computed(() => {
-  const name = String(manualForm.actual_controller_name ?? '').trim()
+  const name = manualPathControllerName.value
   if (name) {
     return name
   }
-  if (manualControllerEntityId.value !== null) {
-    return `主体 ${manualControllerEntityId.value}`
+  if (manualPathControllerEntityId.value !== null) {
+    return `主体 ${manualPathControllerEntityId.value}`
+  }
+  if (isNameSnapshotMode.value) {
+    return '仅名称快照，不生成正式路径起点'
   }
   return '待填写实际控制人'
 })
@@ -272,13 +329,24 @@ const manualTargetCompanyName = computed(() => company.value?.name || '当前目
 const manualPathDisplay = computed(() =>
   deriveManualPathDisplay({
     paths: manualForm.manual_paths,
-    controllerEntityId: manualControllerEntityId.value,
-    controllerName: manualForm.actual_controller_name,
+    controllerEntityId: manualPathControllerEntityId.value,
+    controllerName: manualPathControllerName.value,
+    allowNameOnlyStart: isNewEntityMode.value,
     targetCompanyName: manualTargetCompanyName.value,
   }),
 )
 
 const manualHasControllerForPaths = computed(() => manualPathDisplay.value.hasController)
+const manualCanEditPaths = computed(() => manualHasControllerForPaths.value)
+const manualPathBuilderBlockedTitle = computed(() => {
+  if (isNameSnapshotMode.value) {
+    return '仅名称快照未绑定实体库，不能作为正式 Path Builder 起点。若需构建正式控制路径，请先选择现有主体或新建主体。'
+  }
+  if (isExistingEntityMode.value) {
+    return '请选择已有主体 entity_id 后，路径起点才会同步为正式实体。'
+  }
+  return '填写新建主体名称后，保存时会先创建主体并绑定为正式路径起点。'
+})
 
 const manualGeneratedPathTexts = computed(() => manualPathDisplay.value.pathTexts)
 
@@ -294,6 +362,39 @@ function toggleManualPanel() {
 
 function optionalText(value) {
   return String(value ?? '').trim() || '暂无'
+}
+
+function entityOptionLabel(entity) {
+  const typeLabel = entity?.entity_type ? ` / ${entity.entity_type}` : ''
+  const countryLabel = entity?.country ? ` / ${entity.country}` : ''
+  return `${entity?.entity_name || '未命名主体'}（ID ${entity?.id}${typeLabel}${countryLabel}）`
+}
+
+async function searchShareholderEntityOptions(query = '') {
+  shareholderEntityLoading.value = true
+  try {
+    shareholderEntityOptions.value = await fetchShareholderEntities({
+      q: String(query ?? '').trim() || undefined,
+      limit: 30,
+    })
+  } catch (error) {
+    ElMessage.warning(error.message || '主体搜索暂不可用。')
+  } finally {
+    shareholderEntityLoading.value = false
+  }
+}
+
+function syncSelectedExistingEntity(entityId) {
+  const selected = shareholderEntityOptions.value.find(
+    (entity) => String(entity.id) === String(entityId),
+  )
+  if (!selected) {
+    return
+  }
+  manualForm.actual_controller_name = selected.entity_name || ''
+  if (!manualForm.actual_control_country && selected.country) {
+    manualForm.actual_control_country = selected.country
+  }
 }
 
 function ensureManualPathRows() {
@@ -326,6 +427,28 @@ function resetManualPaths(pathRows = [createManualPathRow()]) {
   ensureManualPathRows()
 }
 
+watch(
+  () => manualForm.actual_controller_subject_mode,
+  (mode) => {
+    if (mode === SUBJECT_MODE_NAME_SNAPSHOT) {
+      resetManualPaths([createManualPathRow()])
+      return
+    }
+    if (mode === SUBJECT_MODE_EXISTING_ENTITY && !shareholderEntityOptions.value.length) {
+      searchShareholderEntityOptions()
+    }
+  },
+)
+
+watch(
+  () => manualForm.actual_controller_entity_id,
+  (entityId) => {
+    if (isExistingEntityMode.value || isNewEntityMode.value) {
+      syncSelectedExistingEntity(entityId)
+    }
+  },
+)
+
 function pathRowsFromManualRecords(paths) {
   if (!Array.isArray(paths) || !paths.length) {
     return []
@@ -346,10 +469,33 @@ function pathRowsFromLegacyPathText(value) {
 const manualFormSeedKey = ref('')
 
 function populateManualFormFromOverride(override) {
+  const snapshot = override?.manual_result_snapshot || {}
+  const rawMode = override?.actual_controller_subject_mode ||
+    snapshot?.actual_controller_subject_mode ||
+    (override?.actual_controller_entity_id
+      ? SUBJECT_MODE_EXISTING_ENTITY
+      : override?.actual_controller_name
+        ? SUBJECT_MODE_NAME_SNAPSHOT
+        : SUBJECT_MODE_EXISTING_ENTITY)
+  const inferredMode = override?.actual_controller_entity_id
+    ? SUBJECT_MODE_EXISTING_ENTITY
+    : rawMode
+
+  manualForm.actual_controller_subject_mode = inferredMode
   manualForm.actual_controller_entity_id = override?.actual_controller_entity_id
     ? String(override.actual_controller_entity_id)
     : ''
   manualForm.actual_controller_name = override?.actual_controller_name || ''
+  manualForm.new_actual_controller_name =
+    inferredMode === SUBJECT_MODE_NEW_ENTITY ? override?.actual_controller_name || '' : ''
+  manualForm.new_actual_controller_type =
+    inferredMode === SUBJECT_MODE_NEW_ENTITY ? override?.actual_controller_type || 'other' : 'other'
+  manualForm.new_actual_controller_country =
+    inferredMode === SUBJECT_MODE_NEW_ENTITY ? override?.actual_control_country || '' : ''
+  manualForm.new_actual_controller_notes =
+    inferredMode === SUBJECT_MODE_NEW_ENTITY
+      ? snapshot?.created_actual_controller_entity?.notes || ''
+      : ''
   manualForm.actual_control_country = override?.actual_control_country || ''
   manualForm.manual_control_ratio = override?.manual_control_ratio || ''
   manualForm.manual_control_strength_label = override?.manual_control_strength_label || ''
@@ -361,16 +507,18 @@ function populateManualFormFromOverride(override) {
   manualForm.reason = override?.reason || ''
   manualForm.evidence = override?.evidence || ''
 
-  const snapshotPaths = Array.isArray(override?.manual_result_snapshot?.manual_paths)
-    ? override.manual_result_snapshot.manual_paths
+  const snapshotPaths = Array.isArray(snapshot?.manual_paths)
+    ? snapshot.manual_paths
     : []
   const overridePathRows = pathRowsFromManualRecords(override?.manual_paths)
   const snapshotPathRows = pathRowsFromManualRecords(snapshotPaths)
-  const pathRows = overridePathRows.length
-    ? overridePathRows
-    : snapshotPathRows.length
-      ? snapshotPathRows
-      : pathRowsFromLegacyPathText(override?.manual_path_summary || override?.manual_control_path)
+  const pathRows = inferredMode === SUBJECT_MODE_NAME_SNAPSHOT
+    ? []
+    : overridePathRows.length
+      ? overridePathRows
+      : snapshotPathRows.length
+        ? snapshotPathRows
+        : pathRowsFromLegacyPathText(override?.manual_path_summary || override?.manual_control_path)
   resetManualPaths(pathRows.length ? pathRows : [createManualPathRow()])
 }
 
@@ -389,8 +537,9 @@ watch(
 function buildManualPathPayloads() {
   return buildManualPathPayloadRecords({
     paths: manualForm.manual_paths,
-    controllerEntityId: manualControllerEntityId.value,
-    controllerName: manualForm.actual_controller_name,
+    controllerEntityId: manualPathControllerEntityId.value,
+    controllerName: manualPathControllerName.value,
+    allowNameOnlyStart: isNewEntityMode.value,
     targetCompanyId: company.value?.id ? Number(company.value.id) : null,
     targetCompanyName: manualTargetCompanyName.value,
   })
@@ -398,15 +547,42 @@ function buildManualPathPayloads() {
 
 function manualPayload(actionType) {
   const entityIdText = String(manualForm.actual_controller_entity_id ?? '').trim()
-  const manualPaths = buildManualPathPayloads()
+  const subjectMode = manualForm.actual_controller_subject_mode
+  const manualPaths = subjectMode === SUBJECT_MODE_NAME_SNAPSHOT ? [] : buildManualPathPayloads()
+  const existingControllerName = String(manualForm.actual_controller_name ?? '').trim()
+  const newControllerName = String(manualForm.new_actual_controller_name ?? '').trim()
+  const snapshotControllerName = String(manualForm.actual_controller_name ?? '').trim()
+
   return {
     action_type: actionType,
-    actual_controller_entity_id: entityIdText ? Number(entityIdText) : null,
-    actual_controller_name: String(manualForm.actual_controller_name ?? '').trim() || null,
+    actual_controller_subject_mode: subjectMode,
+    actual_controller_entity_id:
+      subjectMode === SUBJECT_MODE_EXISTING_ENTITY && entityIdText ? Number(entityIdText) : null,
+    actual_controller_name:
+      subjectMode === SUBJECT_MODE_NEW_ENTITY
+        ? newControllerName || null
+        : subjectMode === SUBJECT_MODE_NAME_SNAPSHOT
+          ? snapshotControllerName || null
+          : existingControllerName || null,
+    new_actual_controller_name:
+      subjectMode === SUBJECT_MODE_NEW_ENTITY ? newControllerName || null : null,
+    new_actual_controller_type:
+      subjectMode === SUBJECT_MODE_NEW_ENTITY
+        ? String(manualForm.new_actual_controller_type ?? '').trim() || 'other'
+        : null,
+    new_actual_controller_country:
+      subjectMode === SUBJECT_MODE_NEW_ENTITY
+        ? String(manualForm.new_actual_controller_country ?? '').trim() || null
+        : null,
+    new_actual_controller_notes:
+      subjectMode === SUBJECT_MODE_NEW_ENTITY
+        ? String(manualForm.new_actual_controller_notes ?? '').trim() || null
+        : null,
     actual_control_country: String(manualForm.actual_control_country ?? '').trim() || null,
     manual_control_ratio: String(manualForm.manual_control_ratio ?? '').trim() || null,
     manual_control_strength_label: String(manualForm.manual_control_strength_label ?? '').trim() || null,
-    manual_control_path: manualGeneratedPathSummary.value || null,
+    manual_control_path:
+      subjectMode === SUBJECT_MODE_NAME_SNAPSHOT ? null : manualGeneratedPathSummary.value || null,
     manual_paths: manualPaths.length ? manualPaths : null,
     manual_control_type: String(manualForm.manual_control_type ?? '').trim() || null,
     manual_decision_reason: String(manualForm.manual_decision_reason ?? '').trim() || null,
@@ -450,6 +626,14 @@ async function handleSubmitManualOverride() {
     return
   }
   const payload = manualPayload('override_result')
+  if (payload.actual_controller_subject_mode === SUBJECT_MODE_EXISTING_ENTITY && !payload.actual_controller_entity_id && payload.actual_controller_name) {
+    ElMessage.warning('使用现有主体时请先选择或填写有效 entity_id；若只记录名称，请切换为“仅名称快照”。')
+    return
+  }
+  if (payload.actual_controller_subject_mode === SUBJECT_MODE_NEW_ENTITY && !payload.new_actual_controller_name) {
+    ElMessage.warning('新建主体模式下请填写主体名称。')
+    return
+  }
   if (!payload.actual_controller_entity_id && !payload.actual_controller_name && !payload.actual_control_country) {
     ElMessage.warning('请至少填写实际控制人或实际控制国别。')
     return
@@ -537,6 +721,16 @@ async function handleRestoreAutomaticResult() {
           @toggle-manual-panel="toggleManualPanel"
         />
 
+        <el-alert
+          v-if="manualSnapshotOnlyActive"
+          class="status-banner"
+          type="info"
+          show-icon
+          :closable="false"
+          title="当前人工征订控制人仅为名称快照，未绑定实体库；图中未作为正式结构节点展示。"
+          :description="`当前人工征订控制人名称：${manualOverride?.actual_controller_name}`"
+        />
+
         <transition name="manual-panel">
           <section v-if="manualPanelExpanded" class="manual-control-panel">
             <div class="manual-control-panel__head">
@@ -568,20 +762,114 @@ async function handleRestoreAutomaticResult() {
             <div class="manual-control-panel__grid">
               <div class="manual-control-panel__form">
                 <el-form label-position="top">
-                  <el-form-item label="实际控制人 entity_id">
-                    <el-input
-                      v-model="manualForm.actual_controller_entity_id"
-                      placeholder="可留空，仅征订国别"
-                      clearable
-                    />
+                  <el-form-item label="实际控制人主体来源" class="manual-subject-source">
+                    <div class="manual-subject-source__control">
+                      <el-radio-group
+                        v-model="manualForm.actual_controller_subject_mode"
+                        class="manual-subject-source__radio-group"
+                      >
+                        <el-radio-button :label="SUBJECT_MODE_EXISTING_ENTITY">
+                          使用现有主体
+                        </el-radio-button>
+                        <el-radio-button :label="SUBJECT_MODE_NEW_ENTITY">
+                          新建主体并入库
+                        </el-radio-button>
+                        <el-radio-button :label="SUBJECT_MODE_NAME_SNAPSHOT">
+                          仅名称快照
+                        </el-radio-button>
+                      </el-radio-group>
+                    </div>
+                    <p class="manual-subject-source__help">
+                      仅绑定 entity_id 的主体会进入正式图结构和 Path Builder。
+                    </p>
                   </el-form-item>
-                  <el-form-item label="实际控制人名称快照">
-                    <el-input
-                      v-model="manualForm.actual_controller_name"
-                      placeholder="未填时按 entity_id 或自动结果补全"
-                      clearable
-                    />
-                  </el-form-item>
+
+                  <template v-if="isExistingEntityMode">
+                    <el-form-item label="选择已有主体">
+                      <el-select
+                        v-model="manualForm.actual_controller_entity_id"
+                        filterable
+                        remote
+                        reserve-keyword
+                        clearable
+                        :remote-method="searchShareholderEntityOptions"
+                        :loading="shareholderEntityLoading"
+                        placeholder="输入主体名称或 entity_id 搜索"
+                        @change="syncSelectedExistingEntity"
+                      >
+                        <el-option
+                          v-for="entity in shareholderEntityOptions"
+                          :key="entity.id"
+                          :label="entityOptionLabel(entity)"
+                          :value="String(entity.id)"
+                        />
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="实际控制人 entity_id">
+                      <el-input
+                        v-model="manualForm.actual_controller_entity_id"
+                        placeholder="也可直接填写 entity_id；仅征订国别时可留空"
+                        clearable
+                      />
+                    </el-form-item>
+                    <el-form-item label="实际控制人名称快照（可选）">
+                      <el-input
+                        v-model="manualForm.actual_controller_name"
+                        placeholder="未填时后端按 entity_id 对应主体名称补全"
+                        clearable
+                      />
+                    </el-form-item>
+                  </template>
+
+                  <template v-else-if="isNewEntityMode">
+                    <el-form-item label="新建主体名称">
+                      <el-input
+                        v-model="manualForm.new_actual_controller_name"
+                        placeholder="保存时先写入 shareholder_entities，再绑定为实际控制人"
+                        clearable
+                      />
+                    </el-form-item>
+                    <div class="manual-control-panel__inline-fields">
+                      <el-form-item label="主体类型">
+                        <el-select v-model="manualForm.new_actual_controller_type" placeholder="主体类型">
+                          <el-option label="公司主体" value="company" />
+                          <el-option label="自然人" value="person" />
+                          <el-option label="机构投资者" value="institution" />
+                          <el-option label="基金 / 公众持股" value="fund" />
+                          <el-option label="政府 / 国资主体" value="government" />
+                          <el-option label="其他主体" value="other" />
+                        </el-select>
+                      </el-form-item>
+                      <el-form-item label="国家/地区（可选）">
+                        <el-input
+                          v-model="manualForm.new_actual_controller_country"
+                          placeholder="例如 China、United States"
+                          clearable
+                        />
+                      </el-form-item>
+                    </div>
+                    <el-form-item label="新建主体备注（可选）">
+                      <el-input
+                        v-model="manualForm.new_actual_controller_notes"
+                        type="textarea"
+                        :rows="2"
+                        placeholder="例如：由人工征订创建，用于绑定控制结论"
+                      />
+                    </el-form-item>
+                  </template>
+
+                  <template v-else>
+                    <el-form-item label="实际控制人名称快照">
+                      <el-input
+                        v-model="manualForm.actual_controller_name"
+                        placeholder="仅记录名称，不创建实体、不绑定 entity_id"
+                        clearable
+                      />
+                      <span class="manual-control-panel__field-help">
+                        仅名称快照不会写入 shareholder_entities，也不会作为正式结构节点进入图或路径。
+                      </span>
+                    </el-form-item>
+                  </template>
                   <el-form-item label="实际控制国别">
                     <el-input
                       v-model="manualForm.actual_control_country"
@@ -610,9 +898,15 @@ async function handleRestoreAutomaticResult() {
                     <div class="manual-path-builder__head">
                       <div>
                         <h3>控制路径 Path Builder</h3>
-                        <p>起点固定为当前征订控制人，终点固定为当前目标公司。</p>
+                        <p>起点必须是已绑定或即将新建入库的正式主体，终点固定为当前目标公司。</p>
                       </div>
-                      <el-button size="small" type="primary" plain @click="addManualPath">
+                      <el-button
+                        size="small"
+                        type="primary"
+                        plain
+                        :disabled="!manualCanEditPaths"
+                        @click="addManualPath"
+                      >
                         添加路径
                       </el-button>
                     </div>
@@ -623,13 +917,13 @@ async function handleRestoreAutomaticResult() {
                       type="info"
                       show-icon
                       :closable="false"
-                      title="填写实际控制人后，路径起点会自动同步为该控制人。"
+                      :title="manualPathBuilderBlockedTitle"
                     />
 
                     <div class="manual-path-builder__stats">
                       <div>
                         <span>自动摘要</span>
-                        <strong>{{ manualGeneratedPathSummary || '待填写实际控制人后生成' }}</strong>
+                        <strong>{{ manualGeneratedPathSummary || '未生成正式路径' }}</strong>
                       </div>
                       <div>
                         <span>路径数量</span>
@@ -654,6 +948,7 @@ async function handleRestoreAutomaticResult() {
                             size="small"
                             link
                             type="danger"
+                            :disabled="!manualCanEditPaths"
                             @click="removeManualPath(pathIndex)"
                           >
                             删除路径
@@ -673,12 +968,14 @@ async function handleRestoreAutomaticResult() {
                                 v-model="node.name"
                                 size="small"
                                 placeholder="中间节点名称"
+                                :disabled="!manualCanEditPaths"
                                 clearable
                               />
                               <el-button
                                 size="small"
                                 link
                                 type="danger"
+                                :disabled="!manualCanEditPaths"
                                 @click="removeManualIntermediateNode(path, nodeIndex)"
                               >
                                 删除
@@ -696,6 +993,7 @@ async function handleRestoreAutomaticResult() {
                               v-model="path.path_ratio"
                               size="small"
                               placeholder="整条路径口径，例如 63.5 或 63.5%"
+                              :disabled="!manualCanEditPaths"
                               clearable
                             />
                           </el-form-item>
@@ -704,7 +1002,12 @@ async function handleRestoreAutomaticResult() {
                           </span>
                         </div>
                         <div class="manual-path-row__actions">
-                          <el-button size="small" plain @click="addManualIntermediateNode(path)">
+                          <el-button
+                            size="small"
+                            plain
+                            :disabled="!manualCanEditPaths"
+                            @click="addManualIntermediateNode(path)"
+                          >
                             添加中间节点
                           </el-button>
                         </div>
@@ -819,11 +1122,13 @@ async function handleRestoreAutomaticResult() {
           />
 
           <ControlRelationsTable
+            :company-id="resolvedCompanyId"
             :relationships="controlRelationships"
             :loading="loading"
             :control-analysis="controlAnalysis"
             :country-attribution="countryAttribution"
             :company="company"
+            @manual-judgment-change="loadCompanyData(resolvedCompanyId)"
           />
 
           <IndustrySummaryCard :industry-analysis="industryAnalysis" />
@@ -1097,6 +1402,45 @@ async function handleRestoreAutomaticResult() {
 .manual-control-panel__field-help {
   display: block;
   margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.manual-subject-source {
+  margin-bottom: 16px;
+}
+
+.manual-subject-source :deep(.el-form-item__content) {
+  display: grid;
+  align-items: start;
+}
+
+.manual-subject-source__control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.manual-subject-source__radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.manual-subject-source__radio-group :deep(.el-radio-button) {
+  margin: 0;
+}
+
+.manual-subject-source__radio-group :deep(.el-radio-button__inner) {
+  border-radius: 8px;
+  white-space: normal;
+}
+
+.manual-subject-source__help {
+  margin: 4px 0 0;
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.5;

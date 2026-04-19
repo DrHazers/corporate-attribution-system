@@ -18,14 +18,33 @@ from backend.crud.shareholder import get_shareholder_entity_by_id
 from backend.models.control_relationship import ControlRelationship
 from backend.models.country_attribution import CountryAttribution
 from backend.models.manual_control_override import ManualControlOverride
+from backend.models.shareholder import ShareholderEntity
+from backend.shareholder_relations import prepare_shareholder_entity_values
 
 
 MANUAL_RESULT_NOTE_PREFIX = "MANUAL_OVERRIDE:"
 SOURCE_MANUAL_OVERRIDE = "manual_override"
 SOURCE_MANUAL_CONFIRMED = "manual_confirmed"
+SOURCE_MANUAL_JUDGMENT = "manual_judgment"
 ACTION_CONFIRM_AUTO = "confirm_auto"
 ACTION_OVERRIDE_RESULT = "override_result"
+ACTION_MANUAL_JUDGMENT = "manual_judgment"
+ACTION_RESTORE_MANUAL_JUDGMENT = "restore_manual_judgment"
 ACTION_RESTORE_AUTO = "restore_auto"
+SUBJECT_MODE_EXISTING_ENTITY = "existing_entity"
+SUBJECT_MODE_NEW_ENTITY = "new_entity"
+SUBJECT_MODE_NAME_SNAPSHOT = "name_snapshot"
+SUBJECT_MODE_ALIASES = {
+    "existing": SUBJECT_MODE_EXISTING_ENTITY,
+    "existing_entity": SUBJECT_MODE_EXISTING_ENTITY,
+    "entity": SUBJECT_MODE_EXISTING_ENTITY,
+    "new": SUBJECT_MODE_NEW_ENTITY,
+    "new_entity": SUBJECT_MODE_NEW_ENTITY,
+    "create_entity": SUBJECT_MODE_NEW_ENTITY,
+    "name": SUBJECT_MODE_NAME_SNAPSHOT,
+    "snapshot": SUBJECT_MODE_NAME_SNAPSHOT,
+    "name_snapshot": SUBJECT_MODE_NAME_SNAPSHOT,
+}
 
 
 def _json_default(value: Any) -> str:
@@ -80,18 +99,34 @@ def serialize_manual_override(override: ManualControlOverride | None) -> dict[st
     if override is None:
         return None
     manual_paths = _manual_paths_from_storage(override.manual_paths)
+    manual_result_snapshot = _json_loads(override.manual_result_snapshot)
+    manual_result = manual_result_snapshot if isinstance(manual_result_snapshot, dict) else {}
+    subject_mode = manual_result.get("actual_controller_subject_mode")
+    if not subject_mode:
+        subject_mode = (
+            SUBJECT_MODE_EXISTING_ENTITY
+            if override.actual_controller_entity_id is not None
+            else SUBJECT_MODE_NAME_SNAPSHOT
+            if override.actual_controller_name
+            else None
+        )
     display_strength = _manual_display_control_strength(
         final_strength=override.manual_control_ratio,
         manual_paths=manual_paths,
+        final_source_label=_manual_label_for_source(override.source_type),
     )
     return {
         "id": override.id,
         "company_id": override.company_id,
         "action_type": override.action_type,
         "source_type": override.source_type,
+        "actual_controller_subject_mode": subject_mode,
         "actual_controller_entity_id": override.actual_controller_entity_id,
         "actual_controller_name": override.actual_controller_name,
         "actual_controller_type": override.actual_controller_type,
+        "created_actual_controller_entity_id": manual_result.get(
+            "created_actual_controller_entity_id"
+        ),
         "actual_control_country": override.actual_control_country,
         "attribution_type": override.attribution_type,
         "manual_control_ratio": override.manual_control_ratio,
@@ -113,7 +148,7 @@ def serialize_manual_override(override: ManualControlOverride | None) -> dict[st
         "is_current_effective": bool(override.is_current_effective),
         "automatic_control_snapshot": _json_loads(override.automatic_control_snapshot),
         "automatic_country_snapshot": _json_loads(override.automatic_country_snapshot),
-        "manual_result_snapshot": _json_loads(override.manual_result_snapshot),
+        "manual_result_snapshot": manual_result_snapshot,
         "control_relationship_id": override.control_relationship_id,
         "country_attribution_id": override.country_attribution_id,
         "created_at": override.created_at.isoformat() if override.created_at else None,
@@ -125,13 +160,14 @@ def get_active_manual_control_override(
     db: Session,
     company_id: int,
 ) -> ManualControlOverride | None:
-    return (
+    active_overrides = (
         db.query(ManualControlOverride)
         .filter(ManualControlOverride.company_id == company_id)
         .filter(ManualControlOverride.is_current_effective.is_(True))
         .order_by(ManualControlOverride.id.desc())
-        .first()
+        .all()
     )
+    return _highest_priority_override(active_overrides)
 
 
 def get_manual_control_override_history(
@@ -162,19 +198,54 @@ def get_manual_control_override_status(db: Session, company_id: int) -> dict[str
 def _source_type_for_action(action_type: str) -> str:
     if action_type == ACTION_CONFIRM_AUTO:
         return SOURCE_MANUAL_CONFIRMED
+    if action_type == ACTION_MANUAL_JUDGMENT:
+        return SOURCE_MANUAL_JUDGMENT
     return SOURCE_MANUAL_OVERRIDE
+
+
+def _manual_source_priority(source_type: str | None) -> int:
+    if source_type == SOURCE_MANUAL_OVERRIDE:
+        return 0
+    if source_type == SOURCE_MANUAL_JUDGMENT:
+        return 1
+    if source_type == SOURCE_MANUAL_CONFIRMED:
+        return 2
+    return 9
+
+
+def _highest_priority_override(
+    overrides: list[ManualControlOverride],
+) -> ManualControlOverride | None:
+    if not overrides:
+        return None
+    return sorted(
+        overrides,
+        key=lambda item: (_manual_source_priority(item.source_type), -(item.id or 0)),
+    )[0]
 
 
 def _manual_label_for_source(source_type: str) -> str:
     if source_type == SOURCE_MANUAL_CONFIRMED:
         return "人工确认"
+    if source_type == SOURCE_MANUAL_JUDGMENT:
+        return "人工判定"
     return "人工征订"
 
 
 def _manual_decision_reason_for_source(source_type: str) -> str:
     if source_type == SOURCE_MANUAL_CONFIRMED:
         return "经人工确认后采用当前自动分析结论"
+    if source_type == SOURCE_MANUAL_JUDGMENT:
+        return "基于现有候选主体人工判定为当前实际控制人"
     return "人工征订确定当前实际控制人"
+
+
+def _manual_recognition_note(source_type: str) -> str:
+    if source_type == SOURCE_MANUAL_OVERRIDE:
+        return "当前实际控制人为人工征订确定，当前主路径由人工征订构建，非算法自动识别结果。"
+    if source_type == SOURCE_MANUAL_JUDGMENT:
+        return "当前实际控制人为人工判定确定，基于现有候选主体选择，非算法自动形成唯一实际控制人。"
+    return "当前结果为自动分析结果，经人工确认后继续生效。"
 
 
 def _normalize_optional_text(value: Any) -> str | None:
@@ -182,6 +253,78 @@ def _normalize_optional_text(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _manual_subject_mode_from_payload(payload: Any, action_type: str) -> str:
+    if action_type == ACTION_CONFIRM_AUTO:
+        return SUBJECT_MODE_EXISTING_ENTITY
+
+    raw_mode = _normalize_optional_text(
+        getattr(payload, "actual_controller_subject_mode", None)
+    )
+    if raw_mode:
+        normalized_mode = SUBJECT_MODE_ALIASES.get(raw_mode.strip().lower())
+        if normalized_mode is None:
+            raise ValueError(f"Unsupported actual controller subject mode: {raw_mode}")
+        return normalized_mode
+
+    if getattr(payload, "actual_controller_entity_id", None) is not None:
+        return SUBJECT_MODE_EXISTING_ENTITY
+    if _normalize_optional_text(getattr(payload, "new_actual_controller_name", None)):
+        return SUBJECT_MODE_NEW_ENTITY
+    if _normalize_optional_text(getattr(payload, "actual_controller_name", None)):
+        return SUBJECT_MODE_NAME_SNAPSHOT
+    return SUBJECT_MODE_EXISTING_ENTITY
+
+
+def _has_supplied_manual_path_payload(payload: Any) -> bool:
+    raw_paths = getattr(payload, "manual_paths", None)
+    if isinstance(raw_paths, list) and raw_paths:
+        return True
+    if raw_paths not in (None, []):
+        return True
+    return _normalize_optional_text(getattr(payload, "manual_control_path", None)) is not None
+
+
+def _entity_payload_from_model(entity: ShareholderEntity) -> dict[str, Any]:
+    return {
+        "id": entity.id,
+        "entity_name": entity.entity_name,
+        "entity_type": entity.entity_type,
+        "country": entity.country,
+        "notes": entity.notes,
+    }
+
+
+def _create_actual_controller_entity_from_payload(
+    db: Session,
+    payload: Any,
+) -> dict[str, Any]:
+    entity_name = _normalize_optional_text(
+        getattr(payload, "new_actual_controller_name", None)
+    ) or _normalize_optional_text(getattr(payload, "actual_controller_name", None))
+    if entity_name is None:
+        raise ValueError("New actual controller mode requires a subject name.")
+
+    prepared_values = prepare_shareholder_entity_values(
+        {
+            "entity_name": entity_name,
+            "entity_type": _normalize_optional_text(
+                getattr(payload, "new_actual_controller_type", None)
+            )
+            or "other",
+            "country": _normalize_optional_text(
+                getattr(payload, "new_actual_controller_country", None)
+            ),
+            "notes": _normalize_optional_text(
+                getattr(payload, "new_actual_controller_notes", None)
+            ),
+        }
+    )
+    entity = ShareholderEntity(**prepared_values)
+    db.add(entity)
+    db.flush()
+    return _entity_payload_from_model(entity)
 
 
 def _manual_optional_fields_from_payload(payload: Any) -> dict[str, Any]:
@@ -311,33 +454,28 @@ def _validate_and_sync_path_start(
     controller_entity_id: int | None,
     controller_name: str | None,
 ) -> dict[str, Any]:
+    if controller_entity_id is None:
+        raise ValueError(
+            "Manual paths require a bound actual controller entity_id. "
+            "Use an existing subject or create a new subject before building a formal path."
+        )
+
     node_id = _coerce_optional_int(node.get("entity_id"))
     node_name = _normalize_optional_text(node.get("entity_name"))
 
-    if controller_entity_id is not None:
-        if node_id is not None and node_id != controller_entity_id:
-            raise ValueError("Manual path start must match the manual actual controller.")
-        if (
-            node_id is None
-            and node_name
-            and controller_name
-            and not _same_path_name(node_name, controller_name)
-        ):
-            raise ValueError("Manual path start must match the manual actual controller.")
-        return {
-            "entity_id": controller_entity_id,
-            "entity_name": controller_name or node_name or f"Entity {controller_entity_id}",
-        }
-
-    if controller_name:
-        if node_name and not _same_path_name(node_name, controller_name):
-            raise ValueError("Manual path start must match the manual actual controller.")
-        return {
-            "entity_id": None,
-            "entity_name": controller_name,
-        }
-
-    raise ValueError("Manual paths require a manual actual controller.")
+    if node_id is not None and node_id != controller_entity_id:
+        raise ValueError("Manual path start must match the manual actual controller.")
+    if (
+        node_id is None
+        and node_name
+        and controller_name
+        and not _same_path_name(node_name, controller_name)
+    ):
+        raise ValueError("Manual path start must match the manual actual controller.")
+    return {
+        "entity_id": controller_entity_id,
+        "entity_name": controller_name or node_name or f"Entity {controller_entity_id}",
+    }
 
 
 def _normalize_structured_manual_paths(
@@ -487,7 +625,7 @@ def _default_manual_path(
     controller_entity_id: int | None,
     controller_name: str | None,
 ) -> list[dict[str, Any]]:
-    if controller_entity_id is None and not controller_name:
+    if controller_entity_id is None:
         return []
     names = [
         controller_name
@@ -514,6 +652,14 @@ def _manual_paths_from_payload(
     controller_entity_id: int | None,
     controller_name: str | None,
 ) -> list[dict[str, Any]]:
+    if controller_entity_id is None:
+        if _has_supplied_manual_path_payload(payload):
+            raise ValueError(
+                "Manual paths require a bound actual controller entity_id. "
+                "Choose an existing subject or create a new subject before building formal paths."
+            )
+        return []
+
     raw_paths = getattr(payload, "manual_paths", None)
     structured_paths = _normalize_structured_manual_paths(
         db,
@@ -601,13 +747,14 @@ def _manual_display_control_strength(
     *,
     final_strength: Any,
     manual_paths: list[dict[str, Any]],
+    final_source_label: str = "人工征订",
 ) -> dict[str, Any]:
     final_value = _normalize_optional_text(final_strength)
     if final_value is not None:
         return {
             "value": final_value,
             "source": "manual_final_strength",
-            "source_label": "人工征订",
+            "source_label": final_source_label,
         }
 
     primary_path_ratio = _manual_primary_path_ratio(manual_paths)
@@ -662,6 +809,9 @@ def _manual_control_path_payload(
     company_id: int,
     company_name: str | None,
 ) -> list[dict[str, Any]]:
+    if manual_result.get("actual_controller_entity_id") is None:
+        return []
+
     manual_paths = _manual_paths_from_result(manual_result)
     path_kind = (
         "manual_override"
@@ -735,6 +885,126 @@ def _entity_payload(db: Session, entity_id: int | None) -> dict[str, Any] | None
     }
 
 
+def _relationship_basis(relationship: dict[str, Any]) -> dict[str, Any]:
+    basis = _json_loads(relationship.get("basis"))
+    return basis if isinstance(basis, dict) else {}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
+def _normalized_field(relationship: dict[str, Any], key: str) -> str:
+    basis = _relationship_basis(relationship)
+    return str(relationship.get(key) or basis.get(key) or "").strip().lower()
+
+
+def _is_structure_signal_relationship(relationship: dict[str, Any]) -> bool:
+    basis = _relationship_basis(relationship)
+    return (
+        _truthy(relationship.get("ownership_pattern_signal"))
+        or _truthy(basis.get("ownership_pattern_signal"))
+        or _normalized_field(relationship, "terminal_identifiability") == "aggregation_like"
+        or _normalized_field(relationship, "terminal_suitability") == "pattern_only"
+        or _normalized_field(relationship, "terminal_failure_reason")
+        == "ownership_aggregation_pattern"
+        or _normalized_field(relationship, "selection_reason")
+        == "excluded_from_actual_race_due_to_terminal_profile"
+    )
+
+
+def _find_judgment_candidate(
+    auto_control: dict[str, Any],
+    selected_controller_entity_id: int,
+) -> dict[str, Any]:
+    relationships = auto_control.get("control_relationships") or []
+    for relationship in relationships:
+        if relationship.get("controller_entity_id") != selected_controller_entity_id:
+            continue
+        if _is_structure_signal_relationship(relationship):
+            raise ValueError(
+                "Selected controller is a structure signal and cannot be manually judged as actual controller."
+            )
+        return deepcopy(relationship)
+    raise ValueError("Selected controller must come from current control relation candidates.")
+
+
+def _control_path_from_snapshot(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    control_path = _json_loads(snapshot.get("control_path"))
+    return control_path if isinstance(control_path, list) else []
+
+
+def _manual_judgment_result_from_payload(
+    db: Session,
+    *,
+    company_id: int,
+    payload: Any,
+    auto_control: dict[str, Any],
+    auto_country: dict[str, Any],
+) -> dict[str, Any]:
+    selected_entity_id = getattr(payload, "selected_controller_entity_id", None)
+    if selected_entity_id is None:
+        raise ValueError("Manual judgment requires a selected controller entity id.")
+    reason = _normalize_optional_text(getattr(payload, "reason", None))
+    if not reason:
+        raise ValueError("Manual judgment reason is required.")
+
+    selected_relationship = _find_judgment_candidate(auto_control, selected_entity_id)
+    entity = _entity_payload(db, selected_entity_id)
+    controller_name = (
+        selected_relationship.get("controller_name")
+        or (entity.get("entity_name") if entity else None)
+        or f"主体 {selected_entity_id}"
+    )
+    controller_type = (
+        selected_relationship.get("controller_type")
+        or (entity.get("entity_type") if entity else None)
+        or "other"
+    )
+    actual_control_country = (
+        (entity.get("country") if entity else None)
+        or auto_country.get("actual_control_country")
+    )
+    auto_actual = auto_control.get("actual_controller") or {}
+
+    selected_relationship["basis"] = _relationship_basis(selected_relationship)
+    return {
+        "company_id": company_id,
+        "action_type": ACTION_MANUAL_JUDGMENT,
+        "source_type": SOURCE_MANUAL_JUDGMENT,
+        "actual_controller_entity_id": selected_entity_id,
+        "actual_controller_name": controller_name,
+        "actual_controller_type": controller_type,
+        "actual_control_country": actual_control_country,
+        "attribution_type": SOURCE_MANUAL_JUDGMENT,
+        "manual_control_ratio": None,
+        "manual_control_strength_label": None,
+        "manual_control_path": None,
+        "manual_path_summary": None,
+        "manual_paths": [],
+        "manual_control_type": selected_relationship.get("control_type")
+        or SOURCE_MANUAL_JUDGMENT,
+        "manual_decision_reason": reason,
+        "manual_path_count": None,
+        "manual_path_depth": selected_relationship.get("control_chain_depth"),
+        "reason": reason,
+        "evidence": _normalize_optional_text(getattr(payload, "evidence", None)),
+        "operator": getattr(payload, "operator", None) or "system",
+        "selected_relationship_snapshot": selected_relationship,
+        "automatic_control_snapshot": _snapshot_control_result(auto_control),
+        "automatic_country_snapshot": _snapshot_country_result(auto_country),
+        "automatic_actual_controller_name": auto_actual.get("controller_name"),
+        "automatic_actual_controller_entity_id": auto_actual.get("controller_entity_id"),
+        "automatic_actual_control_country": auto_country.get("actual_control_country"),
+    }
+
+
 def _manual_result_from_payload(
     db: Session,
     *,
@@ -747,19 +1017,43 @@ def _manual_result_from_payload(
     action_type = getattr(payload, "action_type", ACTION_OVERRIDE_RESULT)
     source_type = _source_type_for_action(action_type)
     auto_actual = auto_control.get("actual_controller") or {}
+    subject_mode = _manual_subject_mode_from_payload(payload, action_type)
+    created_entity: dict[str, Any] | None = None
 
     if action_type == ACTION_CONFIRM_AUTO:
         controller_entity_id = auto_actual.get("controller_entity_id")
         controller_name = auto_actual.get("controller_name")
         actual_control_country = auto_country.get("actual_control_country")
+        entity = _entity_payload(db, controller_entity_id)
     else:
-        controller_entity_id = getattr(payload, "actual_controller_entity_id", None)
-        controller_name = getattr(payload, "actual_controller_name", None)
-        actual_control_country = getattr(payload, "actual_control_country", None)
+        actual_control_country = _normalize_optional_text(
+            getattr(payload, "actual_control_country", None)
+        )
+        entity = None
+        if subject_mode == SUBJECT_MODE_NEW_ENTITY:
+            created_entity = _create_actual_controller_entity_from_payload(db, payload)
+            entity = created_entity
+            controller_entity_id = created_entity["id"]
+            controller_name = created_entity["entity_name"]
+        elif subject_mode == SUBJECT_MODE_NAME_SNAPSHOT:
+            controller_entity_id = None
+            controller_name = _normalize_optional_text(
+                getattr(payload, "actual_controller_name", None)
+            )
+        else:
+            controller_entity_id = getattr(payload, "actual_controller_entity_id", None)
+            controller_name = _normalize_optional_text(
+                getattr(payload, "actual_controller_name", None)
+            )
+            if controller_entity_id is None and controller_name:
+                raise ValueError(
+                    "Existing subject mode requires actual_controller_entity_id. "
+                    "Use name snapshot mode when the subject is not bound to the entity library."
+                )
+            entity = _entity_payload(db, controller_entity_id)
+            if controller_entity_id is not None and entity is None:
+                raise LookupError("Shareholder entity not found.")
 
-    entity = _entity_payload(db, controller_entity_id)
-    if controller_entity_id is not None and entity is None:
-        raise LookupError("Shareholder entity not found.")
     controller_name = (
         controller_name
         or (entity.get("entity_name") if entity else None)
@@ -770,11 +1064,12 @@ def _manual_result_from_payload(
         or auto_actual.get("controller_type")
         or "other"
     )
-    actual_control_country = (
-        actual_control_country
-        or (entity.get("country") if entity else None)
-        or auto_country.get("actual_control_country")
-    )
+    if action_type == ACTION_CONFIRM_AUTO or controller_entity_id is not None:
+        actual_control_country = (
+            actual_control_country
+            or (entity.get("country") if entity else None)
+            or auto_country.get("actual_control_country")
+        )
 
     if action_type == ACTION_OVERRIDE_RESULT and not any(
         [controller_entity_id, controller_name, actual_control_country]
@@ -823,9 +1118,18 @@ def _manual_result_from_payload(
         "company_id": company_id,
         "action_type": action_type,
         "source_type": source_type,
+        "actual_controller_subject_mode": subject_mode,
         "actual_controller_entity_id": controller_entity_id,
         "actual_controller_name": controller_name,
-        "actual_controller_type": controller_type if controller_name else None,
+        "actual_controller_type": (
+            controller_type
+            if controller_name and controller_entity_id is not None
+            else None
+        ),
+        "created_actual_controller_entity_id": (
+            created_entity.get("id") if created_entity else None
+        ),
+        "created_actual_controller_entity": created_entity,
         "actual_control_country": actual_control_country,
         "attribution_type": source_type,
         **optional_fields,
@@ -846,9 +1150,21 @@ def _manual_basis_payload(
     *,
     company_name: str | None = None,
 ) -> dict[str, Any]:
+    selected_snapshot = manual_result.get("selected_relationship_snapshot")
+    selected_basis = (
+        _relationship_basis(selected_snapshot)
+        if isinstance(selected_snapshot, dict)
+        else {}
+    )
+    selected_control_type = (
+        selected_snapshot.get("control_type")
+        if isinstance(selected_snapshot, dict)
+        else None
+    )
     manual_control_type = (
         override.manual_control_type
         or manual_result.get("manual_control_type")
+        or selected_control_type
         or override.attribution_type
         or override.source_type
     )
@@ -862,6 +1178,11 @@ def _manual_basis_payload(
         )
     )
     manual_paths = _manual_paths_from_storage(override.manual_paths) or _manual_paths_from_result(manual_result)
+    selected_paths = (
+        _control_path_from_snapshot(selected_snapshot)
+        if isinstance(selected_snapshot, dict)
+        else []
+    )
     manual_control_path = (
         _manual_path_summary_from_paths(manual_paths)
         or _replace_target_company_placeholder(
@@ -871,8 +1192,9 @@ def _manual_basis_payload(
             or manual_result.get("manual_control_path"),
             company_name,
         )
+        or (selected_paths[0].get("path_text") if selected_paths else None)
     )
-    path_count = _manual_path_count_from_paths(manual_paths) or (
+    path_count = _manual_path_count_from_paths(manual_paths) or len(selected_paths) or (
         override.manual_path_count
         if override.manual_path_count is not None
         else manual_result.get("manual_path_count")
@@ -886,6 +1208,11 @@ def _manual_basis_payload(
                 override.manual_path_depth
                 if override.manual_path_depth is not None
                 else manual_result.get("manual_path_depth")
+                or (
+                    selected_snapshot.get("control_chain_depth")
+                    if isinstance(selected_snapshot, dict)
+                    else None
+                )
             ),
         },
         company_name=company_name,
@@ -894,12 +1221,28 @@ def _manual_basis_payload(
         final_strength=override.manual_control_ratio
         or manual_result.get("manual_control_ratio"),
         manual_paths=manual_paths,
+        final_source_label=_manual_label_for_source(override.source_type),
     )
 
     return {
         "classification": manual_control_type,
         "source_type": override.source_type,
         "manual_result_source": override.source_type,
+        "actual_controller_subject_mode": manual_result.get(
+            "actual_controller_subject_mode"
+        ),
+        "created_actual_controller_entity_id": manual_result.get(
+            "created_actual_controller_entity_id"
+        ),
+        "actual_controller_name_snapshot": (
+            override.actual_controller_name
+            if override.actual_controller_entity_id is None
+            else None
+        ),
+        "actual_controller_is_unbound_snapshot": (
+            override.actual_controller_entity_id is None
+            and bool(override.actual_controller_name)
+        ),
         "manual_label": _manual_label_for_source(override.source_type),
         "action_type": override.action_type,
         "is_manual_effective": bool(override.is_current_effective),
@@ -928,11 +1271,9 @@ def _manual_basis_payload(
         "manual_evidence": override.evidence,
         "manual_operator": override.operator,
         "manual_decided_at": override.created_at.isoformat() if override.created_at else None,
-        "recognition_note": (
-            "当前实际控制人为人工征订确定，当前主路径由人工征订构建，非算法自动识别结果。"
-            if override.source_type == SOURCE_MANUAL_OVERRIDE
-            else "当前结果为自动分析结果，经人工确认后继续生效。"
-        ),
+        "selected_relationship_snapshot": selected_snapshot,
+        "selected_candidate_basis": selected_basis,
+        "recognition_note": _manual_recognition_note(override.source_type),
         "automatic_actual_controller_name": manual_result.get(
             "automatic_actual_controller_name"
         ),
@@ -953,9 +1294,7 @@ def _manual_relationship_row(
     manual_result: dict[str, Any],
     control_relationship_id: int | None = None,
 ) -> ControlRelationship | None:
-    if not manual_result.get("actual_controller_entity_id") and not manual_result.get(
-        "actual_controller_name"
-    ):
+    if not manual_result.get("actual_controller_entity_id"):
         return None
     manual_paths = _manual_paths_from_storage(override.manual_paths) or manual_result.get(
         "manual_paths"
@@ -964,6 +1303,7 @@ def _manual_relationship_row(
         final_strength=override.manual_control_ratio
         or manual_result.get("manual_control_ratio"),
         manual_paths=manual_paths,
+        final_source_label=_manual_label_for_source(override.source_type),
     )
 
     return ControlRelationship(
@@ -1075,6 +1415,28 @@ def _deactivate_current_overrides(db: Session, company_id: int) -> list[dict[str
     return snapshots
 
 
+def _deactivate_active_overrides_by_source(
+    db: Session,
+    company_id: int,
+    source_types: set[str],
+) -> list[dict[str, Any]]:
+    active_overrides = (
+        db.query(ManualControlOverride)
+        .filter(ManualControlOverride.company_id == company_id)
+        .filter(ManualControlOverride.is_current_effective.is_(True))
+        .filter(ManualControlOverride.source_type.in_(source_types))
+        .order_by(ManualControlOverride.id.desc())
+        .all()
+    )
+    snapshots = []
+    for override in active_overrides:
+        snapshots.append(serialize_manual_override(override))
+        override.is_current_effective = False
+        _update_manual_relationship_inactive(override.control_relationship)
+        _update_manual_country_inactive(override.country_attribution)
+    return snapshots
+
+
 def _create_manual_relationship_record(
     db: Session,
     *,
@@ -1119,6 +1481,8 @@ def _create_manual_country_record(
         "country_inference_reason": (
             "manual_confirmed_auto_result"
             if override.action_type == ACTION_CONFIRM_AUTO
+            else "manual_judgment_result"
+            if override.source_type == SOURCE_MANUAL_JUDGMENT
             else "manual_override_result"
         ),
     }
@@ -1142,13 +1506,15 @@ def _create_manual_country_record(
         country_inference_reason=(
             "manual_confirmed_auto_result"
             if override.action_type == ACTION_CONFIRM_AUTO
+            else "manual_judgment_result"
+            if override.source_type == SOURCE_MANUAL_JUDGMENT
             else "manual_override_result"
         ),
         look_through_applied=bool(auto_country.get("look_through_applied")),
         basis=_json_dumps(basis),
         is_manual=True,
         notes=f"{MANUAL_RESULT_NOTE_PREFIX} {override.source_type}",
-        source_mode=SOURCE_MANUAL_OVERRIDE,
+        source_mode=override.source_type,
     )
     db.add(country_attribution)
     db.flush()
@@ -1256,6 +1622,139 @@ def submit_manual_control_override(
     return build_manual_override_response(db, company_id)
 
 
+def submit_manual_control_judgment(
+    db: Session,
+    company_id: int,
+    payload: Any,
+) -> dict[str, Any]:
+    company = get_company_by_id(db, company_id)
+    if company is None:
+        raise LookupError("Company not found.")
+
+    auto_control = get_company_control_chain_data(db, company_id)
+    auto_country = get_company_country_attribution_data(db, company_id)
+    manual_result = _manual_judgment_result_from_payload(
+        db,
+        company_id=company_id,
+        payload=payload,
+        auto_control=auto_control,
+        auto_country=auto_country,
+    )
+
+    deactivated = _deactivate_active_overrides_by_source(
+        db,
+        company_id,
+        {SOURCE_MANUAL_JUDGMENT, SOURCE_MANUAL_CONFIRMED},
+    )
+    override = ManualControlOverride(
+        company_id=company_id,
+        action_type=ACTION_MANUAL_JUDGMENT,
+        source_type=SOURCE_MANUAL_JUDGMENT,
+        actual_controller_entity_id=manual_result.get("actual_controller_entity_id"),
+        actual_controller_name=manual_result.get("actual_controller_name"),
+        actual_controller_type=manual_result.get("actual_controller_type"),
+        actual_control_country=manual_result.get("actual_control_country"),
+        attribution_type=SOURCE_MANUAL_JUDGMENT,
+        manual_control_ratio=None,
+        manual_control_strength_label=None,
+        manual_control_path=None,
+        manual_path_summary=None,
+        manual_paths=_json_dumps([]),
+        manual_control_type=manual_result.get("manual_control_type"),
+        manual_decision_reason=manual_result.get("manual_decision_reason"),
+        manual_path_count=None,
+        manual_path_depth=manual_result.get("manual_path_depth"),
+        reason=manual_result.get("reason"),
+        evidence=manual_result.get("evidence"),
+        operator=manual_result.get("operator"),
+        is_current_effective=True,
+        automatic_control_snapshot=_json_dumps(
+            manual_result["automatic_control_snapshot"]
+        ),
+        automatic_country_snapshot=_json_dumps(
+            manual_result["automatic_country_snapshot"]
+        ),
+    )
+    db.add(override)
+    db.flush()
+
+    manual_result["manual_override_id"] = override.id
+    override.manual_result_snapshot = _json_dumps(manual_result)
+    create_annotation_log(
+        db,
+        target_type="company_manual_control_result",
+        target_id=company_id,
+        action_type=ACTION_MANUAL_JUDGMENT,
+        old_value=_json_dumps(deactivated[-1] if deactivated else None),
+        new_value=_json_dumps(serialize_manual_override(override)),
+        reason=override.reason,
+        operator=override.operator,
+    )
+    db.commit()
+    db.refresh(override)
+
+    return build_manual_override_response(db, company_id)
+
+
+def restore_manual_control_judgment(
+    db: Session,
+    company_id: int,
+    *,
+    reason: str | None = None,
+    operator: str | None = "system",
+) -> dict[str, Any]:
+    company = get_company_by_id(db, company_id)
+    if company is None:
+        raise LookupError("Company not found.")
+
+    auto_control = get_company_control_chain_data(db, company_id)
+    auto_country = get_company_country_attribution_data(db, company_id)
+    deactivated = _deactivate_active_overrides_by_source(
+        db,
+        company_id,
+        {SOURCE_MANUAL_JUDGMENT},
+    )
+    restore_record = ManualControlOverride(
+        company_id=company_id,
+        action_type=ACTION_RESTORE_MANUAL_JUDGMENT,
+        source_type="manual_judgment_restored",
+        actual_controller_entity_id=auto_country.get("actual_controller_entity_id"),
+        actual_controller_name=(auto_control.get("actual_controller") or {}).get(
+            "controller_name"
+        ),
+        actual_control_country=auto_country.get("actual_control_country"),
+        attribution_type=auto_country.get("attribution_type"),
+        reason=reason,
+        evidence=None,
+        operator=operator,
+        is_current_effective=False,
+        automatic_control_snapshot=_json_dumps(_snapshot_control_result(auto_control)),
+        automatic_country_snapshot=_json_dumps(_snapshot_country_result(auto_country)),
+        manual_result_snapshot=_json_dumps(
+            {
+                "action_type": ACTION_RESTORE_MANUAL_JUDGMENT,
+                "source_type": "manual_judgment_restored",
+                "restored_to": "higher_priority_or_automatic_result",
+            }
+        ),
+    )
+    db.add(restore_record)
+    db.flush()
+    create_annotation_log(
+        db,
+        target_type="company_manual_control_result",
+        target_id=company_id,
+        action_type=ACTION_RESTORE_MANUAL_JUDGMENT,
+        old_value=_json_dumps(deactivated[-1] if deactivated else None),
+        new_value=_json_dumps(serialize_manual_override(restore_record)),
+        reason=reason,
+        operator=operator,
+    )
+    db.commit()
+
+    return build_manual_override_response(db, company_id)
+
+
 def restore_automatic_control_result(
     db: Session,
     company_id: int,
@@ -1317,15 +1816,33 @@ def _current_manual_relationship_dict(
     company_id: int,
     company_name: str | None,
 ) -> dict[str, Any] | None:
-    if not override.actual_controller_entity_id and not override.actual_controller_name:
+    if not override.actual_controller_entity_id:
         return None
+    selected_snapshot = manual_result.get("selected_relationship_snapshot")
+    selected_paths = (
+        _control_path_from_snapshot(selected_snapshot)
+        if isinstance(selected_snapshot, dict)
+        else []
+    )
     manual_paths = _manual_paths_from_storage(override.manual_paths) or manual_result.get(
         "manual_paths"
     ) or []
+    final_strength = override.manual_control_ratio or manual_result.get("manual_control_ratio")
+    if override.source_type == SOURCE_MANUAL_JUDGMENT and final_strength is None:
+        final_strength = (
+            selected_snapshot.get("control_ratio")
+            if isinstance(selected_snapshot, dict)
+            else None
+        )
     display_strength = _manual_display_control_strength(
-        final_strength=override.manual_control_ratio
-        or manual_result.get("manual_control_ratio"),
+        final_strength=final_strength,
         manual_paths=manual_paths,
+        final_source_label=_manual_label_for_source(override.source_type),
+    )
+    selected_depth = (
+        selected_snapshot.get("control_chain_depth")
+        if isinstance(selected_snapshot, dict)
+        else None
     )
     manual_path_depth = _manual_path_depth(
         manual_result={
@@ -1338,10 +1855,42 @@ def _current_manual_relationship_dict(
             "manual_path_depth": (
                 override.manual_path_depth
                 if override.manual_path_depth is not None
-                else manual_result.get("manual_path_depth")
+                else manual_result.get("manual_path_depth") or selected_depth
             ),
         },
         company_name=company_name,
+    )
+    control_path = (
+        selected_paths
+        if override.source_type == SOURCE_MANUAL_JUDGMENT and selected_paths
+        else _manual_control_path_payload(
+            manual_result={
+                **manual_result,
+                "actual_controller_entity_id": override.actual_controller_entity_id,
+                "actual_controller_name": override.actual_controller_name,
+                "manual_paths": manual_paths,
+                "manual_control_path": override.manual_path_summary
+                or override.manual_control_path
+                or manual_result.get("manual_path_summary")
+                or manual_result.get("manual_control_path"),
+                "source_type": override.source_type,
+            },
+            company_id=company_id,
+            company_name=company_name,
+        )
+    )
+    for index, path in enumerate(control_path):
+        path.setdefault("source_type", override.source_type)
+        path.setdefault("path_kind", override.source_type)
+        path.setdefault("manual_supplied", False)
+        path.setdefault("path_index", index + 1)
+        path.setdefault("is_primary", index == 0)
+    manual_control_path = (
+        override.manual_path_summary
+        or override.manual_control_path
+        or manual_result.get("manual_path_summary")
+        or manual_result.get("manual_control_path")
+        or (control_path[0].get("path_text") if control_path else None)
     )
 
     relationship = {
@@ -1358,21 +1907,7 @@ def _current_manual_relationship_dict(
             or override.source_type
         ),
         "control_ratio": display_strength["value"],
-        "control_path": _manual_control_path_payload(
-            manual_result={
-                **manual_result,
-                "actual_controller_entity_id": override.actual_controller_entity_id,
-                "actual_controller_name": override.actual_controller_name,
-            "manual_paths": manual_paths,
-                "manual_control_path": override.manual_path_summary
-                or override.manual_control_path
-                or manual_result.get("manual_path_summary")
-                or manual_result.get("manual_control_path"),
-                "source_type": override.source_type,
-            },
-            company_id=company_id,
-            company_name=company_name,
-        ),
+        "control_path": control_path,
         "is_actual_controller": True,
         "whether_actual_controller": True,
         "control_tier": "ultimate",
@@ -1395,7 +1930,7 @@ def _current_manual_relationship_dict(
         ),
         "notes": f"{MANUAL_RESULT_NOTE_PREFIX} {override.source_type}",
         "control_mode": "mixed",
-        "semantic_flags": ["manual_override"],
+        "semantic_flags": [override.source_type],
         "controller_status": "actual_controller_identified",
         "selection_reason": override.manual_decision_reason
         or manual_result.get("manual_decision_reason")
@@ -1426,16 +1961,10 @@ def _current_manual_relationship_dict(
         "manual_control_strength_label": override.manual_control_strength_label
         or manual_result.get("manual_control_strength_label"),
         "manual_control_path": _replace_target_company_placeholder(
-            override.manual_path_summary
-            or override.manual_control_path
-            or manual_result.get("manual_path_summary")
-            or manual_result.get("manual_control_path"),
+            manual_control_path,
             company_name,
         ),
-        "manual_path_summary": override.manual_path_summary
-        or override.manual_control_path
-        or manual_result.get("manual_path_summary")
-        or manual_result.get("manual_control_path"),
+        "manual_path_summary": manual_control_path,
         "manual_paths": manual_paths,
         "manual_control_type": override.manual_control_type
         or manual_result.get("manual_control_type"),
@@ -1457,6 +1986,8 @@ def _current_manual_relationship_dict(
         "manual_path_depth": manual_path_depth,
         "is_manual_effective": True,
         "is_current_effective": True,
+        "manual_judgment_basis": manual_result.get("reason"),
+        "manual_judgment_evidence": manual_result.get("evidence"),
         "created_at": override.created_at.isoformat() if override.created_at else "",
         "updated_at": override.updated_at.isoformat() if override.updated_at else "",
     }
@@ -1480,7 +2011,12 @@ def _mark_automatic_relationships_for_current_view(
             relationship.get("is_actual_controller")
             or relationship.get("is_ultimate_controller")
         )
-        if manual_active and item["automatic_is_actual_controller"]:
+        same_as_manual_controller = (
+            manual_active
+            and override.actual_controller_entity_id is not None
+            and relationship.get("controller_entity_id") == override.actual_controller_entity_id
+        )
+        if manual_active and (item["automatic_is_actual_controller"] or same_as_manual_controller):
             item["is_actual_controller"] = False
             item["whether_actual_controller"] = False
             item["is_ultimate_controller"] = False
@@ -1520,7 +2056,20 @@ def get_current_effective_control_chain_data(
         result["result_layer"] = "current"
         result["result_source"] = "automatic"
         result["is_manual_effective"] = False
-        result["has_manual_country_override"] = True
+        result["has_manual_country_override"] = bool(override.actual_control_country)
+        result["has_manual_snapshot_controller_override"] = bool(
+            override.actual_controller_name and override.actual_controller_entity_id is None
+        )
+        result["manual_snapshot_controller_name"] = (
+            override.actual_controller_name
+            if override.actual_controller_entity_id is None
+            else None
+        )
+        result["manual_snapshot_controller_note"] = (
+            f"当前人工征订控制人名称：{override.actual_controller_name}（未绑定实体库）；图中未作为正式结构节点展示。"
+            if override.actual_controller_name and override.actual_controller_entity_id is None
+            else None
+        )
         result["manual_override"] = serialize_manual_override(override)
         if include_automatic_result:
             result["automatic_control_analysis"] = deepcopy(auto_control)
@@ -1601,9 +2150,11 @@ def get_current_effective_country_attribution_data(
             "country_inference_reason": (
                 "manual_confirmed_auto_result"
                 if override.action_type == ACTION_CONFIRM_AUTO
+                else "manual_judgment_result"
+                if override.source_type == SOURCE_MANUAL_JUDGMENT
                 else "manual_override_result"
             ),
-            "source_mode": SOURCE_MANUAL_OVERRIDE,
+            "source_mode": override.source_type,
             "is_manual": True,
             "result_layer": "current",
             "result_source": override.source_type,
@@ -1612,6 +2163,19 @@ def get_current_effective_country_attribution_data(
             "is_manual_effective": True,
             "is_current_effective": True,
             "manual_override": serialize_manual_override(override),
+            "manual_controller_subject_mode": manual_result.get(
+                "actual_controller_subject_mode"
+            ),
+            "manual_snapshot_controller_name": (
+                override.actual_controller_name
+                if override.actual_controller_entity_id is None
+                else None
+            ),
+            "manual_snapshot_controller_note": (
+                f"当前人工征订控制人名称：{override.actual_controller_name}（未绑定实体库）；图中未作为正式结构节点展示。"
+                if override.actual_controller_name and override.actual_controller_entity_id is None
+                else None
+            ),
             "manual_reason": override.reason,
             "manual_evidence": override.evidence,
             "manual_decided_at": override.created_at.isoformat()

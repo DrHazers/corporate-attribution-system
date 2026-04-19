@@ -12,7 +12,9 @@ from backend.analysis.manual_control_override import (
     get_current_effective_country_attribution_data,
     get_manual_control_override_status,
     restore_automatic_control_result,
+    restore_manual_control_judgment,
     submit_manual_control_override,
+    submit_manual_control_judgment,
 )
 from backend.analysis.ownership_penetration import (
     get_company_actual_controller_data,
@@ -38,6 +40,7 @@ from backend.schemas.company import (
     CompanyUpdate,
 )
 from backend.schemas.manual_control_override import (
+    ManualControlJudgmentRequest,
     ManualControlOverrideRequest,
     ManualControlOverrideResponse,
     ManualControlOverrideStatus,
@@ -255,6 +258,61 @@ def submit_company_manual_control_override(
     get_company_or_404(db, company_id)
     try:
         return submit_manual_control_override(db, company_id, payload)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/{company_id}/manual-control-judgment",
+    response_model=ManualControlOverrideResponse,
+)
+def submit_company_manual_control_judgment(
+    company_id: int,
+    payload: ManualControlJudgmentRequest,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    try:
+        return submit_manual_control_judgment(db, company_id, payload)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/{company_id}/manual-control-judgment/restore",
+    response_model=ManualControlOverrideResponse,
+)
+def restore_company_manual_control_judgment(
+    company_id: int,
+    payload: ManualControlOverrideRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    reason = payload.reason if payload is not None else None
+    operator = payload.operator if payload is not None else "system"
+    try:
+        return restore_manual_control_judgment(
+            db,
+            company_id,
+            reason=reason,
+            operator=operator,
+        )
     except LookupError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -39,6 +39,22 @@ def _pick_manual_entity(db, excluded_entity_id: int | None) -> ShareholderEntity
     return entity
 
 
+def _pick_manual_judgment_candidate(control_chain: dict) -> dict:
+    for relationship in control_chain.get("control_relationships") or []:
+        if not relationship.get("controller_entity_id"):
+            continue
+        if relationship.get("ownership_pattern_signal"):
+            continue
+        if relationship.get("terminal_identifiability") == "aggregation_like":
+            continue
+        if relationship.get("terminal_suitability") == "pattern_only":
+            continue
+        if relationship.get("terminal_failure_reason") == "ownership_aggregation_pattern":
+            continue
+        return relationship
+    raise AssertionError("No manual judgment candidate found in sample control chain.")
+
+
 def test_manual_override_switches_current_result_and_restore_returns_to_auto(
     client,
     db_session,
@@ -78,6 +94,7 @@ def test_manual_override_switches_current_result_and_restore_returns_to_auto(
     assert override_response.status_code == 200
     override_payload = override_response.json()
     assert override_payload["active_override"]["is_current_effective"] is True
+    assert override_payload["active_override"]["actual_controller_subject_mode"] == "existing_entity"
     assert override_payload["current_country_attribution"]["actual_control_country"] == MANUAL_COUNTRY
 
     current_chain = client.get(f"/companies/{company_id}/control-chain").json()
@@ -411,12 +428,258 @@ def test_manual_override_structured_paths_drive_derived_fields_and_validation(
     _cleanup_manual_records(db_session, company_id)
 
 
+def test_manual_override_name_snapshot_does_not_create_entity_or_formal_path(
+    client,
+    db_session,
+    sample_ids: dict[str, int],
+):
+    company_id = sample_ids["with_actual_controller"]
+    _cleanup_manual_records(db_session, company_id)
+
+    snapshot_name = "Unbound Snapshot Controller For Test"
+    db_session.query(ShareholderEntity).filter(
+        ShareholderEntity.entity_name == snapshot_name
+    ).delete(synchronize_session=False)
+    db_session.commit()
+
+    entity_count_before = db_session.query(ShareholderEntity).count()
+    auto_chain = client.get(f"/companies/{company_id}/control-chain?result_layer=auto").json()
+    auto_actual_id = auto_chain["actual_controller"]["controller_entity_id"]
+
+    response = client.post(
+        f"/companies/{company_id}/manual-control-override",
+        json={
+            "action_type": "override_result",
+            "actual_controller_subject_mode": "name_snapshot",
+            "actual_controller_name": snapshot_name,
+            "reason": "仅记录名称快照，不绑定实体库。",
+            "operator": "tester",
+        },
+    )
+    assert response.status_code == 200
+    active_override = response.json()["active_override"]
+    assert active_override["actual_controller_subject_mode"] == "name_snapshot"
+    assert active_override["actual_controller_entity_id"] is None
+    assert active_override["actual_controller_name"] == snapshot_name
+    assert active_override["manual_paths"] == []
+    assert active_override["manual_path_summary"] is None
+
+    assert db_session.query(ShareholderEntity).count() == entity_count_before
+    assert (
+        db_session.query(ShareholderEntity)
+        .filter(ShareholderEntity.entity_name == snapshot_name)
+        .first()
+        is None
+    )
+    assert (
+        db_session.query(ControlRelationship)
+        .filter(ControlRelationship.company_id == company_id)
+        .filter(ControlRelationship.controller_name == snapshot_name)
+        .first()
+        is None
+    )
+
+    current_chain = client.get(f"/companies/{company_id}/control-chain").json()
+    assert current_chain["is_manual_effective"] is False
+    assert current_chain["has_manual_snapshot_controller_override"] is True
+    assert current_chain["manual_snapshot_controller_name"] == snapshot_name
+    assert current_chain["actual_controller"]["controller_entity_id"] == auto_actual_id
+    assert all(
+        relationship.get("controller_name") != snapshot_name
+        for relationship in current_chain["control_relationships"]
+    )
+
+    invalid_path_response = client.post(
+        f"/companies/{company_id}/manual-control-override",
+        json={
+            "action_type": "override_result",
+            "actual_controller_subject_mode": "name_snapshot",
+            "actual_controller_name": snapshot_name,
+            "manual_paths": [
+                {
+                    "entity_ids": [None, company_id],
+                    "entity_names": [snapshot_name, "目标公司"],
+                }
+            ],
+            "reason": "名称快照不能构建正式路径。",
+            "operator": "tester",
+        },
+    )
+    assert invalid_path_response.status_code == 400
+    assert "entity_id" in invalid_path_response.json()["detail"]
+
+    _cleanup_manual_records(db_session, company_id)
+
+
+def test_manual_override_new_entity_mode_creates_and_binds_shareholder_entity(
+    client,
+    db_session,
+    sample_ids: dict[str, int],
+):
+    company_id = sample_ids["with_actual_controller"]
+    _cleanup_manual_records(db_session, company_id)
+
+    company_name = db_session.get(Company, company_id).name
+    new_entity_name = "New Manual Controller For Test"
+    db_session.query(ShareholderEntity).filter(
+        ShareholderEntity.entity_name == new_entity_name
+    ).delete(synchronize_session=False)
+    db_session.commit()
+
+    response = client.post(
+        f"/companies/{company_id}/manual-control-override",
+        json={
+            "action_type": "override_result",
+            "actual_controller_subject_mode": "new_entity",
+            "new_actual_controller_name": new_entity_name,
+            "new_actual_controller_type": "institution",
+            "new_actual_controller_country": MANUAL_COUNTRY,
+            "new_actual_controller_notes": "Created by manual override test.",
+            "manual_paths": [
+                {
+                    "entity_ids": [None, company_id],
+                    "entity_names": [new_entity_name, company_name],
+                    "path_ratio": "72%",
+                }
+            ],
+            "reason": "数据库中没有该主体，显式新建后征订。",
+            "operator": "tester",
+        },
+    )
+    assert response.status_code == 200
+    active_override = response.json()["active_override"]
+    created_entity_id = active_override["actual_controller_entity_id"]
+    assert active_override["actual_controller_subject_mode"] == "new_entity"
+    assert created_entity_id
+    assert active_override["created_actual_controller_entity_id"] == created_entity_id
+
+    created_entity = db_session.get(ShareholderEntity, created_entity_id)
+    assert created_entity is not None
+    assert created_entity.entity_name == new_entity_name
+    assert created_entity.entity_type == "institution"
+    assert created_entity.country == MANUAL_COUNTRY
+
+    current_chain = client.get(f"/companies/{company_id}/control-chain").json()
+    manual_row = current_chain["control_relationships"][0]
+    assert current_chain["is_manual_effective"] is True
+    assert current_chain["actual_controller"]["controller_entity_id"] == created_entity_id
+    assert manual_row["control_path"][0]["path_entity_ids"] == [
+        created_entity_id,
+        company_id,
+    ]
+    assert manual_row["control_path"][0]["path_entity_names"] == [
+        new_entity_name,
+        company_name,
+    ]
+
+    _cleanup_manual_records(db_session, company_id)
+    db_session.delete(created_entity)
+    db_session.commit()
+
+
 def test_manual_confirm_auto_writes_audit_without_changing_values(
     client,
     db_session,
     sample_ids: dict[str, int],
 ):
     company_id = sample_ids["with_actual_controller"]
+    _cleanup_manual_records(db_session, company_id)
+
+
+def test_manual_judgment_selects_existing_candidate_and_can_be_restored(
+    client,
+    db_session,
+    sample_ids: dict[str, int],
+):
+    company_id = sample_ids["with_actual_controller"]
+    _cleanup_manual_records(db_session, company_id)
+
+    auto_chain = client.get(f"/companies/{company_id}/control-chain?result_layer=auto").json()
+    candidate = _pick_manual_judgment_candidate(auto_chain)
+
+    response = client.post(
+        f"/companies/{company_id}/manual-control-judgment",
+        json={
+            "selected_controller_entity_id": candidate["controller_entity_id"],
+            "reason": "证据阻断场景下，研究人员在现有候选中人工判定。",
+            "evidence": "研究底稿补充说明。",
+            "operator": "tester",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_override"]["source_type"] == "manual_judgment"
+    assert payload["active_override"]["manual_paths"] == []
+
+    current_chain = client.get(f"/companies/{company_id}/control-chain").json()
+    assert current_chain["result_source"] == "manual_judgment"
+    assert current_chain["is_manual_effective"] is True
+    assert (
+        current_chain["actual_controller"]["controller_entity_id"]
+        == candidate["controller_entity_id"]
+    )
+    assert current_chain["control_relationships"][0]["source_type"] == "manual_judgment"
+    assert current_chain["control_relationships"][0]["is_current_effective"] is True
+    judgment_path = current_chain["control_relationships"][0]["control_path"][0]
+    candidate_path = candidate["control_path"][0]
+    assert judgment_path["path_entity_ids"] == candidate_path["path_entity_ids"]
+    assert judgment_path["path_entity_names"] == candidate_path["path_entity_names"]
+    assert judgment_path["source_type"] == "manual_judgment"
+
+    restore_response = client.post(
+        f"/companies/{company_id}/manual-control-judgment/restore",
+        json={
+            "action_type": "restore_manual_judgment",
+            "reason": "撤销人工判定。",
+            "operator": "tester",
+        },
+    )
+    assert restore_response.status_code == 200
+    restored_chain = client.get(f"/companies/{company_id}/control-chain").json()
+    assert restored_chain["result_source"] == "automatic"
+    assert restored_chain["is_manual_effective"] is False
+
+    _cleanup_manual_records(db_session, company_id)
+
+
+def test_manual_override_has_priority_over_manual_judgment(
+    client,
+    db_session,
+    sample_ids: dict[str, int],
+):
+    company_id = sample_ids["with_actual_controller"]
+    _cleanup_manual_records(db_session, company_id)
+
+    auto_chain = client.get(f"/companies/{company_id}/control-chain?result_layer=auto").json()
+    candidate = _pick_manual_judgment_candidate(auto_chain)
+    auto_actual_id = (auto_chain.get("actual_controller") or {}).get("controller_entity_id")
+    manual_entity = _pick_manual_entity(db_session, auto_actual_id)
+
+    override_response = client.post(
+        f"/companies/{company_id}/manual-control-override",
+        json={
+            "action_type": "override_result",
+            "actual_controller_entity_id": manual_entity.id,
+            "reason": "优先级测试：人工征订。",
+            "operator": "tester",
+        },
+    )
+    assert override_response.status_code == 200
+
+    judgment_response = client.post(
+        f"/companies/{company_id}/manual-control-judgment",
+        json={
+            "selected_controller_entity_id": candidate["controller_entity_id"],
+            "reason": "优先级测试：人工判定。",
+            "operator": "tester",
+        },
+    )
+    assert judgment_response.status_code == 200
+
+    current_chain = client.get(f"/companies/{company_id}/control-chain").json()
+    assert current_chain["result_source"] == "manual_override"
+    assert current_chain["actual_controller"]["controller_entity_id"] == manual_entity.id
+
     _cleanup_manual_records(db_session, company_id)
 
 

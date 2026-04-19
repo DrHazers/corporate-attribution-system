@@ -63,6 +63,7 @@ const CONTROL_TYPE_LABELS = {
   joint_control: '共同控制',
   manual_override: '人工征订',
   manual_confirmed: '人工确认',
+  manual_judgment: '人工判定',
 }
 
 const ATTRIBUTION_TYPE_LABELS = {
@@ -79,6 +80,7 @@ const ATTRIBUTION_TYPE_LABELS = {
   fallback_unknown: '未识别',
   manual_override: '人工征订归属',
   manual_confirmed: '人工确认归属',
+  manual_judgment: '人工判定归属',
 }
 
 const ATTRIBUTION_LAYER_LABELS = {
@@ -418,6 +420,9 @@ const manualSourceLabel = computed(() => {
   if (source === 'manual_confirmed') {
     return '人工确认'
   }
+  if (source === 'manual_judgment') {
+    return '人工判定'
+  }
   if (source === 'manual_override') {
     return '人工征订'
   }
@@ -666,6 +671,9 @@ const recognitionSubtext = computed(() => {
     const autoText = automaticActualControllerName.value
       ? `自动分析结果为 ${automaticActualControllerName.value}。`
       : '自动分析未形成可展示的实际控制人。'
+    if (manualSourceLabel.value === '人工判定') {
+      return `当前实际控制人为人工判定确定，基于现有候选主体选择，非算法自动形成唯一控制人。${autoText}`
+    }
     return `当前实际控制人为人工征订确定，非算法自动识别结果。${autoText}`
   }
   if (hasActualController.value) {

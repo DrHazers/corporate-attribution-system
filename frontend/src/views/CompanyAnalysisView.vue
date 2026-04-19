@@ -12,6 +12,7 @@ import {
   submitManualControlOverride,
 } from '@/api/analysis'
 import { fetchCompanyRelationshipGraph } from '@/api/company'
+import AutoAnalysisExplainPanel from '@/components/AutoAnalysisExplainPanel.vue'
 import BusinessSegmentsTable from '@/components/BusinessSegmentsTable.vue'
 import CompanyOverviewCard from '@/components/CompanyOverviewCard.vue'
 import ControlRelationsTable from '@/components/ControlRelationsTable.vue'
@@ -265,9 +266,6 @@ const automaticControlAnalysis = computed(
 )
 const automaticCountryAttribution = computed(
   () => summaryData.value?.automatic_country_attribution || {},
-)
-const automaticActualController = computed(
-  () => automaticControlAnalysis.value?.actual_controller || null,
 )
 const currentResultSourceLabel = computed(() => {
   const source = summaryData.value?.control_analysis?.result_source || summaryData.value?.country_attribution?.result_source
@@ -1084,29 +1082,14 @@ async function handleRestoreAutomaticResult() {
               </div>
 
               <div class="manual-control-panel__auto">
-                <h3>自动分析结果</h3>
-                <dl>
-                  <div>
-                    <dt>自动 actual controller</dt>
-                    <dd>{{ optionalText(automaticActualController?.controller_name) }}</dd>
-                  </div>
-                  <div>
-                    <dt>自动 actual control country</dt>
-                    <dd>{{ optionalText(automaticCountryAttribution?.actual_control_country) }}</dd>
-                  </div>
-                  <div>
-                    <dt>自动 attribution type</dt>
-                    <dd>{{ optionalText(automaticCountryAttribution?.attribution_type) }}</dd>
-                  </div>
-                </dl>
-                <el-collapse class="manual-control-panel__collapse">
-                  <el-collapse-item title="查看自动结果原始摘要" name="auto">
-                    <pre>{{ JSON.stringify({
-                      actual_controller: automaticActualController,
-                      country_attribution: automaticCountryAttribution,
-                    }, null, 2) }}</pre>
-                  </el-collapse-item>
-                </el-collapse>
+                <AutoAnalysisExplainPanel
+                  :company="company"
+                  :auto-control-analysis="automaticControlAnalysis"
+                  :auto-country-attribution="automaticCountryAttribution"
+                  :current-control-analysis="controlAnalysis"
+                  :current-country-attribution="countryAttribution"
+                  :manual-override="manualOverride"
+                />
               </div>
             </div>
           </section>
@@ -1181,8 +1164,7 @@ async function handleRestoreAutomaticResult() {
   justify-content: space-between;
 }
 
-.manual-control-panel__head h2,
-.manual-control-panel__auto h3 {
+.manual-control-panel__head h2 {
   margin: 0;
   color: var(--brand-ink);
   font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
@@ -1461,48 +1443,9 @@ async function handleRestoreAutomaticResult() {
 .manual-control-panel__auto {
   display: grid;
   align-content: start;
-  gap: 12px;
   min-width: 0;
-  padding: 14px;
+  padding: 0;
   border-radius: 8px;
-  border: 1px dashed rgba(48, 95, 131, 0.2);
-  background: rgba(255, 255, 255, 0.74);
-}
-
-.manual-control-panel__auto dl {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-}
-
-.manual-control-panel__auto dl > div {
-  display: grid;
-  grid-template-columns: 148px minmax(0, 1fr);
-  gap: 10px;
-}
-
-.manual-control-panel__auto dt {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.manual-control-panel__auto dd {
-  margin: 0;
-  color: var(--brand-ink);
-  font-size: 13px;
-  font-weight: 700;
-  overflow-wrap: anywhere;
-}
-
-.manual-control-panel__collapse pre {
-  max-height: 280px;
-  overflow: auto;
-  margin: 0;
-  color: #314255;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
 }
 
 @media (max-width: 980px) {
@@ -1535,9 +1478,5 @@ async function handleRestoreAutomaticResult() {
     grid-template-columns: 1fr;
   }
 
-  .manual-control-panel__auto dl > div {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
 }
 </style>

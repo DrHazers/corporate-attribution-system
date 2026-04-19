@@ -13,6 +13,8 @@ from backend.crud.shareholder import (
 )
 from backend.models.company import Company
 from backend.models.control_relationship import ControlRelationship
+from backend.models.control_inference_audit_log import ControlInferenceAuditLog
+from backend.models.control_inference_run import ControlInferenceRun
 from backend.models.country_attribution import CountryAttribution
 from backend.models.shareholder import (
     EntityAlias,
@@ -88,6 +90,11 @@ def _cleanup_fixture_data(
 ) -> None:
     if company_ids:
         (
+            db_session.query(ControlInferenceAuditLog)
+            .filter(ControlInferenceAuditLog.company_id.in_(company_ids))
+            .delete(synchronize_session=False)
+        )
+        (
             db_session.query(ControlRelationship)
             .filter(ControlRelationship.company_id.in_(company_ids))
             .delete(synchronize_session=False)
@@ -95,6 +102,11 @@ def _cleanup_fixture_data(
         (
             db_session.query(CountryAttribution)
             .filter(CountryAttribution.company_id.in_(company_ids))
+            .delete(synchronize_session=False)
+        )
+        (
+            db_session.query(ControlInferenceRun)
+            .filter(ControlInferenceRun.company_id.in_(company_ids))
             .delete(synchronize_session=False)
         )
     if structure_ids:
@@ -514,7 +526,14 @@ def test_legacy_equity_rows_remain_compatible_and_non_equity_edges_are_not_multi
             .first()
         )
 
-        assert result["actual_controller_entity_id"] == legacy_controller.id
+        assert result["actual_controller_entity_id"] == vie_holder.id
+        assert any(
+            item.controller_entity_id == vie_holder.id
+            and item.control_type == "agreement_control"
+            and item.control_mode == "semantic"
+            and item.review_status == "auto"
+            for item in persisted_relationships
+        )
         assert any(
             item.controller_entity_id == legacy_controller.id
             and item.control_type == "equity_control"

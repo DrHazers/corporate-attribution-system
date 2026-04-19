@@ -235,6 +235,74 @@ CONTROLLER_STATUS_ACTUAL = "actual_controller_identified"
 CONTROLLER_STATUS_LEADING = "no_actual_controller_but_leading_candidate_found"
 CONTROLLER_STATUS_NONE = "no_meaningful_controller_signal"
 CONTROLLER_STATUS_JOINT = "joint_control_identified"
+TERMINAL_IDENTIFIABILITY_IDENTIFIABLE = "identifiable_single_or_group"
+TERMINAL_IDENTIFIABILITY_AGGREGATION = "aggregation_like"
+TERMINAL_IDENTIFIABILITY_UNKNOWN = "unknown_or_blocked"
+TERMINAL_SUITABILITY_SUITABLE = "suitable_terminal"
+TERMINAL_SUITABILITY_PREFER_ROLLUP = "prefer_rollup"
+TERMINAL_SUITABILITY_BLOCKED = "blocked_terminal"
+TERMINAL_SUITABILITY_PATTERN_ONLY = "pattern_only"
+OWNERSHIP_AGGREGATION_FAILURE_REASON = "ownership_aggregation_pattern"
+OWNERSHIP_AGGREGATION_EXCLUSION_REASON = (
+    "excluded_from_actual_race_due_to_terminal_profile"
+)
+OWNERSHIP_PATTERN_ENTITY_SUBTYPES = {
+    "public_float",
+    "free_float",
+    "dispersed_ownership",
+    "ownership_pool",
+    "residual_pool",
+    "public_shareholders",
+    "shareholder_pool",
+}
+OWNERSHIP_PATTERN_CONTROLLER_CLASSES = {
+    "ownership_pool",
+    "public_float",
+    "public_shareholders",
+    "residual_pool",
+}
+OWNERSHIP_PATTERN_EDGE_METADATA_KEYS = (
+    "ownership_pattern",
+    "ownership_aggregation",
+    "aggregation_like",
+    "public_float",
+    "free_float",
+    "public_shareholders",
+    "dispersed_ownership",
+    "residual_pool",
+)
+OWNERSHIP_PATTERN_TEXT_KEYWORDS = (
+    "public float",
+    "free float",
+    "public shareholders",
+    "public shareholder",
+    "retail shareholders",
+    "retail shareholder",
+    "dispersed ownership",
+    "dispersed shareholders",
+    "residual ownership",
+    "residual free float",
+    "residual float",
+    "ownership pool",
+    "shareholder pool",
+    "other shareholders",
+    "others",
+)
+TERMINAL_GOVERNANCE_SIGNAL_FLAGS = {
+    "agreement",
+    "board_control",
+    "voting_right",
+    "vie",
+    "nominee",
+    "power_rights",
+    "economic_benefits",
+    "exclusive_control_arrangement",
+    "irrevocable_control_arrangement",
+    "beneficial_owner_candidate",
+    "qualified_protective_rights",
+}
+OWNERSHIP_PATTERN_REUSE_OUTGOING_THRESHOLD = 10
+OWNERSHIP_PATTERN_STRONG_RATIO = Decimal("0.50")
 NO_CONTROLLER_BLOCK_REASONS = {
     "beneficial_owner_unknown",
     "nominee_without_disclosure",
@@ -242,6 +310,7 @@ NO_CONTROLLER_BLOCK_REASONS = {
     "evidence_insufficient",
     "insufficient_evidence",
     "low_confidence_evidence_weak",
+    OWNERSHIP_AGGREGATION_FAILURE_REASON,
 }
 NON_PROMOTABLE_PARENT_BLOCK_REASONS = {
     "protective_right_only",
@@ -314,6 +383,10 @@ class ControllerCandidate:
     evidence_summary: tuple[str, ...]
     is_joint_control: bool
     min_depth: int
+    terminal_identifiability: str = TERMINAL_IDENTIFIABILITY_IDENTIFIABLE
+    terminal_suitability: str = TERMINAL_SUITABILITY_SUITABLE
+    terminal_profile_reasons: tuple[str, ...] = ()
+    ownership_pattern_signal: bool = False
 
 
 @dataclass(slots=True)
@@ -1770,6 +1843,245 @@ def _direct_candidate_sort_key(item: ControllerCandidate) -> tuple[Any, ...]:
     )
 
 
+def _candidate_relation_types(candidate: ControllerCandidate) -> set[str]:
+    return {
+        factor.relation_type
+        for path_state in candidate.path_states
+        for factor in path_state.edge_factors
+    }
+
+
+def _candidate_outgoing_factor_count(
+    context: ControlInferenceContext,
+    entity_id: int,
+) -> int:
+    return sum(
+        1
+        for factor in context.factor_map.values()
+        if factor.from_entity_id == entity_id
+    )
+
+
+def _candidate_edge_text(candidate: ControllerCandidate) -> str:
+    return _coalesce_text(
+        *(
+            _coalesce_text(
+                factor.evidence.get("control_basis"),
+                factor.evidence.get("agreement_scope"),
+                factor.evidence.get("nomination_rights"),
+                factor.evidence.get("remarks"),
+            )
+            for path_state in candidate.path_states
+            for factor in path_state.edge_factors
+        )
+    )
+
+
+def _candidate_has_governance_control_signal(candidate: ControllerCandidate) -> bool:
+    if _candidate_relation_types(candidate) - {"equity"}:
+        return True
+    if TERMINAL_GOVERNANCE_SIGNAL_FLAGS.intersection(candidate.semantic_flags):
+        return True
+    for path_state in candidate.path_states:
+        for factor in path_state.edge_factors:
+            if bool(factor.evidence.get("is_beneficial_control")):
+                return True
+            if TERMINAL_GOVERNANCE_SIGNAL_FLAGS.intersection(factor.flags):
+                return True
+            metadata = _edge_relation_metadata(factor)
+            if _has_truthy_metadata(
+                metadata,
+                "acting_in_concert",
+                "concert_party",
+                "group_governance",
+                "joint_decision_structure",
+                "voting_arrangement",
+                "beneficial_owner_disclosed",
+                "beneficial_owner_confirmed",
+                "beneficiary_controls",
+                "beneficial_owner_controls",
+            ):
+                return True
+    return False
+
+
+def _candidate_has_ownership_pattern_edge_signal(
+    candidate: ControllerCandidate,
+) -> bool:
+    text = _candidate_edge_text(candidate)
+    if _contains_any(text, OWNERSHIP_PATTERN_TEXT_KEYWORDS):
+        return True
+    for path_state in candidate.path_states:
+        for factor in path_state.edge_factors:
+            metadata = _edge_relation_metadata(factor)
+            if _has_truthy_metadata(metadata, *OWNERSHIP_PATTERN_EDGE_METADATA_KEYS):
+                return True
+    return False
+
+
+def _candidate_has_weak_ownership_pattern_name_hint(
+    entity: ShareholderEntity | None,
+) -> bool:
+    return _contains_any(_entity_text_blob(entity), OWNERSHIP_PATTERN_TEXT_KEYWORDS)
+
+
+def _candidate_has_ownership_pattern_entity_signal(
+    entity: ShareholderEntity | None,
+) -> bool:
+    if entity is None:
+        return False
+    entity_subtype = (getattr(entity, "entity_subtype", None) or "").strip().lower()
+    controller_class = (getattr(entity, "controller_class", None) or "").strip().lower()
+    notes = (getattr(entity, "notes", None) or "").strip().lower()
+    if entity_subtype in OWNERSHIP_PATTERN_ENTITY_SUBTYPES:
+        return True
+    if controller_class in OWNERSHIP_PATTERN_CONTROLLER_CLASSES:
+        return True
+    if (
+        controller_class == "fund_complex"
+        and entity.entity_type in {"fund", "institution", "other"}
+        and not bool(getattr(entity, "beneficial_owner_disclosed", False))
+        and getattr(entity, "company_id", None) is None
+    ):
+        return True
+    return _contains_any(notes, OWNERSHIP_PATTERN_TEXT_KEYWORDS)
+
+
+def _candidate_is_ownership_pattern_like(
+    context: ControlInferenceContext,
+    candidate: ControllerCandidate,
+) -> tuple[bool, tuple[str, ...]]:
+    entity = context.entity_map.get(candidate.controller_entity_id)
+    relation_types = _candidate_relation_types(candidate)
+    pure_equity = relation_types and relation_types <= {"equity"}
+    if not pure_equity:
+        return False, tuple()
+    if _entity_has_terminal_identity(entity) or _entity_is_terminal_trust(entity):
+        return False, tuple()
+    if _candidate_has_governance_control_signal(candidate):
+        return False, tuple()
+
+    reasons: list[str] = []
+    if _candidate_has_ownership_pattern_entity_signal(entity):
+        reasons.append("ownership_pattern_entity_profile")
+    if _candidate_has_ownership_pattern_edge_signal(candidate):
+        reasons.append("ownership_pattern_edge_signal")
+
+    outgoing_factor_count = _candidate_outgoing_factor_count(
+        context,
+        candidate.controller_entity_id,
+    )
+    if (
+        outgoing_factor_count >= OWNERSHIP_PATTERN_REUSE_OUTGOING_THRESHOLD
+        and entity is not None
+        and entity.entity_type in {"fund", "institution", "other"}
+        and getattr(entity, "company_id", None) is None
+        and not bool(getattr(entity, "beneficial_owner_disclosed", False))
+    ):
+        reasons.append("reused_non_terminal_ownership_bucket")
+
+    if _candidate_has_weak_ownership_pattern_name_hint(entity):
+        reasons.append("weak_name_hint")
+
+    has_structural_signal = any(
+        reason != "weak_name_hint"
+        for reason in reasons
+    )
+    if not has_structural_signal:
+        return False, tuple()
+
+    if candidate.total_score >= OWNERSHIP_PATTERN_STRONG_RATIO:
+        reasons.append("high_ratio_but_no_terminal_governance")
+    return True, tuple(dict.fromkeys(reasons))
+
+
+def _build_terminal_candidate_profile(
+    context: ControlInferenceContext,
+    candidate: ControllerCandidate,
+) -> dict[str, Any]:
+    entity = context.entity_map.get(candidate.controller_entity_id)
+    reasons: list[str] = []
+
+    is_pattern_like, pattern_reasons = _candidate_is_ownership_pattern_like(
+        context,
+        candidate,
+    )
+    if is_pattern_like:
+        return {
+            "terminal_identifiability": TERMINAL_IDENTIFIABILITY_AGGREGATION,
+            "terminal_suitability": TERMINAL_SUITABILITY_PATTERN_ONLY,
+            "terminal_profile_reasons": pattern_reasons,
+            "ownership_pattern_signal": True,
+        }
+
+    if _entity_has_terminal_identity(entity) or _entity_is_terminal_trust(entity):
+        reasons.append("terminal_identity_signal")
+        return {
+            "terminal_identifiability": TERMINAL_IDENTIFIABILITY_IDENTIFIABLE,
+            "terminal_suitability": TERMINAL_SUITABILITY_SUITABLE,
+            "terminal_profile_reasons": tuple(reasons),
+            "ownership_pattern_signal": False,
+        }
+
+    if _is_rollup_intermediary_entity(entity):
+        reasons.append("rollup_intermediary_entity")
+        return {
+            "terminal_identifiability": TERMINAL_IDENTIFIABILITY_IDENTIFIABLE,
+            "terminal_suitability": TERMINAL_SUITABILITY_PREFER_ROLLUP,
+            "terminal_profile_reasons": tuple(reasons),
+            "ownership_pattern_signal": False,
+        }
+
+    if candidate.control_level == "joint_control":
+        reasons.append("joint_control_candidate")
+        return {
+            "terminal_identifiability": TERMINAL_IDENTIFIABILITY_UNKNOWN,
+            "terminal_suitability": TERMINAL_SUITABILITY_BLOCKED,
+            "terminal_profile_reasons": tuple(reasons),
+            "ownership_pattern_signal": False,
+        }
+
+    reasons.append("default_identifiable_entity")
+    return {
+        "terminal_identifiability": TERMINAL_IDENTIFIABILITY_IDENTIFIABLE,
+        "terminal_suitability": TERMINAL_SUITABILITY_SUITABLE,
+        "terminal_profile_reasons": tuple(reasons),
+        "ownership_pattern_signal": False,
+    }
+
+
+def _apply_terminal_candidate_profiles(
+    context: ControlInferenceContext,
+    candidates: list[ControllerCandidate],
+) -> list[ControllerCandidate]:
+    profiled_candidates = [
+        replace(
+            candidate,
+            **_build_terminal_candidate_profile(context, candidate),
+        )
+        for candidate in candidates
+    ]
+    profiled_candidates.sort(key=_controller_sort_key)
+    return profiled_candidates
+
+
+def _candidate_is_pattern_only(candidate: ControllerCandidate | None) -> bool:
+    return (
+        candidate is not None
+        and candidate.terminal_suitability == TERMINAL_SUITABILITY_PATTERN_ONLY
+    )
+
+
+def _actual_race_candidates(
+    candidates: list[ControllerCandidate],
+) -> list[ControllerCandidate]:
+    return [
+        candidate
+        for candidate in candidates
+        if not _candidate_is_pattern_only(candidate)
+    ]
+
+
 def _build_candidates_for_target_entity(
     context: ControlInferenceContext,
     target_entity_id: int,
@@ -2067,6 +2379,8 @@ def _controller_block_reason(
     )
     if promotion_reason in {"beneficial_owner_unknown", "nominee_without_disclosure"}:
         return promotion_reason
+    if _candidate_is_pattern_only(candidate):
+        return OWNERSHIP_AGGREGATION_FAILURE_REASON
 
     evidence_reason = _actual_control_evidence_block_reason(
         candidate,
@@ -2327,22 +2641,35 @@ def infer_controllers(
         aggregator=aggregator,
         top_path_limit=top_path_limit,
     )
+    candidates = _apply_terminal_candidate_profiles(context, candidates)
     company_candidate_map = {
         candidate.controller_entity_id: candidate for candidate in candidates
     }
+    actual_race_candidates = _actual_race_candidates(candidates)
+    pattern_only_candidates = [
+        candidate for candidate in candidates if _candidate_is_pattern_only(candidate)
+    ]
 
-    leading_candidate_entity_id = candidates[0].controller_entity_id if candidates else None
+    leading_candidate_entity_id = (
+        actual_race_candidates[0].controller_entity_id
+        if actual_race_candidates
+        else None
+    )
     leading_candidate_classification = (
         _classify_leading_candidate_signal(
-            candidates,
+            actual_race_candidates,
             significant_threshold=significant_threshold,
         )
-        if candidates
+        if actual_race_candidates
         else None
     )
 
     direct_candidates = sorted(
-        [candidate for candidate in candidates if candidate.min_depth == 1],
+        [
+            candidate
+            for candidate in actual_race_candidates
+            if candidate.min_depth == 1
+        ],
         key=_direct_candidate_sort_key,
     )
     direct_candidate = direct_candidates[0] if direct_candidates else None
@@ -2398,6 +2725,34 @@ def infer_controllers(
     leading_override_entity_id: int | None = None
     leading_override_classification: str | None = None
 
+    for pattern_candidate in pattern_only_candidates:
+        audit_events.append(
+            InferenceAuditEvent(
+                action_type="actual_candidate_excluded",
+                action_reason=OWNERSHIP_AGGREGATION_EXCLUSION_REASON,
+                from_entity_id=pattern_candidate.controller_entity_id,
+                to_entity_id=target_entity.id,
+                score_before=pattern_candidate.total_score,
+                score_after=None,
+                details={
+                    "terminal_failure_reason": OWNERSHIP_AGGREGATION_FAILURE_REASON,
+                    "fallback_reason": "no_identifiable_terminal_controller",
+                    "terminal_identifiability": (
+                        pattern_candidate.terminal_identifiability
+                    ),
+                    "terminal_suitability": pattern_candidate.terminal_suitability,
+                    "terminal_profile_reasons": list(
+                        pattern_candidate.terminal_profile_reasons
+                    ),
+                    "ownership_pattern_signal": True,
+                    "message": (
+                        "aggregation_like candidate excluded from actual-controller "
+                        "race due to terminal profile"
+                    ),
+                },
+            )
+        )
+
     if direct_candidate is not None:
         audit_events.append(
             InferenceAuditEvent(
@@ -2426,7 +2781,9 @@ def infer_controllers(
         )
 
     if direct_candidate is None:
-        pass
+        if pattern_only_candidates:
+            terminal_failure_reason = OWNERSHIP_AGGREGATION_FAILURE_REASON
+            country_inference_reason = "fallback_no_identifiable_terminal_controller"
     elif direct_joint_controller_entity_ids:
         joint_controller_entity_ids = direct_joint_controller_entity_ids
         terminal_failure_reason = "joint_control"
@@ -2516,18 +2873,22 @@ def infer_controllers(
 
             parent_candidates = [
                 candidate
-                for candidate in _build_candidates_for_target_entity(
+                for candidate in _apply_terminal_candidate_profiles(
                     context,
-                    current_entity_id,
-                    max_depth=max_depth,
-                    min_path_score=min_path_score,
-                    control_threshold=control_threshold,
-                    significant_threshold=significant_threshold,
-                    disclosure_threshold=disclosure_threshold,
-                    aggregator=aggregator,
-                    top_path_limit=top_path_limit,
+                    _build_candidates_for_target_entity(
+                        context,
+                        current_entity_id,
+                        max_depth=max_depth,
+                        min_path_score=min_path_score,
+                        control_threshold=control_threshold,
+                        significant_threshold=significant_threshold,
+                        disclosure_threshold=disclosure_threshold,
+                        aggregator=aggregator,
+                        top_path_limit=top_path_limit,
+                    ),
                 )
                 if candidate.min_depth == 1
+                and not _candidate_is_pattern_only(candidate)
             ]
 
             parent_joint_controller_entity_ids = _joint_control_entity_ids(

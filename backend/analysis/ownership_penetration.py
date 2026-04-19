@@ -1048,6 +1048,9 @@ def _candidate_selection_reason(
     result: ControlInferenceResult,
     candidate: ControllerCandidate,
 ) -> str:
+    if candidate.ownership_pattern_signal:
+        return "excluded_from_actual_race_due_to_terminal_profile"
+
     if (
         result.actual_controller_entity_id is not None
         and candidate.controller_entity_id == result.actual_controller_entity_id
@@ -1159,6 +1162,10 @@ def _build_unified_candidate_payload(
         "path_confidence_strategy": "multiplicative_edge_reliability_weighted_by_path_score",
         "control_ratio": serialize_pct_score(candidate.total_score),
         "semantic_flags": _semantic_flags_for_storage(candidate.semantic_flags),
+        "terminal_identifiability": candidate.terminal_identifiability,
+        "terminal_suitability": candidate.terminal_suitability,
+        "terminal_profile_reasons": list(candidate.terminal_profile_reasons),
+        "ownership_pattern_signal": candidate.ownership_pattern_signal,
         "total_confidence": serialize_unit_score(candidate.total_confidence),
         "total_score": serialize_unit_score(candidate.total_score),
         "total_score_pct": serialize_pct_score(candidate.total_score),
@@ -1304,6 +1311,10 @@ def _build_unified_basis_payload(
         "evidence_summary": list(candidate.evidence_summary),
         "path_count": len(candidate.path_states),
         "semantic_flags": _semantic_flags_for_storage(candidate.semantic_flags),
+        "terminal_identifiability": candidate.terminal_identifiability,
+        "terminal_suitability": candidate.terminal_suitability,
+        "terminal_profile_reasons": list(candidate.terminal_profile_reasons),
+        "ownership_pattern_signal": candidate.ownership_pattern_signal,
         "target_entity_id": result.target_entity.id,
         "controller_status": _candidate_controller_status(
             result=result,
@@ -1394,7 +1405,18 @@ def _build_unified_country_basis_payload(
             evidence_summary = (
                 ["joint control prevents unique attribution"]
                 if result.attribution_type == "joint_control"
-                else ["fallback to incorporation country because no controlling candidate met threshold"]
+                else (
+                    [
+                        "fallback_no_identifiable_terminal_controller",
+                        "ownership_aggregation_pattern",
+                        "ownership_pattern_signal excluded_from_actual_race_due_to_terminal_profile",
+                    ]
+                    if result.terminal_failure_reason
+                    == "ownership_aggregation_pattern"
+                    else [
+                        "fallback to incorporation country because no controlling candidate met threshold"
+                    ]
+                )
             )
     else:
         total_score = serialize_unit_score(winning_candidate.total_score)
@@ -1428,6 +1450,15 @@ def _build_unified_country_basis_payload(
         "promotion_source_by_entity_id": result.promotion_source_by_entity_id,
         "promotion_reason_by_entity_id": result.promotion_reason_by_entity_id,
         "terminal_failure_reason": result.terminal_failure_reason,
+        "ownership_pattern_signals": [
+            _build_unified_candidate_payload(
+                result=result,
+                candidate=candidate,
+                context=context,
+            )
+            for candidate in result.candidates
+            if candidate.ownership_pattern_signal
+        ],
         "semantic_flags": semantic_flags,
         "top_paths": top_paths,
         "evidence_summary": evidence_summary,
@@ -1624,6 +1655,10 @@ def _apply_unified_company_analysis_records(
                 "control_level": candidate.control_level,
                 "control_mode": candidate.control_mode,
                 "semantic_flags": _semantic_flags_for_storage(candidate.semantic_flags),
+                "terminal_identifiability": candidate.terminal_identifiability,
+                "terminal_suitability": candidate.terminal_suitability,
+                "terminal_profile_reasons": list(candidate.terminal_profile_reasons),
+                "ownership_pattern_signal": candidate.ownership_pattern_signal,
                 "total_confidence": serialize_unit_score(candidate.total_confidence),
                 "total_score_pct": serialize_pct_score(candidate.total_score),
                 "path_count": len(candidate.path_states),
@@ -2179,6 +2214,10 @@ def _normalize_country_basis_payload(
             "control_chain_depth": item.get("control_chain_depth"),
             "is_terminal_inference": bool(item.get("is_terminal_inference")),
             "terminal_failure_reason": item.get("terminal_failure_reason"),
+            "terminal_identifiability": item.get("terminal_identifiability"),
+            "terminal_suitability": item.get("terminal_suitability"),
+            "terminal_profile_reasons": item.get("terminal_profile_reasons") or [],
+            "ownership_pattern_signal": bool(item.get("ownership_pattern_signal")),
             "immediate_control_ratio": item.get("immediate_control_ratio"),
             "aggregated_control_score": _serialize_probability(
                 item.get("aggregated_control_score")
@@ -2316,6 +2355,26 @@ def _serialize_control_relationship_response(
         "controller_status": basis_controller_status,
         "selection_reason": basis_selection_reason,
         "is_leading_candidate": basis_is_leading,
+        "terminal_identifiability": (
+            normalized_basis.get("terminal_identifiability")
+            if isinstance(normalized_basis, dict)
+            else None
+        ),
+        "terminal_suitability": (
+            normalized_basis.get("terminal_suitability")
+            if isinstance(normalized_basis, dict)
+            else None
+        ),
+        "terminal_profile_reasons": (
+            normalized_basis.get("terminal_profile_reasons") or []
+            if isinstance(normalized_basis, dict)
+            else []
+        ),
+        "ownership_pattern_signal": (
+            bool(normalized_basis.get("ownership_pattern_signal"))
+            if isinstance(normalized_basis, dict)
+            else False
+        ),
         "review_status": relationship.review_status,
         "created_at": relationship.created_at.isoformat(),
         "updated_at": relationship.updated_at.isoformat(),
@@ -2360,11 +2419,19 @@ def get_company_control_chain_data(db: Session, company_id: int) -> dict:
             relationship
             for relationship in serialized_relationships
             if relationship.get("is_leading_candidate")
+            and not relationship.get("ownership_pattern_signal")
         ),
         None,
     )
     if leading_candidate is None and serialized_relationships:
-        leading_candidate = serialized_relationships[0]
+        leading_candidate = next(
+            (
+                relationship
+                for relationship in serialized_relationships
+                if not relationship.get("ownership_pattern_signal")
+            ),
+            None,
+        )
     if (
         actual_controller is None
         and leading_candidate is not None
@@ -2405,7 +2472,9 @@ def get_company_control_chain_data(db: Session, company_id: int) -> dict:
 
     if leading_candidate is None and isinstance(country_basis, dict):
         basis_leading_candidate = country_basis.get("leading_candidate")
-        if isinstance(basis_leading_candidate, dict):
+        if isinstance(basis_leading_candidate, dict) and not bool(
+            basis_leading_candidate.get("ownership_pattern_signal")
+        ):
             leading_candidate = {
                 "id": 0,
                 "company_id": company_id,

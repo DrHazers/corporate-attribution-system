@@ -690,7 +690,7 @@ def _unified_control_basis_payload(
         "operation": "recompute",
         "run_id": run_id,
         "generated_at": generated_at,
-        "method": "unified_control_inference_v1",
+        "method": "unified_control_inference_v2",
         "replaced_old_auto_results": replaced_old_auto_results,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -714,7 +714,7 @@ def _unified_country_basis_payload(
         "operation": "recompute",
         "run_id": run_id,
         "generated_at": generated_at,
-        "method": "unified_control_inference_v1",
+        "method": "unified_control_inference_v2",
         "replaced_old_auto_results": replaced_old_auto_results,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -883,7 +883,7 @@ def _insert_control_rows_unified(
                     run_id=run_id,
                     generated_at=generated_at,
                     replaced_old_auto_results=replaced_old_auto_results,
-                    analysis_method="unified_control_inference_v1",
+                    analysis_method="unified_control_inference_v2",
                 ),
                 control_mode=candidate.control_mode,
                 semantic_flags=(
@@ -934,7 +934,7 @@ def _insert_country_row_unified(
                 run_id=run_id,
                 generated_at=generated_at,
                 replaced_old_auto_results=replaced_old_auto_results,
-                analysis_method="unified_control_inference_v1",
+                analysis_method="unified_control_inference_v2",
             ),
             source_mode=source_mode,
         )

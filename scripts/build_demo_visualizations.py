@@ -16,6 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.analysis.ownership_penetration import refresh_company_control_analysis  # noqa: E402
+import backend.models  # noqa: F401,E402
+from backend.database import Base, ensure_sqlite_schema  # noqa: E402
 from backend.visualization.control_graph import (  # noqa: E402
     DEFAULT_MAX_DEPTH,
     build_control_graph_with_session,
@@ -502,6 +504,12 @@ def build_demo_visualizations(
         f"sqlite:///{database_path}",
         connect_args={"check_same_thread": False},
     )
+    Base.metadata.create_all(bind=engine)
+    raw_connection = engine.raw_connection()
+    try:
+        ensure_sqlite_schema(raw_connection)
+    finally:
+        raw_connection.close()
     session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     generated: list[dict[str, Any]] = []

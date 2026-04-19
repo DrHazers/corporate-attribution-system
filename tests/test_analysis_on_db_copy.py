@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.analysis.control_chain import analyze_control_chain
 from backend.analysis.country_attribution_analysis import analyze_country_attribution_with_control_chain
 from backend.analysis.ownership_penetration import refresh_company_control_analysis
-from backend.database import Base
+from backend.database import Base, ensure_sqlite_schema
 from backend.models.control_relationship import ControlRelationship
 from backend.models.country_attribution import CountryAttribution
 
@@ -139,6 +139,11 @@ def test_analysis_runs_on_verify_copy_without_polluting_raw_db():
 
     try:
         Base.metadata.create_all(bind=engine)
+        raw_connection = engine.raw_connection()
+        try:
+            ensure_sqlite_schema(raw_connection)
+        finally:
+            raw_connection.close()
 
         with session_factory() as db:
             equity_company_id = _pick_equity_company_id(db)

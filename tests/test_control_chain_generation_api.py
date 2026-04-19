@@ -129,7 +129,7 @@ def _expected_equity_path(*, edge_ids: list[int], path_entity_ids: list[int], pa
                 "numeric_factor": numeric_factors[index],
                 "semantic_factor": "1.0000",
                 "confidence_weight": "0.6000",
-                "flags": ["equity"],
+                "flags": ["equity", "unknown_confidence"],
                 "evidence_summary": None,
             }
             for index in range(len(edge_ids))
@@ -139,8 +139,33 @@ def _expected_equity_path(*, edge_ids: list[int], path_entity_ids: list[int], pa
         "confidence_prod": "0.3600" if len(edge_ids) == 2 else "0.6000",
         "path_score": path_score,
         "path_score_pct": f"{float(path_score) * 100:.4f}",
-        "semantic_flags": None,
+        "semantic_flags": ["unknown_confidence"],
     }
+
+
+def _assert_equity_paths_match(actual_paths: list[dict], expected_paths: list[dict]) -> None:
+    assert len(actual_paths) == len(expected_paths)
+    for actual, expected in zip(actual_paths, expected_paths, strict=True):
+        for key in [
+            "path_entity_ids",
+            "path_entity_names",
+            "edge_ids",
+            "numeric_prod",
+            "semantic_prod",
+            "confidence_prod",
+            "path_score",
+            "path_score_pct",
+            "semantic_flags",
+        ]:
+            assert actual[key] == expected[key]
+        assert len(actual["edges"]) == len(expected["edges"])
+        for actual_edge, expected_edge in zip(
+            actual["edges"],
+            expected["edges"],
+            strict=True,
+        ):
+            for key, value in expected_edge.items():
+                assert actual_edge[key] == value
 
 
 
@@ -290,7 +315,9 @@ def test_analysis_control_chain_reads_precomputed_results_after_post_refresh():
         "Intermediary C",
     }
     assert relationships_by_name["Controller Parent"]["control_type"] == "equity_control"
-    assert relationships_by_name["Controller Parent"]["control_path"] == [
+    _assert_equity_paths_match(
+        relationships_by_name["Controller Parent"]["control_path"],
+        [
         _expected_equity_path(
             edge_ids=[controller_to_b["id"], b_to_target["id"]],
             path_entity_ids=[controller["id"], intermediary_b["id"], target_entity["id"]],
@@ -305,7 +332,8 @@ def test_analysis_control_chain_reads_precomputed_results_after_post_refresh():
             numeric_factors=["0.7000", "0.3000"],
             path_score="0.2100",
         ),
-    ]
+    ],
+    )
     assert relationships_by_name["Controller Parent"]["basis"]["classification"] == "equity_control"
     assert relationships_by_name["Controller Parent"]["basis"]["control_mode"] == "numeric"
     assert relationships_by_name["Intermediary B"]["control_ratio"] == "40.0000"
@@ -360,7 +388,9 @@ def test_analysis_country_attribution_reads_precomputed_results_after_post_refre
     assert basis_item["controller_name"] == "Primary Controller"
     assert basis_item["control_type"] == "equity_control"
     assert basis_item["is_actual_controller"] is True
-    assert basis_item["control_path"] == [
+    _assert_equity_paths_match(
+        basis_item["control_path"],
+        [
         _expected_equity_path(
             edge_ids=[direct_structure["id"]],
             path_entity_ids=[controller["id"], target_entity["id"]],
@@ -368,7 +398,8 @@ def test_analysis_country_attribution_reads_precomputed_results_after_post_refre
             numeric_factors=["0.6500"],
             path_score="0.6500",
         )
-    ]
+    ],
+    )
     assert basis_item["basis"]["classification"] == "equity_control"
     assert basis_item["basis"]["control_mode"] == "numeric"
 

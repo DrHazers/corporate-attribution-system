@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from datetime import date, timedelta
@@ -61,14 +61,14 @@ def test_refresh_defaults_to_unified_engine_and_writes_unified_rows(tmp_path, mo
             relationships = fetch_control_relationships(db, company.id)
             attribution = fetch_country_attribution(db, company.id)
 
-            assert refresh_result["engine"] == "unified_control_inference_v1"
+            assert refresh_result["engine"] == "unified_control_inference_v2"
             assert len(relationships) == 1
             assert relationships[0].control_type == "agreement_control"
             assert relationships[0].control_mode == "semantic"
-            assert json.loads(relationships[0].basis)["analysis"] == "unified_control_inference_v1"
+            assert json.loads(relationships[0].basis)["analysis"] == "unified_control_inference_v2"
             assert attribution is not None
             assert attribution.attribution_type == "agreement_control"
-            assert json.loads(attribution.basis)["analysis"] == "unified_control_inference_v1"
+            assert json.loads(attribution.basis)["analysis"] == "unified_control_inference_v2"
     finally:
         engine.dispose()
 
@@ -118,11 +118,11 @@ def test_run_recompute_defaults_to_unified_engine(tmp_path, monkeypatch):
             assert len(relationships) == 1
             assert relationships[0].control_type == "agreement_control"
             assert relationships[0].control_mode == "semantic"
-            assert json.loads(relationships[0].basis)["analysis"] == "unified_control_inference_v1"
-            assert json.loads(relationships[0].basis)["audit"]["method"] == "unified_control_inference_v1"
+            assert json.loads(relationships[0].basis)["analysis"] == "unified_control_inference_v2"
+            assert json.loads(relationships[0].basis)["audit"]["method"] == "unified_control_inference_v2"
             assert attribution is not None
             assert attribution.attribution_type == "agreement_control"
-            assert json.loads(attribution.basis)["analysis"] == "unified_control_inference_v1"
+            assert json.loads(attribution.basis)["analysis"] == "unified_control_inference_v2"
     finally:
         engine.dispose()
         for backup_path in tmp_path.glob("*_before_recompute_*.db"):
@@ -170,7 +170,7 @@ def test_refresh_default_thresholds_persist_significant_influence_candidates(
             relationships = fetch_control_relationships(db, company.id)
             attribution = fetch_country_attribution(db, company.id)
 
-            assert refresh_result["engine"] == "unified_control_inference_v1"
+            assert refresh_result["engine"] == "unified_control_inference_v2"
             assert refresh_result["control_relationship_count"] == 1
             assert refresh_result["actual_controller_entity_id"] is None
             assert len(relationships) == 1
@@ -179,7 +179,7 @@ def test_refresh_default_thresholds_persist_significant_influence_candidates(
             assert json.loads(relationships[0].basis)["classification"] == "significant_influence"
             assert attribution is not None
             assert attribution.attribution_type == "fallback_incorporation"
-            assert json.loads(attribution.basis)["analysis"] == "unified_control_inference_v1"
+            assert json.loads(attribution.basis)["analysis"] == "unified_control_inference_v2"
     finally:
         engine.dispose()
 

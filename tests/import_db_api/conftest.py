@@ -6,23 +6,50 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy import event
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 IMPORT_DB_PATH = PROJECT_ROOT / "company_import_test.db"
 IMPORT_DATABASE_URL = f"sqlite:///{IMPORT_DB_PATH}"
 
-os.environ["DATABASE_URL"] = IMPORT_DATABASE_URL
-
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.database import DATABASE_URL, SessionLocal, init_db  # noqa: E402
+import backend.database as database_module  # noqa: E402
 from backend.main import app  # noqa: E402
+import backend.main as main_module  # noqa: E402
 from backend.models.company import Company  # noqa: E402
 from backend.models.control_relationship import ControlRelationship  # noqa: E402
 from backend.models.country_attribution import CountryAttribution  # noqa: E402
 from backend.models.shareholder import ShareholderEntity, ShareholderStructure  # noqa: E402
+
+
+def _bind_import_database() -> str:
+    os.environ["DATABASE_URL"] = IMPORT_DATABASE_URL
+    if database_module.DATABASE_URL == IMPORT_DATABASE_URL:
+        return database_module.DATABASE_URL
+
+    database_module.engine.dispose()
+    import_engine = create_engine(
+        IMPORT_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+    )
+    event.listen(
+        import_engine,
+        "connect",
+        database_module.configure_sqlite_connection,
+    )
+    database_module.DATABASE_URL = IMPORT_DATABASE_URL
+    database_module.engine = import_engine
+    database_module.SessionLocal.configure(bind=import_engine)
+    main_module.DATABASE_URL = IMPORT_DATABASE_URL
+    return database_module.DATABASE_URL
+
+
+SessionLocal = database_module.SessionLocal
+init_db = database_module.init_db
 
 
 def _pick_sample_ids() -> dict[str, int]:
@@ -84,15 +111,31 @@ def _pick_sample_ids() -> dict[str, int]:
         db.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def import_database_url() -> str:
     assert IMPORT_DB_PATH.exists(), f"Missing import DB: {IMPORT_DB_PATH}"
-    assert DATABASE_URL == IMPORT_DATABASE_URL
+    previous_database_url = database_module.DATABASE_URL
+    previous_engine = database_module.engine
+    previous_main_database_url = main_module.DATABASE_URL
+    previous_env_database_url = os.environ.get("DATABASE_URL")
+
+    assert _bind_import_database() == IMPORT_DATABASE_URL
     init_db()
-    return DATABASE_URL
+    try:
+        yield database_module.DATABASE_URL
+    finally:
+        database_module.engine.dispose()
+        database_module.DATABASE_URL = previous_database_url
+        database_module.engine = previous_engine
+        database_module.SessionLocal.configure(bind=previous_engine)
+        main_module.DATABASE_URL = previous_main_database_url
+        if previous_env_database_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous_env_database_url
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def client(import_database_url: str):
     with TestClient(app) as test_client:
         yield test_client
@@ -107,6 +150,6 @@ def db_session(import_database_url: str):
         db.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def sample_ids(import_database_url: str) -> dict[str, int]:
     return _pick_sample_ids()

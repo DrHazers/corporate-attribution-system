@@ -93,7 +93,11 @@ def test_app_starts_and_main_health_endpoints_work(client, import_database_url: 
 
     health_response = client.get("/health")
     assert health_response.status_code == 200
-    assert health_response.json() == {"status": "ok"}
+    health_payload = health_response.json()
+    assert health_payload["status"] == "ok"
+    assert health_payload.get("database_url", import_database_url).endswith(
+        "company_import_test.db"
+    )
 
 
 

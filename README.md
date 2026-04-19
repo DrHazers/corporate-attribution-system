@@ -214,6 +214,8 @@ $env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/compa
 - 新增展示或产业分析能力时，优先复用当前预计算结果
 
 ## 相关文档
-- `docs/current_algorithm_rules.md`：当前控制分析规则的真实实现说明
-- `docs/algorithm_runtime_cleanup.md`：最近一轮算法运行时收口后的默认行为说明
+- `docs/ultimate_controller_algorithm_explained.md`：主版本 ultimate controller 算法解释
+- `docs/ultimate_controller_main_release_summary.md`：主版本冻结与验证总结
+- `docs/current_control_inference_summary.md`：当前控制推断实现口径
+- `docs/dev_run_guide.md`：开发联调与演示运行说明
 - `docs/codex_rules.md`：当前阶段的开发协作约束

@@ -296,9 +296,10 @@ legacy 逻辑可以保留，但只能作为显式兼容模式存在。
 
 则必须同步更新相应文档，优先包括：
 
-- `docs/algorithm_runtime_cleanup.md`
 - `README.md`
-- 必要时补充或修订 `docs/current_algorithm_rules.md`
+- `docs/current_control_inference_summary.md`
+- `docs/ultimate_controller_algorithm_explained.md`
+- 必要时补充或修订 `docs/ultimate_controller_rules_v2.md`
 
 ### 9.2 测试要求
 默认只补关键测试，不泛滥加测试。

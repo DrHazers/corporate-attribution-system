@@ -18,7 +18,21 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  manualEffective: {
+    type: Boolean,
+    default: false,
+  },
+  manualPanelExpanded: {
+    type: Boolean,
+    default: false,
+  },
+  resultSourceLabel: {
+    type: String,
+    default: '自动分析结果',
+  },
 })
+
+const emit = defineEmits(['toggle-manual-panel'])
 
 const displayController = computed(
   () => props.controlAnalysis?.display_controller || props.controlAnalysis?.actual_controller || null,
@@ -42,6 +56,12 @@ const businessSegmentCount = computed(
   () => props.industryAnalysis?.business_segment_count ?? 0,
 )
 const warnings = computed(() => props.industryAnalysis?.quality_warnings || [])
+const manualButtonLabel = computed(() => {
+  if (props.manualPanelExpanded) {
+    return '收起人工征订'
+  }
+  return props.manualEffective ? '查看/校正' : '人工征订/校正'
+})
 
 const overviewItems = computed(() => [
   { label: '公司名称', value: props.company?.name || '暂无' },
@@ -51,6 +71,7 @@ const overviewItems = computed(() => [
   { label: '上市地', value: props.company?.listing_country || '暂无' },
   { label: '控制主体', value: controllerDisplayText.value },
   { label: '实际控制地', value: actualControlCountry.value },
+  { label: '控制结论来源', value: props.resultSourceLabel || '自动分析结果' },
   { label: '主产业', value: primaryIndustry.value },
   { label: '业务线数量', value: businessSegmentCount.value },
 ])
@@ -63,6 +84,16 @@ const overviewItems = computed(() => [
         <div>
           <h2>公司总览</h2>
           <p>聚合展示公司基础信息、控制结果与当前产业分析摘要。</p>
+        </div>
+        <div class="overview-manual-entry">
+          <el-button
+            class="overview-manual-entry__button"
+            size="small"
+            plain
+            @click="emit('toggle-manual-panel')"
+          >
+            {{ manualButtonLabel }}
+          </el-button>
         </div>
       </div>
     </template>
@@ -91,6 +122,18 @@ const overviewItems = computed(() => [
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
+}
+
+.overview-manual-entry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.overview-manual-entry__button {
+  border-radius: 8px;
 }
 
 .overview-grid__item {
@@ -134,6 +177,10 @@ const overviewItems = computed(() => [
 @media (max-width: 900px) {
   .overview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-manual-entry {
+    justify-content: flex-start;
   }
 }
 

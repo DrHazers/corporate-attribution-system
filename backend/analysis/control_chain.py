@@ -4,6 +4,9 @@ from backend.analysis.ownership_penetration import (
     get_company_control_chain_data,
     refresh_company_control_analysis,
 )
+from backend.analysis.manual_control_override import (
+    get_current_effective_control_chain_data,
+)
 from backend.crud.shareholder import get_entity_by_company_id
 
 
@@ -34,13 +37,18 @@ def analyze_control_chain_with_options(
     company_id: int,
     *,
     refresh: bool = False,
+    result_layer: str = "current",
 ) -> dict:
     if refresh:
         if get_entity_by_company_id(db, company_id) is None:
             raise ValueError("Mapped shareholder entity not found for company.")
         refresh_company_control_analysis(db, company_id)
 
-    control_chain_data = get_company_control_chain_data(db, company_id)
+    control_chain_data = (
+        get_company_control_chain_data(db, company_id)
+        if result_layer == "auto"
+        else get_current_effective_control_chain_data(db, company_id)
+    )
     control_relationships = control_chain_data["control_relationships"]
 
     return {

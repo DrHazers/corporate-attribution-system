@@ -6,6 +6,7 @@ from backend.models.control_inference_audit_log import ControlInferenceAuditLog
 from backend.models.control_inference_run import ControlInferenceRun
 from backend.models.control_relationship import ControlRelationship
 from backend.models.country_attribution import CountryAttribution
+from backend.models.manual_control_override import ManualControlOverride
 from backend.models.shareholder import (
     EntityAlias,
     RelationshipSource,
@@ -23,6 +24,7 @@ __all__ = [
     "ControlInferenceRun",
     "ControlRelationship",
     "CountryAttribution",
+    "ManualControlOverride",
     "EntityAlias",
     "RelationshipSource",
     "ShareholderEntity",

@@ -11,3 +11,17 @@ export function fetchCompanyIndustryAnalysis(companyId, params = {}) {
 export function fetchCompanyControlChain(companyId) {
   return http.get(`/companies/${companyId}/control-chain`)
 }
+
+export function fetchCompanyAutomaticControlChain(companyId) {
+  return http.get(`/companies/${companyId}/control-chain`, {
+    params: { result_layer: 'auto' },
+  })
+}
+
+export function submitManualControlOverride(companyId, payload) {
+  return http.post(`/companies/${companyId}/manual-control-override`, payload)
+}
+
+export function restoreAutomaticControlResult(companyId, payload = {}) {
+  return http.post(`/companies/${companyId}/manual-control-override/restore-auto`, payload)
+}

@@ -2385,6 +2385,12 @@ def get_company_control_chain_data(db: Session, company_id: int) -> dict:
     relationships = (
         db.query(ControlRelationship)
         .filter(ControlRelationship.company_id == company_id)
+        .filter(
+            or_(
+                ControlRelationship.notes.is_(None),
+                ~ControlRelationship.notes.like("MANUAL_OVERRIDE:%"),
+            )
+        )
         .order_by(
             ControlRelationship.control_ratio.is_(None),
             ControlRelationship.control_ratio.desc(),
@@ -2458,6 +2464,12 @@ def get_company_control_chain_data(db: Session, company_id: int) -> dict:
     country_attribution = (
         db.query(CountryAttribution)
         .filter(CountryAttribution.company_id == company_id)
+        .filter(
+            or_(
+                CountryAttribution.notes.is_(None),
+                ~CountryAttribution.notes.like("MANUAL_OVERRIDE:%"),
+            )
+        )
         .order_by(CountryAttribution.id.desc())
         .first()
     )
@@ -2546,6 +2558,12 @@ def get_company_actual_controller_data(db: Session, company_id: int) -> dict:
         .filter(ControlRelationship.company_id == company_id)
         .filter(
             or_(
+                ControlRelationship.notes.is_(None),
+                ~ControlRelationship.notes.like("MANUAL_OVERRIDE:%"),
+            )
+        )
+        .filter(
+            or_(
                 ControlRelationship.is_actual_controller.is_(True),
                 ControlRelationship.is_ultimate_controller.is_(True),
             )
@@ -2572,6 +2590,12 @@ def get_company_country_attribution_data(db: Session, company_id: int) -> dict:
     country_attribution = (
         db.query(CountryAttribution)
         .filter(CountryAttribution.company_id == company_id)
+        .filter(
+            or_(
+                CountryAttribution.notes.is_(None),
+                ~CountryAttribution.notes.like("MANUAL_OVERRIDE:%"),
+            )
+        )
         .order_by(CountryAttribution.id.desc())
         .first()
     )

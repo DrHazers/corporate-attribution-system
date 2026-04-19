@@ -27,6 +27,7 @@ def get_db():
 def get_control_chain_analysis(
     company_id: int,
     refresh: bool = False,
+    result_layer: str = "current",
     db: Session = Depends(get_db),
 ):
     company = get_company_by_id(db, company_id)
@@ -41,6 +42,7 @@ def get_control_chain_analysis(
             db,
             company_id,
             refresh=refresh,
+            result_layer=result_layer,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -70,6 +72,7 @@ def get_control_chain_analysis(
 def get_country_attribution_analysis(
     company_id: int,
     refresh: bool = False,
+    result_layer: str = "current",
     db: Session = Depends(get_db),
 ):
     company = get_company_by_id(db, company_id)
@@ -84,6 +87,7 @@ def get_country_attribution_analysis(
             db,
             company_id,
             refresh=refresh,
+            result_layer=result_layer,
         )
     except ValueError as exc:
         raise HTTPException(

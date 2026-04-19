@@ -68,6 +68,14 @@ function normalizeRelationType(value) {
   return normalized
 }
 
+function isManualOverrideType(value) {
+  return normalizeRelationType(value) === 'manual_override'
+}
+
+function isManualConfirmedType(value) {
+  return normalizeRelationType(value) === 'manual_confirmed'
+}
+
 function isSemanticRelationType(value) {
   return SEMANTIC_RELATION_TYPES.has(normalizeRelationType(value))
 }
@@ -76,7 +84,8 @@ function ratioFromValue(value) {
   if (value === null || value === undefined || value === '') {
     return null
   }
-  const numeric = Number(value)
+  const normalized = typeof value === 'string' ? value.replace('%', '').trim() : value
+  const numeric = Number(normalized)
   return Number.isNaN(numeric) ? null : numeric
 }
 
@@ -164,8 +173,12 @@ function controllerStep(relationship, fallbackIndex = 0) {
 function targetStep({ company = {}, relationshipGraph = {}, pathItem = null }) {
   const pathIds = Array.isArray(pathItem?.path_entity_ids) ? pathItem.path_entity_ids : []
   const pathNames = Array.isArray(pathItem?.path_entity_names) ? pathItem.path_entity_names : []
+  const isManualPath =
+    isManualOverrideType(pathItem?.source_type) ||
+    (isManualOverrideType(pathItem?.path_kind) && !isManualConfirmedType(pathItem?.source_type))
 
   const id =
+    (isManualPath ? toKey(pathIds[pathIds.length - 1]) : '') ||
     toKey(relationshipGraph?.target_entity_id) ||
     toKey(pathIds[pathIds.length - 1]) ||
     toKey(company?.target_entity_id) ||
@@ -175,6 +188,7 @@ function targetStep({ company = {}, relationshipGraph = {}, pathItem = null }) {
   return {
     id,
     name:
+      (isManualPath ? pathNames[pathNames.length - 1] : '') ||
       relationshipGraph?.target_company?.name ||
       company?.name ||
       pathNames[pathNames.length - 1] ||
@@ -282,6 +296,10 @@ function relationshipPaths(relationship, context, fallbackIndex = 0) {
 
 function pathScore(pathItem = {}) {
   return (
+    ratioFromValue(pathItem?.path_ratio) ??
+    ratioFromValue(pathItem?.control_ratio) ??
+    ratioFromValue(pathItem?.ratio) ??
+    ratioFromValue(pathItem?.path_strength) ??
     ratioFromValue(pathItem?.path_score_pct) ??
     ratioFromValue(pathItem?.path_score) ??
     null
@@ -304,8 +322,28 @@ function buildPathDescriptor(path = {}, index = 0) {
     kindLabel: kind === 'direct' ? '直接路径' : '间接路径',
     text: buildPathTextFromSteps(path.steps),
     score: pathScore(path.pathItem),
+    ratio: path.pathItem?.path_ratio ?? path.pathItem?.control_ratio ?? path.pathItem?.ratio ?? null,
     nodeCount: path.steps.length,
   }
+}
+
+function isManualRelationshipPath(relationship = {}, paths = []) {
+  const relationshipIsManualOverride =
+    isManualOverrideType(relationship?.result_source) ||
+    isManualOverrideType(relationship?.source_type) ||
+    isManualOverrideType(relationship?.manual_result_source)
+  const relationshipIsManualConfirmed =
+    isManualConfirmedType(relationship?.result_source) ||
+    isManualConfirmedType(relationship?.source_type) ||
+    isManualConfirmedType(relationship?.manual_result_source)
+
+  return (
+    relationshipIsManualOverride ||
+    paths.some((path) =>
+      isManualOverrideType(path?.pathItem?.source_type) ||
+      (isManualOverrideType(path?.pathItem?.path_kind) && !relationshipIsManualConfirmed),
+    )
+  )
 }
 
 function buildMultiPathConvergenceMetadata(relationships = [], context) {
@@ -319,13 +357,14 @@ function buildMultiPathConvergenceMetadata(relationships = [], context) {
       const paths = relationshipPaths(relationship, context, index).filter(
         (path) => path.steps.length >= 2,
       )
-      if (paths.length < 2) {
+      const isManualPathDriven = isManualRelationshipPath(relationship, paths)
+      if (paths.length < 2 && !isManualPathDriven) {
         return null
       }
 
       const directPaths = paths.filter((path) => pathKind(path) === 'direct')
       const indirectPaths = paths.filter((path) => pathKind(path) === 'indirect')
-      if (!directPaths.length || !indirectPaths.length) {
+      if (!isManualPathDriven && (!directPaths.length || !indirectPaths.length)) {
         return null
       }
 
@@ -340,10 +379,14 @@ function buildMultiPathConvergenceMetadata(relationships = [], context) {
         directPathCount: directPaths.length,
         indirectPathCount: indirectPaths.length,
         supplementalPathCount: supplementalPaths.length,
-        hasDirectAndIndirect: true,
+        hasDirectAndIndirect: directPaths.length > 0 && indirectPaths.length > 0,
+        isManualPathDriven,
+        sourceType: isManualPathDriven ? 'manual_override' : 'automatic',
         primaryPath,
         supplementalPaths,
-        summary: '同一主体同时存在直接路径与间接路径，图中仅突出主解释路径。',
+        summary: isManualPathDriven
+          ? '当前控制路径由人工征订构建，用于支撑当前实际控制人结论。'
+          : '同一主体同时存在直接路径与间接路径，图中仅突出主解释路径。',
       }
     })
     .filter(Boolean)
@@ -794,6 +837,18 @@ export function buildControlStructureModel({
   const focusedRelationship = pickFocusedRelationship(controlAnalysis, actualController)
   const summaryRelationship = pickSummaryRelationship(controlAnalysis, actualController)
   const firstPathItem = getControlPaths(summaryRelationship)[0] || null
+  const isManualPathDriven =
+    isManualOverrideType(controlAnalysis?.result_source) ||
+    isManualOverrideType(summaryRelationship?.result_source) ||
+    isManualOverrideType(summaryRelationship?.source_type) ||
+    isManualOverrideType(summaryRelationship?.manual_result_source) ||
+    isManualOverrideType(firstPathItem?.source_type) ||
+    (
+      isManualOverrideType(firstPathItem?.path_kind) &&
+      !isManualConfirmedType(summaryRelationship?.result_source) &&
+      !isManualConfirmedType(summaryRelationship?.source_type) &&
+      !isManualConfirmedType(firstPathItem?.source_type)
+    )
   const target = targetStep({ company, relationshipGraph, pathItem: firstPathItem })
 
   if (!target.id) {
@@ -974,6 +1029,8 @@ export function buildControlStructureModel({
     viewMode: 'Control Structure Diagram',
     sourceMode: 'progressive-expand',
     displayMode: 'progressive-expand',
+    isManualPathDriven,
+    primaryPathSource: isManualPathDriven ? 'manual_paths' : 'automatic_paths',
     targetId: target.id,
     targetName: target.name,
     actualControllerId,

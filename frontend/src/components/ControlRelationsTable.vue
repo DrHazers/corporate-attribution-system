@@ -53,6 +53,8 @@ const CONTROL_TYPE_LABELS = {
   vie_control: 'VIE结构',
   mixed_control: '混合控制',
   joint_control: '共同控制',
+  manual_override: '人工征订',
+  manual_confirmed: '人工确认',
   unknown: EMPTY_TEXT,
   null: EMPTY_TEXT,
 }
@@ -182,6 +184,31 @@ const actualControllerName = computed(() => {
   return actual?.controller_name || ''
 })
 
+const manualEffective = computed(() => Boolean(props.controlAnalysis?.is_manual_effective))
+const manualCountryEffective = computed(
+  () =>
+    Boolean(props.countryAttribution?.is_manual_effective) &&
+    !Boolean(props.controlAnalysis?.is_manual_effective),
+)
+const manualOverride = computed(
+  () => props.controlAnalysis?.manual_override || props.countryAttribution?.manual_override || {},
+)
+const manualSourceLabel = computed(() => {
+  const source = props.controlAnalysis?.result_source || props.countryAttribution?.result_source
+  if (source === 'manual_confirmed') {
+    return '人工确认'
+  }
+  if (source === 'manual_override') {
+    return '人工征订'
+  }
+  return '人工征订'
+})
+const isManualConfirmedResult = computed(
+  () =>
+    (props.controlAnalysis?.result_source || props.countryAttribution?.result_source) ===
+    'manual_confirmed',
+)
+
 const highestDirectControllerRatio = computed(() => {
   const ratios = props.relationships
     .filter((relationship) => isDirectRow(relationship))
@@ -253,7 +280,8 @@ function toPercentNumber(value) {
     return null
   }
 
-  const numeric = Number(value)
+  const normalized = typeof value === 'string' ? value.replace('%', '').trim() : value
+  const numeric = Number(normalized)
   if (Number.isNaN(numeric)) {
     return null
   }
@@ -266,22 +294,25 @@ function sortRatioValue(value) {
 }
 
 function rowDisplayPriority(row) {
-  if (isActualRow(row)) {
+  if (isCurrentEffectiveResultRow(row)) {
     return 0
   }
-  if (isPreferRollupRow(row) || isDirectRow(row)) {
+  if (isAutomaticSupersededRow(row)) {
     return 1
   }
-  if (isLeadingRow(row)) {
+  if (isPreferRollupRow(row) || isDirectRow(row)) {
     return 2
   }
-  if (isBlockedCandidateRow(row)) {
+  if (isLeadingRow(row)) {
     return 3
   }
-  if (isOwnershipPatternRow(row)) {
+  if (isBlockedCandidateRow(row)) {
     return 4
   }
-  return 5
+  if (isOwnershipPatternRow(row)) {
+    return 5
+  }
+  return 6
 }
 
 function formatRatio(value) {
@@ -298,6 +329,9 @@ function controlTypeLabel(value) {
   const normalized = normalizeKey(value)
   if (!normalized || normalized === 'unknown' || normalized === 'null') {
     return EMPTY_TEXT
+  }
+  if (/[\u4e00-\u9fff]/.test(String(value))) {
+    return String(value).trim()
   }
   return CONTROL_TYPE_LABELS[normalized] || '未识别类型'
 }
@@ -326,6 +360,11 @@ function parsedBasis(row) {
 function firstAvailable(row, key) {
   const basis = parsedBasis(row)
   return row?.[key] ?? basis?.[key]
+}
+
+function manualField(row, key) {
+  const overrideValue = manualOverride.value?.[key]
+  return firstAvailable(row, key) ?? overrideValue
 }
 
 function isTruthy(value) {
@@ -440,6 +479,9 @@ function isUltimateRow(row) {
 }
 
 function isActualRow(row) {
+  if (isAutomaticSupersededRow(row)) {
+    return false
+  }
   if (isOwnershipPatternRow(row)) {
     return false
   }
@@ -448,6 +490,36 @@ function isActualRow(row) {
     isUltimateRow(row) ||
     normalizeKey(firstAvailable(row, 'controller_status')) === 'actual_controller'
   )
+}
+
+function isManualEffectiveRow(row) {
+  return (
+    isTruthy(firstAvailable(row, 'is_manual_effective')) ||
+    isTruthy(row?.is_current_effective) && normalizeKey(row?.result_source).startsWith('manual') ||
+    normalizeKey(firstAvailable(row, 'source_type')).startsWith('manual') ||
+    normalizeKey(firstAvailable(row, 'manual_result_source')).startsWith('manual')
+  )
+}
+
+function isManualCountryOnlyRow(row) {
+  return manualCountryEffective.value && isActualRow(row) && !isAutomaticSupersededRow(row)
+}
+
+function isAutomaticSupersededRow(row) {
+  return isTruthy(row?.automatic_result_superseded) || isTruthy(firstAvailable(row, 'automatic_result_superseded'))
+}
+
+function isCurrentEffectiveResultRow(row) {
+  if (isAutomaticSupersededRow(row)) {
+    return false
+  }
+  if (isManualEffectiveRow(row)) {
+    return true
+  }
+  if (isTruthy(row?.is_current_effective) || isTruthy(firstAvailable(row, 'is_current_effective'))) {
+    return isActualRow(row)
+  }
+  return !manualEffective.value && isActualRow(row)
 }
 
 function isLeadingRow(row) {
@@ -486,6 +558,14 @@ function terminalFailureText(row) {
 }
 
 function selectionReasonText(row) {
+  if (isManualEffectiveRow(row)) {
+    return (
+      manualField(row, 'manual_decision_reason') ||
+      (normalizeKey(firstAvailable(row, 'source_type')) === 'manual_confirmed'
+        ? '经人工确认后采用当前自动分析结论。'
+        : '人工征订确定当前实际控制人，基于人工构建控制路径生效。')
+    )
+  }
   const reason = firstAvailable(row, 'selection_reason')
   const normalized = normalizeKey(reason)
   if (!normalized) {
@@ -532,7 +612,14 @@ function buildPathText(path) {
 }
 
 function pathScoreText(path) {
-  return formatRatio(path?.path_score_pct ?? path?.path_score)
+  return formatRatio(
+    path?.path_ratio ??
+      path?.control_ratio ??
+      path?.ratio ??
+      path?.path_strength ??
+      path?.path_score_pct ??
+      path?.path_score,
+  )
 }
 
 function pathEntityIds(path) {
@@ -572,6 +659,65 @@ function pathSummary(row) {
     directPathCount,
     indirectPathCount,
     hasDirectAndIndirect: directPathCount > 0 && indirectPathCount > 0,
+  }
+}
+
+function primaryPathRatioText(row) {
+  return pathScoreText(pathSummary(row).paths[0])
+}
+
+function displayControlStrength(row) {
+  if (isManualEffectiveRow(row)) {
+    const backendValue = manualField(row, 'manual_display_control_strength')
+    const backendSource = normalizeKey(manualField(row, 'manual_display_control_strength_source'))
+    if (backendValue) {
+      return {
+        value: backendValue,
+        text: formatRatio(backendValue),
+        source:
+          backendSource === 'manual_primary_path_ratio'
+            ? 'manual_primary_path_ratio'
+            : 'manual_final_strength',
+        note:
+          backendSource === 'manual_primary_path_ratio'
+            ? '来自主路径'
+            : '人工征订',
+      }
+    }
+
+    const finalStrength = manualField(row, 'manual_control_ratio')
+    if (finalStrength) {
+      return {
+        value: finalStrength,
+        text: formatRatio(finalStrength),
+        source: 'manual_final_strength',
+        note: '人工征订',
+      }
+    }
+
+    const primaryPathRatio = primaryPathRatioText(row)
+    if (primaryPathRatio !== EMPTY_TEXT) {
+      return {
+        value: primaryPathRatio,
+        text: primaryPathRatio,
+        source: 'manual_primary_path_ratio',
+        note: '来自主路径',
+      }
+    }
+
+    return {
+      value: null,
+      text: EMPTY_TEXT,
+      source: 'empty',
+      note: '未填写精确比例',
+    }
+  }
+
+  return {
+    value: row?.control_ratio,
+    text: formatRatio(row?.control_ratio),
+    source: 'automatic',
+    note: '自动分析',
   }
 }
 
@@ -755,6 +901,25 @@ function dedupeList(items) {
 }
 
 function relationshipRoleTags(row) {
+  if (isManualEffectiveRow(row)) {
+    return [
+      { label: '实际控制人', type: 'actual' },
+      { label: `${manualSourceLabel.value}生效`, type: 'manual' },
+    ]
+  }
+
+  if (isAutomaticSupersededRow(row)) {
+    return isManualConfirmedResult.value
+      ? [
+          { label: '自动分析原始行', type: 'neutral' },
+          { label: '人工确认参考', type: 'boundary' },
+        ]
+      : [
+          { label: '自动分析结果', type: 'neutral' },
+          { label: '已覆盖参考', type: 'boundary' },
+        ]
+  }
+
   if (isOwnershipPatternRow(row)) {
     return [
       { label: '结构信号', type: 'pattern' },
@@ -775,8 +940,13 @@ function relationshipRoleTags(row) {
   }
 
   const tags = []
-  if (isActualRow(row)) {
+  if (isCurrentEffectiveResultRow(row)) {
     tags.push({ label: '实际控制人', type: 'actual' })
+  } else if (isActualRow(row)) {
+    tags.push({ label: '自动分析结果', type: 'neutral' })
+  }
+  if (isManualCountryOnlyRow(row)) {
+    tags.push({ label: '国别人工征订', type: 'manual' })
   }
   if (isDirectRow(row)) {
     tags.push({ label: '直接控制人', type: 'direct' })
@@ -801,6 +971,19 @@ function relationshipRoleTags(row) {
 }
 
 function roleNote(row) {
+  if (isManualEffectiveRow(row)) {
+    return isManualConfirmedResult.value
+      ? '当前生效结论为人工确认后的自动分析结果。'
+      : '当前生效结论由人工征订写回数据库，非算法自动识别。'
+  }
+  if (isManualCountryOnlyRow(row)) {
+    return '控制主体沿用当前结论，实际控制国别经人工征订调整。'
+  }
+  if (isAutomaticSupersededRow(row)) {
+    return isManualConfirmedResult.value
+      ? '自动分析原始行仍保留用于查看，当前已由人工确认行承接为生效结论。'
+      : '自动分析结果仍保留用于查看，但当前已被人工征订结果覆盖。'
+  }
   if (isOwnershipPatternRow(row)) {
     return 'ownership pattern signal：保留研究价值，不参与 actual/direct/leading 主表达'
   }
@@ -822,6 +1005,32 @@ function roleNote(row) {
 
 function determinationStatus(row) {
   const profile = terminalProfileText(row)
+  if (isManualEffectiveRow(row)) {
+    const label = manualSourceLabel.value || '人工征订'
+    return {
+      label: '当前生效结论',
+      type: 'manual',
+      note: label === '人工确认'
+        ? '自动结果经人工确认后继续生效'
+        : `${label}结果，当前生效，非算法自动识别`,
+    }
+  }
+  if (isManualCountryOnlyRow(row)) {
+    return {
+      label: '国别人工征订',
+      type: 'manual',
+      note: '控制主体沿用当前结论，国别以人工征订为准',
+    }
+  }
+  if (isAutomaticSupersededRow(row)) {
+    return {
+      label: isManualConfirmedResult.value ? '自动分析结果（已确认）' : '自动分析结果（参考）',
+      type: 'neutral',
+      note: isManualConfirmedResult.value
+        ? '原自动结论已由人工确认行承接，非单独当前行'
+        : '已被人工征订覆盖，非当前生效结果',
+    }
+  }
   if (isOwnershipPatternRow(row)) {
     return {
       label: '结构信号',
@@ -886,6 +1095,9 @@ function determinationStatus(row) {
 }
 
 function ratioMeaning(row) {
+  if (isManualEffectiveRow(row)) {
+    return displayControlStrength(row).note
+  }
   if (isOwnershipPatternRow(row)) {
     return '股权聚合比例，不参与实际控制人竞选'
   }
@@ -910,6 +1122,9 @@ function ratioMeaning(row) {
 }
 
 function pathSemanticLabel(row, path) {
+  if (isManualEffectiveRow(row)) {
+    return isManualConfirmedResult.value ? '人工确认自动路径' : '人工征订路径'
+  }
   if (isOwnershipPatternRow(row)) {
     return 'ownership aggregation path'
   }
@@ -942,7 +1157,64 @@ function recognitionExplanation(row) {
   const immediateText = immediateRatioNote(row)
   const convergenceText = multiPathConvergenceNote(row)
 
-  if (isOwnershipPatternRow(row)) {
+  if (isManualEffectiveRow(row)) {
+    const isConfirmed = manualSourceLabel.value === '人工确认'
+    headline = isConfirmed ? '人工确认自动结果' : '人工征订确定实际控制人'
+    details.push(
+      isConfirmed
+        ? '当前结果为自动分析结果，经人工确认后继续生效。'
+        : '当前实际控制人为人工征订确定，非算法自动识别结果。',
+    )
+    if (!isConfirmed) {
+      details.push('当前主路径由人工征订构建，并优先驱动路径摘要、路径数量与链路深度。')
+    }
+    details.push(`${isConfirmed ? '人工确认说明' : '本次征订说明'}：${manualOverride.value?.reason || firstAvailable(row, 'manual_reason') || '未填写'}`)
+    details.push(`${isConfirmed ? '人工确认依据' : '本次征订依据'}：${manualOverride.value?.evidence || firstAvailable(row, 'manual_evidence') || '未填写'}`)
+    const decisionReason = selectionReasonText(row)
+    if (decisionReason) {
+      details.push(`判定原因：${decisionReason}`)
+    }
+    const strengthDisplay = displayControlStrength(row)
+    if (strengthDisplay.value && strengthDisplay.source === 'manual_final_strength') {
+      details.push(`最终展示控制强度：${strengthDisplay.text}（人工征订指定值）。`)
+    } else if (strengthDisplay.value && strengthDisplay.source === 'manual_primary_path_ratio') {
+      details.push(`当前控制强度基于主路径支持比例：${strengthDisplay.text}。`)
+    }
+    const primaryPathText = pathSummary(row).primaryPathText
+    if (primaryPathText && primaryPathText !== EMPTY_TEXT) {
+      details.push(
+        `人工控制路径：${primaryPathText}。`,
+      )
+    }
+    if (!isConfirmed) {
+      details.push('路径支持比例如未填写，仅表示结构支持关系，不代表已录入精确控制比例。')
+    }
+    const autoName = firstAvailable(row, 'automatic_actual_controller_name')
+    if (autoName) {
+      details.push(`自动分析结果为：${autoName}。`)
+    }
+    return {
+      headline,
+      details: dedupeList(details).slice(0, 7),
+    }
+  } else if (isManualCountryOnlyRow(row)) {
+    headline = '实际控制国别经人工征订调整'
+    details.push('实际控制国别经人工征订调整。')
+    details.push('控制主体仍沿用当前控制结论。')
+    details.push(`人工征订说明：${manualOverride.value?.reason || '未填写'}`)
+    details.push(`人工征订依据：${manualOverride.value?.evidence || '未填写'}`)
+    if (props.countryAttribution?.actual_control_country) {
+      details.push(`当前实际控制国别：${props.countryAttribution.actual_control_country}。`)
+    }
+  } else if (isAutomaticSupersededRow(row)) {
+    headline = isManualConfirmedResult.value ? '自动分析结果（已确认）' : '自动分析结果（参考）'
+    details.push('该行来自自动分析结果，当前仅供查看。')
+    details.push(
+      isManualConfirmedResult.value
+        ? '当前生效结论已由人工确认行承接展示。'
+        : '当前生效结论已由人工征订结果优先覆盖。',
+    )
+  } else if (isOwnershipPatternRow(row)) {
     headline = '结构信号：非实际控制主体'
     details.push('该主体更像公众持股/分散持股聚合表达，不代表统一控制意志。')
     details.push(terminalProfileText(row) || '缺少可归责的终局主体画像。')
@@ -1025,6 +1297,96 @@ function basisLinesFromObject(row, basis) {
   const lines = []
   const inferredPathCount = getControlPaths(row.control_path).length
   const pathCount = basis.path_count ?? inferredPathCount
+
+  if (isManualEffectiveRow(row)) {
+    const manualType = manualField(row, 'manual_control_type') || basis.classification || row.control_type
+    const strengthDisplay = displayControlStrength(row)
+    const manualPathCount = manualField(row, 'manual_path_count') ?? pathCount
+    const manualPathDepth = manualField(row, 'manual_path_depth') ?? row.control_chain_depth ?? basis.control_chain_depth
+    const manualPath = manualField(row, 'manual_control_path') || pathSummary(row).primaryPathText
+
+    lines.push({
+      label: '认定类型',
+      value: controlTypeLabel(manualType) || manualSourceLabel.value,
+    })
+    lines.push({
+      label: '依据方式',
+      value: manualSourceLabel.value,
+    })
+    lines.push({
+      label: '判定原因',
+      value: selectionReasonText(row),
+    })
+    if (strengthDisplay.value) {
+      lines.push({
+        label: '控制强度',
+        value: `${strengthDisplay.text}（${strengthDisplay.note}）`,
+      })
+    }
+    if (manualPath && manualPath !== EMPTY_TEXT) {
+      lines.push({
+        label: '控制路径',
+        value: manualPath,
+      })
+    }
+    if (manualPathDepth) {
+      lines.push({
+        label: '链路深度',
+        value: `${manualPathDepth}层`,
+      })
+    }
+    if (manualPathCount) {
+      lines.push({
+        label: '路径数量',
+        value: `${manualPathCount}条`,
+      })
+    }
+    lines.push({
+      label: '征订说明',
+      value: manualOverride.value?.reason || basis.manual_reason || EMPTY_TEXT,
+    })
+    lines.push({
+      label: '征订依据',
+      value: manualOverride.value?.evidence || basis.manual_evidence || EMPTY_TEXT,
+    })
+    if (basis.manual_decided_at) {
+      lines.push({
+        label: '征订时间',
+        value: basis.manual_decided_at,
+      })
+    }
+    return lines
+  }
+
+  if (isManualCountryOnlyRow(row)) {
+    lines.push({
+      label: '认定类型',
+      value: '国别人工征订',
+    })
+    lines.push({
+      label: '判定原因',
+      value: '实际控制国别经人工征订调整，控制主体仍沿用当前结论。',
+    })
+    lines.push({
+      label: '控制国别',
+      value: props.countryAttribution?.actual_control_country || EMPTY_TEXT,
+    })
+    lines.push({
+      label: '征订说明',
+      value: manualOverride.value?.reason || EMPTY_TEXT,
+    })
+    lines.push({
+      label: '征订依据',
+      value: manualOverride.value?.evidence || EMPTY_TEXT,
+    })
+    if (manualOverride.value?.created_at) {
+      lines.push({
+        label: '征订时间',
+        value: manualOverride.value.created_at,
+      })
+    }
+    return lines
+  }
 
   if (basis.classification || row.control_type) {
     lines.push({
@@ -1189,6 +1551,12 @@ function basisLines(row) {
 }
 
 function rowClassName({ row }) {
+  if (isManualEffectiveRow(row) || isManualCountryOnlyRow(row)) {
+    return 'control-relations-table__row--manual'
+  }
+  if (isAutomaticSupersededRow(row)) {
+    return 'control-relations-table__row--superseded'
+  }
   if (isActualRow(row)) {
     return 'control-relations-table__row--actual'
   }
@@ -1215,6 +1583,20 @@ function rowClassName({ row }) {
         </div>
       </div>
     </template>
+
+    <el-alert
+      v-if="manualEffective || manualCountryEffective"
+      class="manual-table-alert"
+      type="warning"
+      show-icon
+      :closable="false"
+      :title="manualCountryEffective ? '实际控制国别人工征订当前生效' : `${manualSourceLabel}结果当前生效`"
+      :description="manualCountryEffective
+        ? '控制主体沿用当前结论，实际控制国别以人工征订结果为准。'
+        : isManualConfirmedResult
+          ? '控制结论明细表已优先展示人工确认后的自动结果；自动分析原始行仍保留用于对照。'
+          : `控制结论明细表已优先展示${manualSourceLabel}结果，并使用人工构建路径作为主路径；自动分析行仍保留用于查看。`"
+    />
 
     <el-table
       v-loading="loading"
@@ -1301,7 +1683,7 @@ function rowClassName({ row }) {
         <template #default="{ row }">
           <div class="ratio-stack">
             <span class="ratio-text">
-              {{ formatRatio(row.control_ratio) }}
+              {{ displayControlStrength(row).text }}
             </span>
             <span class="ratio-note">
               {{ ratioMeaning(row) }}
@@ -1324,12 +1706,18 @@ function rowClassName({ row }) {
                 <template v-if="pathSummary(row).hasMultiplePaths">
                   <div class="path-primary">
                     主路径（{{ pathKindLabel(pathSummary(row).primaryPathKind) }} / {{ pathSemanticLabel(row, pathSummary(row).paths[0]) }}）：{{ pathSummary(row).primaryPathText }}
+                    <template v-if="pathScoreText(pathSummary(row).paths[0]) !== EMPTY_TEXT">
+                      · 路径支持比例 {{ pathScoreText(pathSummary(row).paths[0]) }}
+                    </template>
                   </div>
                   <div class="path-secondary">另有 {{ pathSummary(row).extraPathCount }} 条补充路径</div>
                 </template>
                 <template v-else>
                   <div class="path-primary">
                     {{ pathSemanticLabel(row, pathSummary(row).paths[0]) }}：{{ pathSummary(row).primaryPathText }}
+                    <template v-if="pathScoreText(pathSummary(row).paths[0]) !== EMPTY_TEXT">
+                      · 路径支持比例 {{ pathScoreText(pathSummary(row).paths[0]) }}
+                    </template>
                   </div>
                 </template>
               </div>
@@ -1355,7 +1743,7 @@ function rowClassName({ row }) {
                       路径 {{ pathIndex + 1 }} · {{ pathKindLabel(pathKind(row, path)) }} · {{ pathSemanticLabel(row, path) }}
                     </span>
                     <span v-if="pathScoreText(path) !== EMPTY_TEXT" class="path-score">
-                      约 {{ pathScoreText(path) }}
+                      路径支持比例 {{ pathScoreText(path) }}
                     </span>
                   </div>
                   <div class="table-text table-multi-line path-detail">
@@ -1391,9 +1779,9 @@ function rowClassName({ row }) {
         <template #default="{ row }">
           <span
             class="actual-badge"
-            :class="isActualRow(row) ? 'actual-badge--yes' : 'actual-badge--no'"
+            :class="isCurrentEffectiveResultRow(row) ? 'actual-badge--yes' : 'actual-badge--no'"
           >
-            {{ isActualRow(row) ? '是' : '否' }}
+            {{ isCurrentEffectiveResultRow(row) ? '是' : '否' }}
           </span>
         </template>
       </el-table-column>
@@ -1442,6 +1830,26 @@ function rowClassName({ row }) {
 
 .control-relations-table :deep(.el-table__row:hover > td) {
   background: rgba(31, 59, 87, 0.04) !important;
+}
+
+.manual-table-alert {
+  margin-bottom: 14px;
+}
+
+.control-relations-table :deep(.control-relations-table__row--manual > td) {
+  background: rgba(155, 58, 58, 0.075);
+}
+
+.control-relations-table :deep(.control-relations-table__row--manual:hover > td) {
+  background: rgba(155, 58, 58, 0.105) !important;
+}
+
+.control-relations-table :deep(.control-relations-table__row--superseded > td) {
+  background: rgba(115, 131, 152, 0.055);
+}
+
+.control-relations-table :deep(.control-relations-table__row--superseded:hover > td) {
+  background: rgba(115, 131, 152, 0.085) !important;
 }
 
 .control-relations-table :deep(.control-relations-table__row--actual > td) {
@@ -1525,6 +1933,12 @@ function rowClassName({ row }) {
   color: #a33e3e;
   border-color: rgba(163, 62, 62, 0.2);
   background: rgba(163, 62, 62, 0.12);
+}
+
+.relationship-role-badge--manual {
+  color: #9b3a3a;
+  border-color: rgba(155, 58, 58, 0.24);
+  background: rgba(155, 58, 58, 0.12);
 }
 
 .relationship-role-badge--leading {
@@ -1624,6 +2038,12 @@ function rowClassName({ row }) {
   color: #a33e3e;
   border-color: rgba(163, 62, 62, 0.2);
   background: rgba(163, 62, 62, 0.12);
+}
+
+.decision-badge--manual {
+  color: #9b3a3a;
+  border-color: rgba(155, 58, 58, 0.24);
+  background: rgba(155, 58, 58, 0.12);
 }
 
 .decision-badge--pattern {

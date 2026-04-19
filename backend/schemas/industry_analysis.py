@@ -278,6 +278,15 @@ class ControlRelationshipSummaryRead(BaseModel):
     is_leading_candidate: bool = False
     whether_actual_controller: bool = False
     review_status: str | None = None
+    result_layer: str | None = None
+    result_source: str | None = None
+    source_type: str | None = None
+    manual_label: str | None = None
+    manual_override_id: int | None = None
+    is_manual_effective: bool = False
+    is_current_effective: bool | None = None
+    automatic_is_actual_controller: bool = False
+    automatic_result_superseded: bool = False
     created_at: str
     updated_at: str
 
@@ -294,6 +303,12 @@ class ControlAnalysisSummaryRead(BaseModel):
     identification_status: str | None = None
     controller_status: str | None = None
     control_relationships: list[ControlRelationshipSummaryRead]
+    result_layer: str | None = None
+    result_source: str | None = None
+    source_type: str | None = None
+    manual_label: str | None = None
+    is_manual_effective: bool = False
+    manual_override: Any = None
 
 
 class CountryAttributionSummaryRead(BaseModel):
@@ -307,6 +322,18 @@ class CountryAttributionSummaryRead(BaseModel):
     look_through_applied: bool | None = None
     basis: Any = None
     source_mode: str | None = None
+    is_manual: bool | None = None
+    result_layer: str | None = None
+    result_source: str | None = None
+    source_type: str | None = None
+    manual_label: str | None = None
+    is_manual_effective: bool = False
+    is_current_effective: bool | None = None
+    manual_override: Any = None
+    manual_reason: str | None = None
+    manual_evidence: str | None = None
+    manual_decided_at: str | None = None
+    automatic_country_attribution: Any = None
     message: str | None = None
 
 
@@ -320,6 +347,9 @@ class CompanyAnalysisSummaryRead(BaseModel):
     country_attribution: CountryAttributionSummaryRead = Field(
         description="Current persisted country-attribution snapshot."
     )
+    automatic_control_analysis: Any = None
+    automatic_country_attribution: Any = None
+    manual_override: Any = None
     industry_analysis: IndustryAnalysisRead = Field(
         description="Current default industry-analysis snapshot with quality hints."
     )

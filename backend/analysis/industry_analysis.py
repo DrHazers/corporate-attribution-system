@@ -7,6 +7,9 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from backend.analysis.control_chain import analyze_control_chain_with_options
+from backend.analysis.manual_control_override import (
+    get_current_effective_country_attribution_data,
+)
 from backend.analysis.ownership_penetration import get_company_country_attribution_data
 from backend.crud.annotation_log import (
     deserialize_model_snapshot,
@@ -1040,7 +1043,14 @@ def get_company_analysis_summary(
         company_id,
         refresh=False,
     )
-    country_attribution = get_company_country_attribution_data(db, company_id)
+    country_attribution = get_current_effective_country_attribution_data(db, company_id)
+    automatic_control_analysis = analyze_control_chain_with_options(
+        db,
+        company_id,
+        refresh=False,
+        result_layer="auto",
+    )
+    automatic_country_attribution = get_company_country_attribution_data(db, company_id)
     industry_analysis = get_company_industry_analysis(db, company_id)
 
     return {
@@ -1057,7 +1067,17 @@ def get_company_analysis_summary(
             "identification_status": control_analysis.get("identification_status"),
             "controller_status": control_analysis.get("controller_status"),
             "control_relationships": control_analysis["control_relationships"],
+            "result_layer": control_analysis.get("result_layer"),
+            "result_source": control_analysis.get("result_source"),
+            "source_type": control_analysis.get("source_type"),
+            "manual_label": control_analysis.get("manual_label"),
+            "is_manual_effective": control_analysis.get("is_manual_effective", False),
+            "manual_override": control_analysis.get("manual_override"),
         },
         "country_attribution": country_attribution,
+        "automatic_control_analysis": automatic_control_analysis,
+        "automatic_country_attribution": automatic_country_attribution,
+        "manual_override": control_analysis.get("manual_override")
+        or country_attribution.get("manual_override"),
         "industry_analysis": industry_analysis,
     }

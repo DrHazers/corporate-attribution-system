@@ -76,11 +76,6 @@ const RELATION_TYPE_LABELS = {
   joint_control: '共同控制',
 }
 
-const DISPLAY_MODE_LABELS = {
-  'progressive-expand': '分层展开',
-  'summary-first': '摘要优先',
-}
-
 const displayController = computed(
   () =>
     props.controlAnalysis?.display_controller ||
@@ -110,6 +105,32 @@ const hasConfirmedActualAxis = computed(() =>
   ),
 )
 const countryBasis = computed(() => parseMaybeJson(props.countryAttribution?.basis) || {})
+const isManualEffectiveResult = computed(() => Boolean(props.controlAnalysis?.is_manual_effective))
+const manualOverride = computed(
+  () => props.controlAnalysis?.manual_override || props.countryAttribution?.manual_override || {},
+)
+const manualSourceLabel = computed(() => {
+  const source = props.controlAnalysis?.result_source || props.countryAttribution?.result_source
+  if (source === 'manual_confirmed') {
+    return '人工确认'
+  }
+  if (source === 'manual_override') {
+    return '人工征订'
+  }
+  return '人工征订'
+})
+const isManualOverrideResult = computed(
+  () =>
+    isManualEffectiveResult.value &&
+    (props.controlAnalysis?.result_source || props.countryAttribution?.result_source) ===
+      'manual_override',
+)
+const isManualConfirmedResult = computed(
+  () =>
+    isManualEffectiveResult.value &&
+    (props.controlAnalysis?.result_source || props.countryAttribution?.result_source) ===
+      'manual_confirmed',
+)
 
 function isOwnershipPatternRelationship(relationship) {
   if (!relationship) {
@@ -180,6 +201,9 @@ const summaryControllerRoleKey = computed(() => {
   return null
 })
 const summaryControllerRoleLabel = computed(() => {
+  if (isManualEffectiveResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    return `${manualSourceLabel.value}实际控制人`
+  }
   if (summaryControllerRoleKey.value === 'structural_signal') {
     return '结构信号主轴'
   }
@@ -189,6 +213,9 @@ const summaryControllerRoleLabel = computed(() => {
   return '实际控制人'
 })
 const summaryControllerLegendTitle = computed(() => {
+  if (isManualEffectiveResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    return `${manualSourceLabel.value}实际控制人`
+  }
   if (summaryControllerRoleKey.value === 'structural_signal') {
     return '结构信号主轴'
   }
@@ -201,6 +228,16 @@ const summaryControllerLegendTitle = computed(() => {
   return '顶部主轴控制主体'
 })
 const summaryControllerLegendDescription = computed(() => {
+  if (isManualEffectiveResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    const autoName =
+      manualOverride.value?.automatic_control_snapshot?.actual_controller?.controller_name ||
+      countryBasis.value?.automatic_actual_controller_name ||
+      '未形成自动实际控制人'
+    if (isManualConfirmedResult.value) {
+      return `当前主轴为人工确认后的自动分析结果；自动分析结果为 ${autoName}。`
+    }
+    return `当前主轴由${manualSourceLabel.value}确定，并非算法自动识别；自动分析结果为 ${autoName}。`
+  }
   if (summaryControllerRoleKey.value === 'structural_signal') {
     return '未识别唯一实际控制人时保留的研究展示主轴；用于解释 ownership aggregation / 分散持股结构，不等同于 actual controller。'
   }
@@ -213,6 +250,12 @@ const summaryControllerLegendDescription = computed(() => {
   return '当前未识别到唯一实际控制人或领先候选主体时，顶部主轴不渲染控制主体节点。'
 })
 const diagramHeaderDescription = computed(() => {
+  if (isManualEffectiveResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    if (isManualConfirmedResult.value) {
+      return '当前顶部主轴为人工确认后的自动分析结果；路径仍沿用自动分析识别的控制路径。'
+    }
+    return `当前顶部主轴已切换为${manualSourceLabel.value}结果；主路径来自人工征订 Path Builder，不是算法自动识别路径。`
+  }
   if (summaryControllerRoleKey.value === 'structural_signal') {
     return '当前顶部主轴仅表示研究展示路径 / ownership aggregation path；它不代表已确认实际控制主体，目标公司国别结论仍按后端 fallback 口径解释。'
   }
@@ -225,6 +268,12 @@ const diagramHeaderDescription = computed(() => {
   return '未识别到唯一实际控制人或领先候选主体时，图中保留目标公司及其上游结构，避免出现误导性的顶部控制主体节点。'
 })
 const diagramFootnote = computed(() => {
+  if (isManualEffectiveResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    if (isManualConfirmedResult.value) {
+      return '当前主轴高亮的是经人工确认继续生效的自动分析实际控制人；自动分析原始结果保留用于对照。'
+    }
+    return `当前主轴高亮的是${manualSourceLabel.value}确定的实际控制人；第一条人工征订路径作为图中主路径，自动分析结果仍保留，可在人工征订结果层中查看。`
+  }
   if (summaryControllerRoleKey.value === 'structural_signal') {
     return '顶部主轴节点为结构信号 / 研究主轴，连线以虚线弱化显示；它用于解释公众持股或分散持股聚合路径，不表示已确认实际控制。'
   }
@@ -237,6 +286,12 @@ const diagramFootnote = computed(() => {
   return '当前未识别到顶部主轴控制主体，图中仅展示目标公司及其上游结构。可滚轮缩放、拖拽平移，并用“适应视图”恢复居中。'
 })
 const interactionHint = computed(() => {
+  if (isManualEffectiveResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    if (isManualConfirmedResult.value) {
+      return 'hover 顶部主轴节点可查看人工确认说明、依据和自动分析对照。'
+    }
+    return 'hover 顶部主轴节点可查看人工征订说明、依据和自动分析对照。'
+  }
   if (summaryControllerRoleKey.value === 'structural_signal') {
     return '顶部结构信号主轴仅用于研究解释；可展开节点查看其上游结构，但不要将其理解为 actual controller。'
   }
@@ -330,6 +385,69 @@ const pathConvergenceItems = computed(() =>
     : [],
 )
 const primaryPathConvergence = computed(() => pathConvergenceItems.value[0] || null)
+const isManualPathExplanation = computed(() =>
+  Boolean(primaryPathConvergence.value?.isManualPathDriven && isManualOverrideResult.value),
+)
+const manualDisplayControlStrength = computed(() => {
+  if (!isManualPathExplanation.value) {
+    return { value: null, text: '', source: 'automatic_or_empty' }
+  }
+
+  const actualRow = actualControllerFromRows.value || {}
+  const backendValue =
+    manualOverride.value?.manual_display_control_strength ||
+    firstAvailable(actualRow, 'manual_display_control_strength')
+  const backendSource = normalizeKey(
+    manualOverride.value?.manual_display_control_strength_source ||
+      firstAvailable(actualRow, 'manual_display_control_strength_source'),
+  )
+  if (backendValue) {
+    return {
+      value: backendValue,
+      text: formatPercent(backendValue),
+      source:
+        backendSource === 'manual_primary_path_ratio'
+          ? 'manual_primary_path_ratio'
+          : 'manual_final_strength',
+    }
+  }
+
+  const finalStrength =
+    manualOverride.value?.manual_control_ratio ||
+    firstAvailable(actualRow, 'manual_control_ratio')
+  if (finalStrength) {
+    return {
+      value: finalStrength,
+      text: formatPercent(finalStrength),
+      source: 'manual_final_strength',
+    }
+  }
+
+  const primaryRatio = primaryPathConvergence.value?.primaryPath?.ratio
+  const primaryScore = primaryPathConvergence.value?.primaryPath?.score
+  const primaryPathRatio = formatPercent(primaryRatio ?? primaryScore)
+  if (primaryPathRatio) {
+    return {
+      value: primaryRatio ?? primaryScore,
+      text: primaryPathRatio,
+      source: 'manual_primary_path_ratio',
+    }
+  }
+
+  return { value: null, text: '', source: 'empty' }
+})
+const manualControlStrengthExplanation = computed(() => {
+  if (!isManualPathExplanation.value) {
+    return ''
+  }
+  if (manualDisplayControlStrength.value.source === 'manual_final_strength') {
+    return `当前控制强度为人工征订指定值：${manualDisplayControlStrength.value.text}。`
+  }
+  if (manualDisplayControlStrength.value.source === 'manual_primary_path_ratio') {
+    return `当前控制强度基于主路径比例：${manualDisplayControlStrength.value.text}。`
+  }
+  return '当前路径仅表示结构支持关系，不代表精确比例。'
+})
 
 const viewportWidth = computed(() =>
   Math.max(1, Math.round(viewportSize.width || diagramLayout.value?.width || 1)),
@@ -462,7 +580,8 @@ function formatPercent(value) {
     return ''
   }
 
-  const numeric = Number(value)
+  const numericValue = typeof value === 'string' ? value.replace('%', '').trim() : value
+  const numeric = Number(numericValue)
   if (Number.isNaN(numeric)) {
     return String(value)
   }
@@ -487,12 +606,16 @@ function pathKindLabel(value) {
 }
 
 function pathScoreLabel(path) {
-  const rendered = formatPercent(path?.score)
-  return rendered ? `约 ${rendered}` : ''
+  const rendered = formatPercent(path?.ratio ?? path?.score)
+  return rendered ? `路径支持比例 ${rendered}` : ''
 }
 
-function displayModeLabel(value) {
-  return DISPLAY_MODE_LABELS[value] || value || '分层展开'
+function pathExplanationRatioNote(path) {
+  const ratioText = pathScoreLabel(path)
+  if (ratioText) {
+    return ratioText
+  }
+  return isManualPathExplanation.value ? '未填写路径支持比例，仅表示结构支持关系' : ''
 }
 
 function summaryNodeVariantClass(node) {
@@ -575,6 +698,27 @@ function yesNo(value) {
 function buildTooltipLines(item) {
   if (item?.sourceRenderKey && item?.targetRenderKey) {
     const convergence = diagramModel.value?.multiPathConvergenceByNodeId?.[toKey(item.controlSubjectId)]
+    if (item.isPrimary && isManualConfirmedResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+      return [
+        item.controlSubjectName ? `确认主体：${item.controlSubjectName}` : null,
+        item.controlObjectName ? `展示对象：${item.controlObjectName}` : null,
+        '结果来源：人工确认',
+        '结论状态：自动分析结果经人工确认后继续生效',
+        '路径来源：沿用自动分析控制路径',
+      ].filter(Boolean)
+    }
+    if (item.isPrimary && isManualOverrideResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+      return [
+        item.controlSubjectName ? `人工征订主体：${item.controlSubjectName}` : null,
+        item.controlObjectName ? `展示对象：${item.controlObjectName}` : null,
+        `结果来源：${manualSourceLabel.value}`,
+        '结论状态：当前实际控制人为人工征订确定，非算法自动识别结果',
+        '路径来源：当前主路径来自人工征订',
+        manualOverride.value?.automatic_control_snapshot?.actual_controller?.controller_name
+          ? `自动分析：${manualOverride.value.automatic_control_snapshot.actual_controller.controller_name}`
+          : '自动分析：未形成可展示的实际控制人',
+      ].filter(Boolean)
+    }
     if (item.isPrimary && summaryControllerRoleKey.value === 'structural_signal') {
       return [
         item.controlSubjectName ? `结构信号主体：${item.controlSubjectName}` : null,
@@ -583,7 +727,7 @@ function buildTooltipLines(item) {
         '结论状态：非实际控制主体，未进入 actual/direct/leading 主表达',
         '结果影响：当前未识别唯一实际控制人，国别按 fallback 口径处理',
         item.controlRatio !== null && item.controlRatio !== undefined && item.controlRatio !== ''
-          ? `聚合比例 / 控制强度：${formatPercent(item.controlRatio)}`
+          ? `结构聚合比例：${formatPercent(item.controlRatio)}`
           : null,
         convergence
           ? `路径结构：直接 + 间接多路径汇聚，另有 ${convergence.supplementalPathCount} 条补充路径`
@@ -606,6 +750,32 @@ function buildTooltipLines(item) {
   }
 
   const convergence = item?.multiPathConvergence || null
+  if (item?.role === 'actualSummary' && isManualConfirmedResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    return [
+      '节点角色：人工确认实际控制人',
+      `主体类型：${entityTypeLabel(item.entityType)}`,
+      item.country ? `国家 / 地区：${item.country}` : null,
+      '结论状态：自动分析结果经人工确认后继续生效',
+      '路径来源：沿用自动分析控制路径',
+      manualOverride.value?.reason ? `确认说明：${manualOverride.value.reason}` : null,
+      manualOverride.value?.evidence ? `确认依据：${manualOverride.value.evidence}` : null,
+    ].filter(Boolean)
+  }
+  if (item?.role === 'actualSummary' && isManualOverrideResult.value && summaryControllerRoleKey.value === 'actual_controller') {
+    return [
+      `节点角色：${manualSourceLabel.value}实际控制人`,
+      `主体类型：${entityTypeLabel(item.entityType)}`,
+      item.country ? `国家 / 地区：${item.country}` : null,
+      '结论状态：当前实际控制人为人工征订确定',
+      '路径来源：当前主路径由人工征订构建',
+      '结果影响：优先作为当前生效 actual controller 展示',
+      manualOverride.value?.reason ? `征订说明：${manualOverride.value.reason}` : null,
+      manualOverride.value?.evidence ? `征订依据：${manualOverride.value.evidence}` : null,
+      manualOverride.value?.automatic_control_snapshot?.actual_controller?.controller_name
+        ? `自动分析：${manualOverride.value.automatic_control_snapshot.actual_controller.controller_name}`
+        : null,
+    ].filter(Boolean)
+  }
   if (item?.role === 'actualSummary' && summaryControllerRoleKey.value === 'structural_signal') {
     return [
       '节点角色：结构信号主轴',
@@ -618,7 +788,7 @@ function buildTooltipLines(item) {
         ? '国别结论：当前按注册地 fallback 处理'
         : null,
       item.controlRatio !== null && item.controlRatio !== undefined && item.controlRatio !== ''
-        ? `聚合比例 / 控制强度：${formatPercent(item.controlRatio)}`
+        ? `结构聚合比例：${formatPercent(item.controlRatio)}`
         : null,
     ].filter(Boolean)
   }
@@ -866,7 +1036,6 @@ onBeforeUnmount(() => {
         </p>
         <p class="control-structure-diagram__header-copy">{{ diagramHeaderDescription }}</p>
       </div>
-      <el-tag effect="plain" type="danger">{{ displayModeLabel(diagramModel.displayMode) }}</el-tag>
     </header>
 
     <div class="control-structure-diagram__main">
@@ -1059,20 +1228,24 @@ onBeforeUnmount(() => {
         <div v-if="primaryPathConvergence" class="control-path-convergence-panel">
           <div class="control-path-convergence-panel__head">
             <strong>控制路径说明</strong>
-            <span>direct + indirect</span>
+            <span>{{ isManualPathExplanation ? 'manual paths' : 'direct + indirect' }}</span>
           </div>
-          <p>
+          <p v-if="isManualPathExplanation">
+            当前控制路径由人工征订构建，用于支撑当前实际控制人结论；主路径为人工征订主解释路径，
+            其余路径为人工补充支持路径。{{ manualControlStrengthExplanation }}
+          </p>
+          <p v-else>
             {{ primaryPathConvergence.controllerName }} 同时通过直接路径与间接路径对目标公司形成控制影响；
             图中仅突出主解释路径，其余路径列为补充路径。
           </p>
           <div class="control-path-convergence-panel__rows">
             <div class="control-path-convergence-row">
-              <span>主路径</span>
-              <strong>{{ pathKindLabel(primaryPathConvergence.primaryPath.kind) }}</strong>
+              <span>{{ isManualPathExplanation ? '人工主路径' : '主路径' }}</span>
+              <strong>{{ isManualPathExplanation ? '主解释路径' : pathKindLabel(primaryPathConvergence.primaryPath.kind) }}</strong>
               <small>
                 {{ primaryPathConvergence.primaryPath.text }}
-                <template v-if="pathScoreLabel(primaryPathConvergence.primaryPath)">
-                  · {{ pathScoreLabel(primaryPathConvergence.primaryPath) }}
+                <template v-if="pathExplanationRatioNote(primaryPathConvergence.primaryPath)">
+                  · {{ pathExplanationRatioNote(primaryPathConvergence.primaryPath) }}
                 </template>
               </small>
             </div>
@@ -1081,11 +1254,11 @@ onBeforeUnmount(() => {
               :key="`${primaryPathConvergence.nodeId}-supplement-${path.index}`"
               class="control-path-convergence-row"
             >
-              <span>补充路径</span>
-              <strong>{{ pathKindLabel(path.kind) }}</strong>
+              <span>{{ isManualPathExplanation ? '人工补充路径' : '补充路径' }}</span>
+              <strong>{{ isManualPathExplanation ? '补充支持路径' : pathKindLabel(path.kind) }}</strong>
               <small>
                 {{ path.text }}
-                <template v-if="pathScoreLabel(path)"> · {{ pathScoreLabel(path) }}</template>
+                <template v-if="pathExplanationRatioNote(path)"> · {{ pathExplanationRatioNote(path) }}</template>
               </small>
             </div>
           </div>
@@ -1093,7 +1266,8 @@ onBeforeUnmount(() => {
             v-if="primaryPathConvergence.supplementalPathCount > 2"
             class="control-path-convergence-panel__more"
           >
-            另有 {{ primaryPathConvergence.supplementalPathCount - 2 }} 条补充路径，可在下方控制结论明细表展开查看。
+            另有 {{ primaryPathConvergence.supplementalPathCount - 2 }}
+            条{{ isManualPathExplanation ? '人工补充支持路径' : '补充路径' }}，可在下方控制结论明细表展开查看。
           </div>
         </div>
 

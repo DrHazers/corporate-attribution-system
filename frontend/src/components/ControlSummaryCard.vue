@@ -61,6 +61,8 @@ const CONTROL_TYPE_LABELS = {
   vie_control: 'VIE 结构',
   mixed_control: '混合控制',
   joint_control: '共同控制',
+  manual_override: '人工征订',
+  manual_confirmed: '人工确认',
 }
 
 const ATTRIBUTION_TYPE_LABELS = {
@@ -75,6 +77,8 @@ const ATTRIBUTION_TYPE_LABELS = {
   fallback_listing_country: '回落至上市地',
   fallback_headquarters: '回落至总部所在地',
   fallback_unknown: '未识别',
+  manual_override: '人工征订归属',
+  manual_confirmed: '人工确认归属',
 }
 
 const ATTRIBUTION_LAYER_LABELS = {
@@ -280,6 +284,29 @@ function controllerTypeText(controller) {
   return entityTypeLabel(controller?.controller_type)
 }
 
+function controlStrengthSourceLabel(controller) {
+  const basis = parseMaybeJson(controller?.basis) || {}
+  return (
+    controller?.manual_display_control_strength_source_label ||
+    basis.manual_display_control_strength_source_label ||
+    ''
+  )
+}
+
+function controllerControlStrengthText(controller, role = '') {
+  const ratioText = formatRatio(controller?.control_ratio)
+  if (!ratioText) {
+    return ''
+  }
+
+  if (role === 'actual' && manualControllerEffective.value) {
+    const sourceLabel = controlStrengthSourceLabel(controller) || manualSourceLabel.value || '人工征订'
+    return `${ratioText}（${sourceLabel}）`
+  }
+
+  return ratioText
+}
+
 function controllerMeta(controller, role = '') {
   if (!hasController(controller)) {
     if (role === 'actual' && hasController(leadingCandidate.value)) {
@@ -291,7 +318,7 @@ function controllerMeta(controller, role = '') {
   const items = [
     controllerTypeText(controller),
     controlTypeLabel(controller?.control_type),
-    formatRatio(controller?.control_ratio),
+    controllerControlStrengthText(controller, role),
   ]
     .filter((item) => item && item !== '暂无')
 
@@ -380,6 +407,34 @@ const attributionLayer = computed(
 const actualControlCountry = computed(
   () => props.countryAttribution?.actual_control_country || '未识别',
 )
+const manualControllerEffective = computed(() => Boolean(props.controlAnalysis?.is_manual_effective))
+const manualCountryEffective = computed(() => Boolean(props.countryAttribution?.is_manual_effective))
+const manualEffective = computed(() => manualControllerEffective.value || manualCountryEffective.value)
+const manualOverride = computed(
+  () => props.controlAnalysis?.manual_override || props.countryAttribution?.manual_override || {},
+)
+const manualSourceLabel = computed(() => {
+  const source = props.controlAnalysis?.result_source || props.countryAttribution?.result_source
+  if (source === 'manual_confirmed') {
+    return '人工确认'
+  }
+  if (source === 'manual_override') {
+    return '人工征订'
+  }
+  return ''
+})
+const automaticActualControllerName = computed(
+  () =>
+    manualOverride.value?.automatic_control_snapshot?.actual_controller?.controller_name ||
+    props.countryAttribution?.basis?.automatic_actual_controller_name ||
+    '',
+)
+const automaticActualControlCountry = computed(
+  () =>
+    manualOverride.value?.automatic_country_snapshot?.actual_control_country ||
+    props.countryAttribution?.automatic_country_attribution?.actual_control_country ||
+    '',
+)
 const controlRelationshipCount = computed(
   () =>
     props.controlAnalysis?.controller_count ??
@@ -400,6 +455,9 @@ const recognitionStatusCode = computed(
     '',
 )
 const recognitionStatus = computed(() => {
+  if (manualControllerEffective.value) {
+    return `${manualSourceLabel.value || '人工征订'}确定实际控制结论`
+  }
   if (isFallbackIncorporation.value && !hasActualController.value) {
     return '当前按注册地兜底归属'
   }
@@ -450,6 +508,9 @@ const countryInferenceReasonExplanation = computed(() => {
 })
 
 const actualControlCountryNote = computed(() => {
+  if (manualCountryEffective.value) {
+    return '当前国别归属优先采用人工征订/确认结果。'
+  }
   if (isFallbackIncorporation.value && !hasActualController.value) {
     return '当前为注册地兜底归属。'
   }
@@ -472,6 +533,9 @@ const attributionLayerNote = computed(() => {
   return '说明当前归属结论落在哪一层。'
 })
 const attributionTypeNote = computed(() => {
+  if (manualCountryEffective.value) {
+    return '依据方式为人工征订/确认，非算法自动识别结果。'
+  }
   const type = normalizeKey(props.countryAttribution?.attribution_type)
   if (type === 'fallback_incorporation') {
     return '兜底归属，不等同于已确认实际控制人。'
@@ -598,6 +662,12 @@ const evidenceSummary = computed(() => {
 })
 
 const recognitionSubtext = computed(() => {
+  if (manualControllerEffective.value) {
+    const autoText = automaticActualControllerName.value
+      ? `自动分析结果为 ${automaticActualControllerName.value}。`
+      : '自动分析未形成可展示的实际控制人。'
+    return `当前实际控制人为人工征订确定，非算法自动识别结果。${autoText}`
+  }
   if (hasActualController.value) {
     return '未发现关键阻断因素，已形成唯一控制结论。'
   }
@@ -624,6 +694,9 @@ const promotionHeadline = computed(() => {
 })
 
 const attributionBasisHeadline = computed(() => {
+  if (manualCountryEffective.value) {
+    return `${manualSourceLabel.value || '人工征订'}结果优先生效`
+  }
   const normalized = normalizeKey(countryInferenceReasonCode.value)
   if (normalized && COUNTRY_INFERENCE_REASON_HEADLINES[normalized]) {
     return COUNTRY_INFERENCE_REASON_HEADLINES[normalized]
@@ -638,10 +711,25 @@ const attributionBasisHeadline = computed(() => {
 })
 
 const attributionBasisSubtext = computed(
-  () => countryInferenceReasonExplanation.value || '当前接口未返回单独归属依据，页面根据控制分析结果展示。',
+  () => {
+    if (manualCountryEffective.value) {
+      const parts = [
+        `本次征订依据：${manualOverride.value?.evidence || props.countryAttribution?.manual_evidence || '未填写'}`,
+        `本次征订说明：${manualOverride.value?.reason || props.countryAttribution?.manual_reason || '未填写'}`,
+      ]
+      if (automaticActualControlCountry.value) {
+        parts.push(`自动分析国别为 ${automaticActualControlCountry.value}`)
+      }
+      return parts.join('；')
+    }
+    return countryInferenceReasonExplanation.value || '当前接口未返回单独归属依据，页面根据控制分析结果展示。'
+  },
 )
 
 const evidenceHeadline = computed(() => {
+  if (manualCountryEffective.value) {
+    return '人工征订依据生效'
+  }
   if (isFallbackIncorporation.value && !hasActualController.value) {
     return '证据不足以确认唯一控制人'
   }
@@ -661,7 +749,10 @@ const evidenceHeadline = computed(() => {
 })
 
 const evidenceSubtext = computed(
-  () => evidenceSummary.value || '当前接口未返回可摘要化证据。',
+  () =>
+    manualEffective.value
+      ? manualOverride.value?.evidence || props.countryAttribution?.manual_evidence || '本次人工征订未填写单独依据。'
+      : evidenceSummary.value || '当前接口未返回可摘要化证据。',
 )
 
 const dataStatusLine = computed(() =>
@@ -704,7 +795,12 @@ const explanationItems = computed(() => [
     <template #header>
       <div class="section-heading">
         <div>
-          <h2>控制链与国别归属</h2>
+          <div class="control-summary-title-row">
+            <h2>控制链与国别归属</h2>
+            <span v-if="manualEffective" class="manual-source-badge">
+              {{ manualSourceLabel || '人工征订' }}
+            </span>
+          </div>
           <p>上半区域展示控制结构图，下半区域展示控制分析摘要与国别归属结论。</p>
         </div>
       </div>
@@ -713,6 +809,12 @@ const explanationItems = computed(() => [
     <div class="control-summary-grid">
       <div class="control-summary-card">
         <div class="control-summary-card__title">控制层级摘要</div>
+        <div v-if="manualControllerEffective" class="manual-summary-note">
+          当前实际控制人为人工征订确定，非算法自动识别结果。
+        </div>
+        <div v-else-if="manualCountryEffective" class="manual-summary-note">
+          当前国别归属由人工征订确定，实际控制人仍按当前控制分析展示。
+        </div>
         <dl class="compact-facts">
           <div>
             <dt>Direct Controller</dt>
@@ -827,6 +929,18 @@ const explanationItems = computed(() => [
       :description="fallbackExplanation"
     />
 
+    <el-alert
+      v-if="manualEffective"
+      class="control-summary-explanation"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="manualControllerEffective ? `${manualSourceLabel || '人工征订'}确定实际控制人` : `${manualSourceLabel || '人工征订'}确定国别归属`"
+      :description="manualControllerEffective
+        ? `当前生效结论由${manualSourceLabel || '人工征订'}确定；自动分析结果为 ${automaticActualControllerName || '未形成实际控制人'}，自动国别为 ${automaticActualControlCountry || '未识别'}。`
+        : `当前国别归属由${manualSourceLabel || '人工征订'}确定；自动国别为 ${automaticActualControlCountry || '未识别'}。`"
+    />
+
     <ControlStructureDiagram
       v-if="ENABLE_REBUILT_CONTROL_STRUCTURE_DIAGRAM"
       :company="company"
@@ -843,6 +957,31 @@ const explanationItems = computed(() => [
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+}
+
+.control-summary-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.control-summary-title-row h2 {
+  margin: 0;
+}
+
+.manual-source-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(155, 58, 58, 0.24);
+  color: #9b3a3a;
+  background: rgba(155, 58, 58, 0.1);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .control-summary-card {
@@ -863,6 +1002,14 @@ const explanationItems = computed(() => [
   color: var(--brand-ink);
   font-weight: 700;
   font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
+}
+
+.manual-summary-note {
+  margin: -4px 0 12px;
+  color: #9b3a3a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
 }
 
 .compact-facts {

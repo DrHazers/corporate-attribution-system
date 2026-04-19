@@ -7,6 +7,13 @@ from backend.analysis.ownership_graph import (
     get_company_relationship_graph_data,
     get_company_special_control_relations_summary,
 )
+from backend.analysis.manual_control_override import (
+    get_current_effective_control_chain_data,
+    get_current_effective_country_attribution_data,
+    get_manual_control_override_status,
+    restore_automatic_control_result,
+    submit_manual_control_override,
+)
 from backend.analysis.ownership_penetration import (
     get_company_actual_controller_data,
     get_company_control_chain_data,
@@ -29,6 +36,11 @@ from backend.schemas.company import (
     CompanyRead,
     CompanyRelationshipGraphRead,
     CompanyUpdate,
+)
+from backend.schemas.manual_control_override import (
+    ManualControlOverrideRequest,
+    ManualControlOverrideResponse,
+    ManualControlOverrideStatus,
 )
 
 COMMON_COMPANY_ERROR_RESPONSES = {
@@ -169,23 +181,38 @@ def delete_company_endpoint(company_id: int, db: Session = Depends(get_db)):
 def get_company_control_chain(
     company_id: int,
     refresh: bool = False,
+    result_layer: str = "current",
     db: Session = Depends(get_db),
 ):
     get_company_or_404(db, company_id)
     if refresh:
         refresh_company_analysis_or_400(db, company_id)
-    return get_company_control_chain_data(db, company_id)
+    if result_layer == "auto":
+        return get_company_control_chain_data(db, company_id)
+    return get_current_effective_control_chain_data(db, company_id)
 
 
 @router.get("/{company_id}/actual-controller")
 def get_company_actual_controller(
     company_id: int,
     refresh: bool = False,
+    result_layer: str = "current",
     db: Session = Depends(get_db),
 ):
     get_company_or_404(db, company_id)
     if refresh:
         refresh_company_analysis_or_400(db, company_id)
+    if result_layer != "auto":
+        current_chain = get_current_effective_control_chain_data(db, company_id)
+        actual_controller = current_chain.get("actual_controller")
+        return {
+            "company_id": company_id,
+            "controller_count": 1 if actual_controller is not None else 0,
+            "actual_controllers": [actual_controller] if actual_controller is not None else [],
+            "result_layer": "current",
+            "result_source": current_chain.get("result_source"),
+            "is_manual_effective": bool(current_chain.get("is_manual_effective")),
+        }
     return get_company_actual_controller_data(db, company_id)
 
 
@@ -193,12 +220,82 @@ def get_company_actual_controller(
 def get_company_country_attribution(
     company_id: int,
     refresh: bool = False,
+    result_layer: str = "current",
     db: Session = Depends(get_db),
 ):
     get_company_or_404(db, company_id)
     if refresh:
         refresh_company_analysis_or_400(db, company_id)
-    return get_company_country_attribution_data(db, company_id)
+    if result_layer == "auto":
+        return get_company_country_attribution_data(db, company_id)
+    return get_current_effective_country_attribution_data(db, company_id)
+
+
+@router.get(
+    "/{company_id}/manual-control-override",
+    response_model=ManualControlOverrideStatus,
+)
+def get_company_manual_control_override(
+    company_id: int,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    return get_manual_control_override_status(db, company_id)
+
+
+@router.post(
+    "/{company_id}/manual-control-override",
+    response_model=ManualControlOverrideResponse,
+)
+def submit_company_manual_control_override(
+    company_id: int,
+    payload: ManualControlOverrideRequest,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    try:
+        return submit_manual_control_override(db, company_id, payload)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/{company_id}/manual-control-override/restore-auto",
+    response_model=ManualControlOverrideResponse,
+)
+def restore_company_automatic_control_result(
+    company_id: int,
+    payload: ManualControlOverrideRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    reason = payload.reason if payload is not None else None
+    operator = payload.operator if payload is not None else "system"
+    try:
+        return restore_automatic_control_result(
+            db,
+            company_id,
+            reason=reason,
+            operator=operator,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.post("/{company_id}/analysis/refresh")

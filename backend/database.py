@@ -72,6 +72,17 @@ _TABLE_COLUMN_DEFINITIONS = {
         "inference_run_id": "INTEGER",
         "source_mode": "VARCHAR(30)",
     },
+    "manual_control_overrides": {
+        "manual_control_ratio": "VARCHAR(50)",
+        "manual_control_strength_label": "VARCHAR(100)",
+        "manual_control_path": "TEXT",
+        "manual_path_summary": "TEXT",
+        "manual_paths": "TEXT",
+        "manual_control_type": "VARCHAR(100)",
+        "manual_decision_reason": "TEXT",
+        "manual_path_count": "INTEGER",
+        "manual_path_depth": "INTEGER",
+    },
 }
 _INDEX_STATEMENTS = {
     "shareholder_entities": (

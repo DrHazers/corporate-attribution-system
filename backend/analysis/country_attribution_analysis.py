@@ -1,9 +1,13 @@
 from sqlalchemy.orm import Session
 
 from backend.analysis.control_chain import analyze_control_chain_with_options
+from backend.analysis.manual_control_override import (
+    get_current_effective_country_attribution_data,
+)
 from backend.analysis.ownership_penetration import (
     _canonical_attribution_type,
     _normalize_country_basis_payload,
+    get_company_country_attribution_data,
 )
 from backend.models.country_attribution import CountryAttribution
 
@@ -24,18 +28,21 @@ def analyze_country_attribution_with_options(
     company_id: int,
     *,
     refresh: bool = False,
+    result_layer: str = "current",
 ) -> dict:
     control_chain_result = analyze_control_chain_with_options(
         db,
         company_id,
         refresh=refresh,
+        result_layer=result_layer,
     )
-    country_attribution = (
-        db.query(CountryAttribution)
-        .filter(CountryAttribution.company_id == company_id)
-        .order_by(CountryAttribution.id.desc())
-        .first()
-    )
+    if result_layer != "auto":
+        current_country = get_current_effective_country_attribution_data(
+            db,
+            company_id,
+        )
+    else:
+        current_country = get_company_country_attribution_data(db, company_id)
 
     control_chain_basis = []
     for item in control_chain_result["control_relationships"]:
@@ -70,7 +77,7 @@ def analyze_country_attribution_with_options(
             }
         )
 
-    if country_attribution is None:
+    if current_country.get("actual_control_country") is None:
         return {
             "company_id": company_id,
             "message": "No country attribution record found for this company.",
@@ -78,28 +85,20 @@ def analyze_country_attribution_with_options(
             "control_chain_basis": control_chain_basis,
         }
 
-    attribution_type = _canonical_attribution_type(country_attribution.attribution_type)
+    attribution_type = _canonical_attribution_type(current_country.get("attribution_type"))
     return {
         "company_id": company_id,
         "country_attribution": {
-            "id": country_attribution.id,
-            "company_id": country_attribution.company_id,
-            "incorporation_country": country_attribution.incorporation_country,
-            "listing_country": country_attribution.listing_country,
-            "actual_control_country": country_attribution.actual_control_country,
-            "attribution_type": attribution_type,
-            "actual_controller_entity_id": country_attribution.actual_controller_entity_id,
-            "direct_controller_entity_id": country_attribution.direct_controller_entity_id,
-            "attribution_layer": country_attribution.attribution_layer,
-            "country_inference_reason": country_attribution.country_inference_reason,
-            "look_through_applied": country_attribution.look_through_applied,
-            "basis": _normalize_country_basis_payload(
-                country_attribution.basis,
-                attribution_type=attribution_type,
+            **current_country,
+            "attribution_type": attribution_type or current_country.get("attribution_type"),
+            "basis": (
+                current_country.get("basis")
+                if isinstance(current_country.get("basis"), dict)
+                else _normalize_country_basis_payload(
+                    current_country.get("basis"),
+                    attribution_type=attribution_type,
+                )
             ),
-            "is_manual": country_attribution.is_manual,
-            "notes": country_attribution.notes,
-            "source_mode": country_attribution.source_mode,
         },
         "control_chain_basis": control_chain_basis,
     }

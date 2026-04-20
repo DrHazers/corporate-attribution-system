@@ -69,16 +69,18 @@ test('merges same-subject automatic reference even when it is not flagged as ori
   assert.equal(rows[0]._hasMergedAutoReference, true)
 })
 
-test('keeps separate rows when same-subject automatic row was not superseded', () => {
+test('keeps separate rows when same-subject automatic row was not superseded and no manual row exists', () => {
   const automaticCandidate = {
     ...automaticSameSubjectRow,
     automatic_result_superseded: false,
     automatic_is_actual_controller: false,
+    is_actual_controller: true,
+    controller_status: 'actual_controller',
   }
   const rows = mergeControlRelationRows([manualJudgmentRow, automaticCandidate])
 
-  assert.equal(rows.length, 2)
-  assert.equal(rows.some((row) => row._hasMergedAutoReference), false)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0]._secondaryRelationships.length, 1)
 })
 
 test('merges same-name same-type rows when entity ids differ but semantics match', () => {
@@ -88,10 +90,14 @@ test('merges same-name same-type rows when entity ids differ but semantics match
     controller_name: manualJudgmentRow.controller_name,
     controller_type: manualJudgmentRow.controller_type,
   }
-  const rows = mergeControlRelationRows([manualJudgmentRow, mismatchedIdAuto])
 
-  assert.equal(rows.length, 1)
-  assert.equal(rows[0]._hasMergedAutoReference, true)
+  assert.equal(
+    __controlRelationsMergeTestUtils.canMergeManualJudgmentWithAutoReference(
+      manualJudgmentRow,
+      mismatchedIdAuto,
+    ).merge,
+    true,
+  )
 })
 
 test('keeps separate rows for different subjects', () => {
@@ -147,5 +153,59 @@ test('merges same-subject automatic reference with supplemental path semantics',
   assert.equal(rows.length, 1)
   assert.equal(rows[0]._hasMergedAutoReference, true)
   assert.equal(rows[0]._autoReferenceIsSamePath, false)
-  assert.equal(rows[0]._autoReferencePathText, 'Controller A → Intermediate → Target Co')
+  assert.equal(rows[0]._autoReferencePathText, 'Controller A -> Intermediate -> Target Co')
+})
+
+test('keeps one primary row when manual result and same-subject automatic rows coexist', () => {
+  const rows = mergeControlRelationRows([
+    manualJudgmentRow,
+    automaticSameSubjectRow,
+    {
+      ...automaticSameSubjectRow,
+      id: 21,
+      automatic_result_superseded: false,
+      is_direct_controller: true,
+      control_tier: 'direct',
+    },
+  ])
+
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].controller_entity_id, 101)
+  assert.equal(rows[0]._secondaryRelationships.length, 2)
+  assert.equal(rows[0].is_direct_controller, true)
+  assert.equal(rows[0]._hasMergedAutoReference, true)
+})
+
+test('keeps one primary row for same-subject automatic rows and prefers actual row', () => {
+  const rows = mergeControlRelationRows([
+    {
+      id: 30,
+      controller_entity_id: 201,
+      controller_name: 'Controller B',
+      controller_type: 'company',
+      control_type: 'equity_control',
+      control_ratio: '55',
+      source_type: 'automatic',
+      is_actual_controller: false,
+      is_direct_controller: true,
+      control_tier: 'direct',
+    },
+    {
+      id: 31,
+      controller_entity_id: 201,
+      controller_name: 'Controller B',
+      controller_type: 'company',
+      control_type: 'equity_control',
+      control_ratio: '55',
+      source_type: 'automatic',
+      is_actual_controller: true,
+      controller_status: 'actual_controller',
+      control_tier: 'ultimate',
+    },
+  ])
+
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].id, 31)
+  assert.equal(rows[0].is_direct_controller, true)
+  assert.equal(rows[0]._secondaryRelationships.length, 1)
 })

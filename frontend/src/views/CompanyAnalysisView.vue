@@ -15,6 +15,7 @@ import { fetchCompanyRelationshipGraph } from '@/api/company'
 import BusinessSegmentsTable from '@/components/BusinessSegmentsTable.vue'
 import CompanyOverviewCard from '@/components/CompanyOverviewCard.vue'
 import ControlRelationsTable from '@/components/ControlRelationsTable.vue'
+import ControlStructureDiagram from '@/components/ControlStructureDiagram.vue'
 import ControlSummaryCard from '@/components/ControlSummaryCard.vue'
 import IndustrySummaryCard from '@/components/IndustrySummaryCard.vue'
 import SearchBar from '@/components/SearchBar.vue'
@@ -113,17 +114,36 @@ function buildEmptyGraphState(companyId, message = '后续接入控制链图展�
   }
 }
 
+async function runTimedStep(label, task) {
+  console.time(label)
+  try {
+    return await task()
+  } finally {
+    console.timeEnd(label)
+  }
+}
+
 async function loadCompanyData(companyId) {
+  const loadLabel = `[company-analysis] load:${companyId}`
   loading.value = true
   hasSearched.value = true
   pageError.value = ''
   sectionErrors.graph = ''
 
   try {
-    let summary = await fetchCompanyAnalysisSummary(companyId)
+    console.time(loadLabel)
+    console.info('[company-analysis] start load', { companyId })
+
+    let summary = await runTimedStep(
+      `${loadLabel}:summary`,
+      () => fetchCompanyAnalysisSummary(companyId),
+    )
 
     if (!Array.isArray(summary?.control_analysis?.control_relationships)) {
-      const controlChain = await fetchCompanyControlChain(companyId).catch(() => null)
+      const controlChain = await runTimedStep(
+        `${loadLabel}:control-chain-fallback`,
+        () => fetchCompanyControlChain(companyId).catch(() => null),
+      )
       if (controlChain) {
         summary = {
           ...summary,
@@ -138,7 +158,10 @@ async function loadCompanyData(companyId) {
     }
 
     if (!Array.isArray(summary?.industry_analysis?.segments)) {
-      const industryAnalysis = await fetchCompanyIndustryAnalysis(companyId).catch(() => null)
+      const industryAnalysis = await runTimedStep(
+        `${loadLabel}:industry-fallback`,
+        () => fetchCompanyIndustryAnalysis(companyId).catch(() => null),
+      )
       if (industryAnalysis) {
         summary = {
           ...summary,
@@ -151,7 +174,10 @@ async function loadCompanyData(companyId) {
     resolvedCompanyId.value = companyId
 
     try {
-      relationshipGraph.value = await fetchCompanyRelationshipGraph(companyId)
+      relationshipGraph.value = await runTimedStep(
+        `${loadLabel}:relationship-graph`,
+        () => fetchCompanyRelationshipGraph(companyId),
+      )
     } catch (error) {
       sectionErrors.graph = error.message
       relationshipGraph.value = buildEmptyGraphState(companyId, '关系图数据暂不可用。')
@@ -163,6 +189,7 @@ async function loadCompanyData(companyId) {
       relationshipGraph.value = buildEmptyGraphState(companyId, '未获取到关系图数据。')
     }
   } finally {
+    console.timeEnd(loadLabel)
     loading.value = false
   }
 }
@@ -331,7 +358,7 @@ const manualHasControllerForPaths = computed(() => manualPathDisplay.value.hasCo
 const manualCanEditPaths = computed(() => manualHasControllerForPaths.value)
 const manualPathBuilderBlockedTitle = computed(() => {
   if (isNameSnapshotMode.value) {
-    return '仅名称快照未绑定实体库，不能作为正式 Path Builder 起点。若需构建正式控制路径，请先选择现有主体或新建主体。'
+    return '仅名称快照未绑定实体库，不能作为正式控制路径起点。若需构建正式控制路径，请先选择现有主体或新建主体。'
   }
   if (isExistingEntityMode.value) {
     return '请选择已有主体 entity_id 后，路径起点才会同步为正式实体。'
@@ -711,20 +738,25 @@ async function handleRestoreAutomaticResult() {
 
         <div class="analysis-report">
           <section class="analysis-module analysis-module--control">
-            <div class="analysis-module__header">
-              <div>
-                <h2>控股结构分析</h2>
-                <p>当前阶段先收束为“摘要与结构图 + 明细表 + 人工征订操作区”，自动分析解释边栏暂时移除。</p>
+              <div class="analysis-module__header">
+                <div>
+                  <h2>控股结构分析</h2>
+                  <p>当前版本固定为“控制摘要、控制结构图、控制结论明细表、人工征订操作区”四段式结构。</p>
+                </div>
               </div>
-            </div>
 
             <div class="analysis-module__body">
               <ControlSummaryCard
                 :company="company"
                 :control-analysis="controlAnalysis"
                 :country-attribution="countryAttribution"
+              />
+
+              <ControlStructureDiagram
+                :company="company"
+                :control-analysis="controlAnalysis"
+                :country-attribution="countryAttribution"
                 :relationship-graph="relationshipGraph || buildEmptyGraphState(resolvedCompanyId)"
-                :graph-error="sectionErrors.graph"
               />
 
               <ControlRelationsTable
@@ -802,7 +834,7 @@ async function handleRestoreAutomaticResult() {
                             </el-radio-group>
                           </div>
                           <p class="manual-subject-source__help">
-                            仅绑定 entity_id 的主体会进入正式结构图和 Path Builder。
+                            仅绑定 entity_id 的主体会进入正式结构图和控制路径构建。
                           </p>
                         </el-form-item>
 
@@ -920,7 +952,7 @@ async function handleRestoreAutomaticResult() {
                         <section class="manual-path-builder">
                           <div class="manual-path-builder__head">
                             <div>
-                              <h3>控制路径 Path Builder</h3>
+                              <h3>控制路径构建</h3>
                               <p>起点必须是已绑定或即将新建入库的正式主体，终点固定为当前目标公司。</p>
                             </div>
                             <el-button

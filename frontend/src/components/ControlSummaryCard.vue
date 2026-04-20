@@ -1,11 +1,6 @@
 ﻿<script setup>
 import { computed } from 'vue'
 
-import ControlStructureDiagram from '@/components/ControlStructureDiagram.vue'
-import ControlStructurePlaceholder from '@/components/ControlStructurePlaceholder.vue'
-
-const ENABLE_REBUILT_CONTROL_STRUCTURE_DIAGRAM = true
-
 const props = defineProps({
   company: {
     type: Object,
@@ -18,20 +13,6 @@ const props = defineProps({
   countryAttribution: {
     type: Object,
     default: () => ({}),
-  },
-  relationshipGraph: {
-    type: Object,
-    default: () => ({
-      node_count: 0,
-      edge_count: 0,
-      nodes: [],
-      edges: [],
-      message: '后续接入控制链图展示',
-    }),
-  },
-  graphError: {
-    type: String,
-    default: '',
   },
 })
 
@@ -121,7 +102,7 @@ const STATUS_LABELS = {
 
 const COUNTRY_INFERENCE_REASON_LABELS = {
   derived_from_direct_controller: '根据直接控制人所在国家/地区确定。',
-  derived_from_ultimate_controller: '根据 ultimate / actual controller 所在国家/地区确定。',
+  derived_from_ultimate_controller: '根据最终控制人所在国家/地区确定。',
   fallback_to_incorporation: '当前未形成唯一实际控制人，按注册地兜底。',
   joint_control_no_single_country: '存在共同控制，暂不输出单一控制国家/地区。',
 }
@@ -312,7 +293,7 @@ function controllerControlStrengthText(controller, role = '') {
 function controllerMeta(controller, role = '') {
   if (!hasController(controller)) {
     if (role === 'actual' && hasController(leadingCandidate.value)) {
-      return '后端未输出唯一 actual controller，可参考 Leading Candidate'
+      return '后端未输出唯一实际控制人，可参考领先候选主体'
     }
     return '当前结果集中未返回该层级主体'
   }
@@ -325,7 +306,7 @@ function controllerMeta(controller, role = '') {
     .filter((item) => item && item !== '暂无')
 
   if (role === 'actual' && sameController(controller, directController.value)) {
-    items.push('Direct = Ultimate')
+    items.push('直接控制人与最终控制人为同一主体')
   }
   if (role === 'leading' && sameController(controller, actualController.value)) {
     items.push('与实际控制人一致')
@@ -490,7 +471,7 @@ const fallbackExplanation = computed(() => {
   }
 
   const incorporationCountry = props.company?.incorporation_country || '公司注册地'
-  return `未识别出唯一实际控制人，当前按 ${incorporationCountry} 进行注册地兜底归属；这不是已确认 actual controller 后的强归属结论。`
+  return `未识别出唯一实际控制人，当前按 ${incorporationCountry} 进行注册地兜底归属；这不是已确认实际控制人后的强归属结论。`
 })
 const promotionReasonExplanation = computed(() =>
   promotionReason.value
@@ -809,7 +790,7 @@ const explanationItems = computed(() => [
               {{ manualSourceLabel || '人工征订' }}
             </span>
           </div>
-          <p>上半区域展示控制结构图，下半区域展示控制分析摘要与国别归属结论。</p>
+          <p>收口后的摘要区只保留控制主体、归属方式与判定依据，不再内嵌控制结构图。</p>
         </div>
       </div>
     </template>
@@ -825,21 +806,21 @@ const explanationItems = computed(() => [
         </div>
         <dl class="compact-facts">
           <div>
-            <dt>Direct Controller</dt>
+            <dt>直接控制人</dt>
             <dd>
               <strong>{{ controllerName(directController, 'direct') }}</strong>
               <span>{{ controllerMeta(directController, 'direct') }}</span>
             </dd>
           </div>
           <div>
-            <dt>Ultimate / Actual</dt>
+            <dt>最终 / 实际控制人</dt>
             <dd>
               <strong>{{ controllerName(actualController, 'actual') }}</strong>
               <span>{{ controllerMeta(actualController, 'actual') }}</span>
             </dd>
           </div>
           <div>
-            <dt>Leading Candidate</dt>
+            <dt>领先候选主体</dt>
             <dd>
               <strong>{{ controllerName(leadingCandidate, 'leading') }}</strong>
               <span>{{ controllerMeta(leadingCandidate, 'leading') }}</span>
@@ -949,14 +930,6 @@ const explanationItems = computed(() => [
         : `当前国别归属由${manualSourceLabel || '人工征订'}确定；自动国别为 ${automaticActualControlCountry || '未识别'}。`"
     />
 
-    <ControlStructureDiagram
-      v-if="ENABLE_REBUILT_CONTROL_STRUCTURE_DIAGRAM"
-      :company="company"
-      :control-analysis="controlAnalysis"
-      :country-attribution="countryAttribution"
-      :relationship-graph="relationshipGraph"
-    />
-    <ControlStructurePlaceholder v-else />
   </el-card>
 </template>
 
@@ -974,7 +947,7 @@ const explanationItems = computed(() => [
   align-items: center;
 }
 
-.control-summary-title-row h2 {
+.control-summary-title-row h3 {
   margin: 0;
 }
 
@@ -1100,10 +1073,6 @@ const explanationItems = computed(() => [
 
 .control-summary-explanation {
   margin-top: 14px;
-}
-
-.control-graph-wide {
-  margin-top: 18px;
 }
 
 @media (max-width: 1100px) {

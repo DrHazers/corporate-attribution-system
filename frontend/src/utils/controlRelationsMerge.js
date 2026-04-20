@@ -94,15 +94,31 @@ function primaryPathText(row = {}) {
     ? path.path_entity_names.map((name) => String(name ?? '').trim()).filter(Boolean)
     : []
   if (names.length) {
-    return names.join(' → ')
+    return names.join(' -> ')
   }
-  return pathIds(path).map((id) => `主体 ${id}`).join(' → ')
+  return pathIds(path).map((id) => `主体 ${id}`).join(' -> ')
 }
 
 function relationSource(row = {}) {
   return normalizeKey(
     firstAvailable(row, 'source_type', 'result_source', 'manual_result_source'),
   )
+}
+
+function rowRatio(row = {}) {
+  const path = getControlPaths(row)[0] || {}
+  return toPercentNumber(
+    row.control_ratio ??
+      row.manual_display_control_strength ??
+      row.manual_control_ratio ??
+      path.path_ratio ??
+      path.control_ratio ??
+      path.ratio,
+  )
+}
+
+function isManualRow(row = {}) {
+  return relationSource(row).startsWith('manual')
 }
 
 function isManualJudgmentCurrentRow(row = {}) {
@@ -116,10 +132,48 @@ function isManualJudgmentCurrentRow(row = {}) {
   )
 }
 
+function isManualCurrentRow(row = {}) {
+  return (
+    isManualRow(row) &&
+    !isTruthy(firstAvailable(row, 'automatic_result_superseded')) &&
+    (
+      isTruthy(firstAvailable(row, 'is_manual_effective')) ||
+      isTruthy(firstAvailable(row, 'is_current_effective'))
+    )
+  )
+}
+
 function isAutomaticReferenceRow(row = {}) {
   return (
     isTruthy(firstAvailable(row, 'automatic_result_superseded')) &&
-    !relationSource(row).startsWith('manual')
+    !isManualRow(row)
+  )
+}
+
+function isAutomaticActualRow(row = {}) {
+  if (isAutomaticReferenceRow(row)) {
+    return false
+  }
+  return (
+    !isManualRow(row) &&
+    (
+      isTruthy(firstAvailable(row, 'is_actual_controller')) ||
+      normalizeKey(firstAvailable(row, 'controller_status')) === 'actual_controller'
+    )
+  )
+}
+
+function isDirectRow(row = {}) {
+  return (
+    isTruthy(firstAvailable(row, 'is_direct_controller')) ||
+    normalizeKey(firstAvailable(row, 'control_tier')) === 'direct'
+  )
+}
+
+function isLeadingRow(row = {}) {
+  return (
+    isTruthy(firstAvailable(row, 'is_leading_candidate')) ||
+    normalizeKey(firstAvailable(row, 'controller_status')) === 'leading_candidate'
   )
 }
 
@@ -141,6 +195,19 @@ function sameSubject(left = {}, right = {}) {
   const leftType = normalizeKey(left?.controller_type)
   const rightType = normalizeKey(right?.controller_type)
   return !leftType || !rightType || leftType === rightType
+}
+
+function subjectKey(row = {}, index = 0) {
+  const entityId = String(row?.controller_entity_id ?? '').trim()
+  if (entityId) {
+    return `entity:${entityId}`
+  }
+  const name = normalizeText(row?.controller_name)
+  const type = normalizeKey(row?.controller_type)
+  if (name) {
+    return `name:${name}:${type || 'unknown'}`
+  }
+  return `row:${index}`
 }
 
 function typeCandidates(row = {}) {
@@ -189,66 +256,57 @@ function controlTypeGroup(value) {
   return normalized
 }
 
-function hasCompatibleControlType(manualRow = {}, autoRow = {}) {
-  const manualGroups = typeCandidates(manualRow).map(controlTypeGroup).filter(Boolean)
+function hasCompatibleControlType(primaryRow = {}, autoRow = {}) {
+  const primaryGroups = typeCandidates(primaryRow).map(controlTypeGroup).filter(Boolean)
   const autoGroups = typeCandidates(autoRow).map(controlTypeGroup).filter(Boolean)
-  if (!manualGroups.length || !autoGroups.length) {
+  if (!primaryGroups.length || !autoGroups.length) {
     return true
   }
-  return manualGroups.some((group) => autoGroups.includes(group))
+  return primaryGroups.some((group) => autoGroups.includes(group))
 }
 
-function sameEndpoint(manualPath = {}, autoPath = {}) {
-  const manualIds = pathIds(manualPath)
+function sameEndpoint(primaryPath = {}, autoPath = {}) {
+  const primaryIds = pathIds(primaryPath)
   const autoIds = pathIds(autoPath)
-  if (manualIds.length && autoIds.length) {
-    return manualIds[manualIds.length - 1] === autoIds[autoIds.length - 1]
+  if (primaryIds.length && autoIds.length) {
+    return primaryIds[primaryIds.length - 1] === autoIds[autoIds.length - 1]
   }
-  const manualNames = pathNames(manualPath)
+  const primaryNames = pathNames(primaryPath)
   const autoNames = pathNames(autoPath)
-  if (manualNames.length && autoNames.length) {
-    return manualNames[manualNames.length - 1] === autoNames[autoNames.length - 1]
+  if (primaryNames.length && autoNames.length) {
+    return primaryNames[primaryNames.length - 1] === autoNames[autoNames.length - 1]
   }
   return true
 }
 
-function pathCompatibility(manualRow = {}, autoRow = {}) {
-  const manualPath = getControlPaths(manualRow)[0]
+function pathCompatibility(primaryRow = {}, autoRow = {}) {
+  const primaryPath = getControlPaths(primaryRow)[0]
   const autoPath = getControlPaths(autoRow)[0]
-  if (!manualPath || !autoPath) {
+  if (!primaryPath || !autoPath) {
     return { compatible: true, samePath: false, reason: 'missing_path' }
   }
 
-  if (sameList(pathIds(manualPath), pathIds(autoPath)) || sameList(pathNames(manualPath), pathNames(autoPath))) {
+  if (
+    sameList(pathIds(primaryPath), pathIds(autoPath)) ||
+    sameList(pathNames(primaryPath), pathNames(autoPath))
+  ) {
     return { compatible: true, samePath: true, reason: 'same_path' }
   }
 
-  if (sameEndpoint(manualPath, autoPath)) {
+  if (sameEndpoint(primaryPath, autoPath)) {
     return { compatible: true, samePath: false, reason: 'auto_reference_path' }
   }
 
   return { compatible: false, samePath: false, reason: 'path_conflict' }
 }
 
-function rowRatio(row = {}) {
-  const path = getControlPaths(row)[0] || {}
-  return toPercentNumber(
-    row.control_ratio ??
-      row.manual_display_control_strength ??
-      row.manual_control_ratio ??
-      path.path_ratio ??
-      path.control_ratio ??
-      path.ratio,
-  )
-}
-
-function hasCompatibleRatio(manualRow = {}, autoRow = {}) {
-  const manualRatio = rowRatio(manualRow)
+function hasCompatibleRatio(primaryRow = {}, autoRow = {}) {
+  const primaryRatio = rowRatio(primaryRow)
   const autoRatio = rowRatio(autoRow)
-  if (manualRatio === null || autoRatio === null) {
+  if (primaryRatio === null || autoRatio === null) {
     return true
   }
-  return Math.abs(manualRatio - autoRatio) <= SAME_RATIO_TOLERANCE
+  return Math.abs(primaryRatio - autoRatio) <= SAME_RATIO_TOLERANCE
 }
 
 function canMergeManualJudgmentWithAutoReference(manualRow = {}, autoRow = {}) {
@@ -275,16 +333,123 @@ function canMergeManualJudgmentWithAutoReference(manualRow = {}, autoRow = {}) {
   }
 }
 
-function mergeRows(manualRow = {}, autoRow = {}, reason = '') {
-  const autoPathText = primaryPathText(autoRow)
-  const manualPathText = primaryPathText(manualRow)
+function rowPriority(row = {}) {
+  if (isManualCurrentRow(row)) {
+    return 0
+  }
+  if (isAutomaticActualRow(row)) {
+    return 1
+  }
+  if (isAutomaticReferenceRow(row)) {
+    return 2
+  }
+  if (isDirectRow(row)) {
+    return 3
+  }
+  if (isLeadingRow(row)) {
+    return 4
+  }
+  return 5
+}
+
+function choosePrimaryRow(rows = []) {
+  return [...rows].sort((left, right) => {
+    const priorityDelta = rowPriority(left) - rowPriority(right)
+    if (priorityDelta !== 0) {
+      return priorityDelta
+    }
+    const ratioDelta = (rowRatio(right) ?? -1) - (rowRatio(left) ?? -1)
+    if (ratioDelta !== 0) {
+      return ratioDelta
+    }
+    return (left._mergeOriginalIndex ?? 0) - (right._mergeOriginalIndex ?? 0)
+  })[0] || null
+}
+
+function firstNonEmpty(...values) {
+  return values.find((value) => value !== null && value !== undefined && value !== '') ?? null
+}
+
+function mergeSecondaryFlags(primaryRow = {}, secondaryRows = []) {
+  const relatedRows = [primaryRow, ...secondaryRows]
+  const byPriority = [...relatedRows].sort((left, right) => rowPriority(left) - rowPriority(right))
+  const firstDirect = byPriority.find((row) => isDirectRow(row))
+  const firstActual = byPriority.find((row) => isAutomaticActualRow(row) || isManualCurrentRow(row))
+
   return {
-    ...manualRow,
+    controller_type: firstNonEmpty(
+      primaryRow.controller_type,
+      firstActual?.controller_type,
+      firstDirect?.controller_type,
+    ),
+    control_tier: firstNonEmpty(
+      primaryRow.control_tier,
+      firstActual?.control_tier,
+      firstDirect?.control_tier,
+    ),
+    is_direct_controller:
+      primaryRow.is_direct_controller || secondaryRows.some((row) => isTruthy(row?.is_direct_controller)),
+    is_intermediate_controller:
+      primaryRow.is_intermediate_controller ||
+      secondaryRows.some((row) => isTruthy(row?.is_intermediate_controller)),
+    is_ultimate_controller:
+      primaryRow.is_ultimate_controller || secondaryRows.some((row) => isTruthy(row?.is_ultimate_controller)),
+    is_actual_controller:
+      primaryRow.is_actual_controller || secondaryRows.some((row) => isTruthy(row?.is_actual_controller)),
+    is_leading_candidate:
+      primaryRow.is_leading_candidate || secondaryRows.some((row) => isTruthy(row?.is_leading_candidate)),
+    controller_status: firstNonEmpty(
+      primaryRow.controller_status,
+      firstActual?.controller_status,
+      firstDirect?.controller_status,
+    ),
+  }
+}
+
+function mergeRows(primaryRow = {}, secondaryRows = []) {
+  const compatibleAutoReference = secondaryRows.find((row) => {
+    if (!isAutomaticReferenceRow(row)) {
+      return false
+    }
+    if (!sameSubject(primaryRow, row)) {
+      return false
+    }
+    if (!hasCompatibleControlType(primaryRow, row)) {
+      return false
+    }
+    const pathResult = pathCompatibility(primaryRow, row)
+    if (!pathResult.compatible) {
+      return false
+    }
+    return hasCompatibleRatio(primaryRow, row)
+  }) || null
+
+  const merged = {
+    ...primaryRow,
+    ...mergeSecondaryFlags(primaryRow, secondaryRows),
+  }
+
+  if (!secondaryRows.length) {
+    return merged
+  }
+
+  merged._secondaryRelationships = secondaryRows
+
+  if (!compatibleAutoReference) {
+    return merged
+  }
+
+  const autoPathText = primaryPathText(compatibleAutoReference)
+  const manualPathText = primaryPathText(primaryRow)
+  const pathResult = pathCompatibility(primaryRow, compatibleAutoReference)
+
+  return {
+    ...merged,
     _hasMergedAutoReference: true,
-    _autoReferenceRelationship: autoRow,
-    _autoReferenceMergeReason: reason,
-    _autoReferenceControlType: autoRow.control_type,
-    _autoReferenceControlRatio: autoRow.control_ratio,
+    _autoReferenceRelationship: compatibleAutoReference,
+    _autoReferenceMergeReason: pathResult.reason,
+    _autoReferenceControlType: compatibleAutoReference.control_type,
+    _autoReferenceControlRatio: compatibleAutoReference.control_ratio,
     _autoReferencePathText: autoPathText,
     _manualEffectivePathText: manualPathText,
     _autoReferenceIsSamePath: Boolean(
@@ -295,31 +460,33 @@ function mergeRows(manualRow = {}, autoRow = {}, reason = '') {
 
 export function mergeControlRelationRows(relationships = []) {
   const rows = Array.isArray(relationships) ? relationships : []
-  const usedIndexes = new Set()
+  const groups = new Map()
 
-  return rows.map((row, index) => {
-    if (usedIndexes.has(index)) {
-      return null
+  rows.forEach((row, index) => {
+    const normalizedRow = {
+      ...row,
+      _mergeOriginalIndex: index,
     }
-    if (!isManualJudgmentCurrentRow(row)) {
-      return row
+    const key = subjectKey(normalizedRow, index)
+    if (!groups.has(key)) {
+      groups.set(key, [])
     }
+    groups.get(key).push(normalizedRow)
+  })
 
-    const autoIndex = rows.findIndex((candidate, candidateIndex) => {
-      if (candidateIndex === index || usedIndexes.has(candidateIndex)) {
-        return false
+  return Array.from(groups.values())
+    .map((groupRows) => {
+      const primary = choosePrimaryRow(groupRows)
+      if (!primary) {
+        return null
       }
-      return canMergeManualJudgmentWithAutoReference(row, candidate).merge
+      const secondaryRows = groupRows.filter(
+        (row) => row._mergeOriginalIndex !== primary._mergeOriginalIndex,
+      )
+      return mergeRows(primary, secondaryRows)
     })
-
-    if (autoIndex < 0) {
-      return row
-    }
-
-    usedIndexes.add(autoIndex)
-    const mergeDecision = canMergeManualJudgmentWithAutoReference(row, rows[autoIndex])
-    return mergeRows(row, rows[autoIndex], mergeDecision.reason)
-  }).filter(Boolean)
+    .filter(Boolean)
+    .map(({ _mergeOriginalIndex, ...row }) => row)
 }
 
 export const __controlRelationsMergeTestUtils = {

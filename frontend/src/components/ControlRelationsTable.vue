@@ -324,25 +324,28 @@ function sortRatioValue(value) {
 }
 
 function rowDisplayPriority(row) {
-  if (isCurrentEffectiveResultRow(row)) {
+  if (isCurrentEffectiveResultRow(row) && isManualEffectiveRow(row)) {
     return 0
   }
-  if (isAutomaticSupersededRow(row)) {
+  if (isCurrentEffectiveResultRow(row)) {
     return 1
   }
-  if (isPreferRollupRow(row) || isDirectRow(row)) {
+  if (isAutomaticSupersededRow(row)) {
     return 2
   }
-  if (isLeadingRow(row)) {
+  if (isDirectRow(row)) {
     return 3
   }
-  if (isBlockedCandidateRow(row)) {
+  if (isLeadingRow(row)) {
     return 4
   }
-  if (isOwnershipPatternRow(row)) {
+  if (isBlockedCandidateRow(row)) {
     return 5
   }
-  return 6
+  if (isOwnershipPatternRow(row)) {
+    return 6
+  }
+  return 7
 }
 
 function formatRatio(value) {
@@ -1025,32 +1028,25 @@ function relationshipRoleTags(row) {
     const tags = [
       { label: '实际控制人', type: 'actual' },
       {
-        label: isManualJudgmentEffectiveRow(row) ? '人工判定生效' : `${manualSourceLabel.value}生效`,
+        label: isManualJudgmentEffectiveRow(row)
+          ? '人工判定生效'
+          : isManualConfirmedResult.value
+            ? '人工确认生效'
+            : '人工征订生效',
         type: 'manual',
       },
     ]
     if (hasMergedAutoReference(row)) {
-      tags.push({ label: row._autoReferenceIsSamePath ? '自动分析一致' : '自动分析参考', type: 'neutral' })
+      tags.push({ label: '自动分析结果（参考）', type: 'neutral' })
     }
     return tags
   }
 
   if (isAutomaticSupersededRow(row)) {
-    if (isManualJudgmentResult.value) {
-      return [
-        { label: '自动分析结果', type: 'neutral' },
-        { label: '已被人工判定覆盖', type: 'boundary' },
-      ]
-    }
-    return isManualConfirmedResult.value
-      ? [
-          { label: '自动分析原始行', type: 'neutral' },
-          { label: '人工确认参考', type: 'boundary' },
-        ]
-      : [
-          { label: '自动分析结果', type: 'neutral' },
-          { label: '已覆盖参考', type: 'boundary' },
-        ]
+    return [
+      { label: '自动分析结果（参考）', type: 'neutral' },
+      { label: '已被人工覆盖', type: 'boundary' },
+    ]
   }
 
   if (isOwnershipPatternRow(row)) {
@@ -1119,21 +1115,16 @@ function roleNote(row) {
     return '控制主体沿用当前结论，实际控制国别经人工征订调整。'
   }
   if (isAutomaticSupersededRow(row)) {
-    if (isManualJudgmentResult.value) {
-      return '自动分析结果仍保留用于查看，但当前已被人工判定结果覆盖。'
-    }
-    return isManualConfirmedResult.value
-      ? '自动分析原始行仍保留用于查看，当前已由人工确认行承接为生效结论。'
-      : '自动分析结果仍保留用于查看，但当前已被人工征订结果覆盖。'
+    return '自动分析结果保留为参考信息，不再作为当前生效主记录。'
   }
   if (isOwnershipPatternRow(row)) {
-    return 'ownership pattern signal：保留研究价值，不参与 actual/direct/leading 主表达'
+    return '结构信号主体：保留研究价值，但不参与实际控制人主结论。'
   }
   if (isBlockedCandidateRow(row)) {
     return `阻断候选：${terminalFailureText(row) || determinationStatus(row).note}`
   }
   if (isPreferRollupRow(row) && !isActualRow(row)) {
-    return '中间层主体，当前结果继续向上穿透'
+    return '中间层主体，当前结论继续向上穿透。'
   }
   const tier = controlTierLabel(row)
   if (tier) {
@@ -1193,21 +1184,21 @@ function determinationStatus(row) {
     return {
       label: '结构信号',
       type: 'pattern',
-      note: profile || 'pattern only',
+      note: profile || '仅作为结构信号保留',
     }
   }
   if (isActualRow(row)) {
     return {
       label: isDirectRow(row) ? '已采纳' : '上卷采纳',
       type: 'accepted',
-      note: isDirectRow(row) ? '计入 actual/direct 结论' : '计入 actual/ultimate 结论',
+      note: isDirectRow(row) ? '已计入当前实际控制人结论' : '作为上卷后的当前实际控制人结论采纳',
     }
   }
   if (isPreferRollupRow(row)) {
     return {
       label: '继续上卷',
       type: 'rollup',
-      note: profile || 'prefer rollup',
+      note: profile || '当前主体更适合作为中间层继续上卷',
     }
   }
   if (isJointControlRow(row)) {
@@ -1415,33 +1406,33 @@ function recognitionExplanation(row) {
     headline = '结构信号：非实际控制主体'
     details.push('该主体更像公众持股/分散持股聚合表达，不代表统一控制意志。')
     details.push(terminalProfileText(row) || '缺少可归责的终局主体画像。')
-    details.push('已排除出 actual/direct/leading 主表达，仅保留为研究结构信号。')
+    details.push('已排除出“实际控制人 / 直接控制人 / 领先候选”主表达，仅保留为研究结构信号。')
   } else if (isJointControlRow(row) && !isActualRow(row)) {
     headline = '共同控制阻断'
     details.push(terminalText || '存在共同控制结构，后端不硬选单一实际控制人。')
     details.push('该主体保留用于解释共同控制格局。')
-    details.push('结果影响：未单独计入 actual controller 结论。')
+    details.push('结果影响：未单独计入实际控制人结论。')
   } else if (isBeneficialOwnerBlockedRow(row) && !isActualRow(row)) {
     headline = '受益人未明 / 穿透阻断'
     details.push(terminalText || '受益所有人或代持披露不足，暂不形成唯一实际控制人。')
-    details.push('结果影响：不进入 actual controller 结论，需后续补充披露线索。')
+    details.push('结果影响：不进入实际控制人结论，需后续补充披露线索。')
   } else if (isLowConfidenceRow(row) && !isActualRow(row)) {
     headline = '低置信候选'
     details.push(terminalText || '控制证据强度不足，仅保留为候选或辅助说明。')
-    details.push('结果影响：未计入 actual controller 结论。')
+    details.push('结果影响：未计入实际控制人结论。')
   } else if (isActualRow(row)) {
     if (isDirectRow(row)) {
       headline = '直接控制并认定为实际控制人'
       details.push('该主体位于直接控制层，且满足最终控制判定条件。')
-      details.push('结果影响：已计入 actual/direct controller 结论。')
+      details.push('结果影响：已计入“实际控制人 / 直接控制人”结论。')
     } else if (hasPromotionSignal(row)) {
       headline = '上卷后认定为实际控制人'
       details.push(promotionText || '直接控制层继续向上穿透，最终控制归属落在该上层主体。')
-      details.push('结果影响：已计入 actual/ultimate controller 结论。')
+      details.push('结果影响：已计入“实际上卷后的最终控制人”结论。')
     } else {
       headline = '认定为实际控制人'
       details.push('后端已形成唯一实际控制人结论。')
-      details.push('结果影响：已计入 actual controller 结论。')
+      details.push('结果影响：已计入实际控制人结论。')
     }
 
     if (hasHigherDirectLayerRatio(row)) {
@@ -1813,10 +1804,10 @@ function rowClassName({ row }) {
           :description="manualCountryEffective
         ? '控制主体沿用当前结论，实际控制国别以人工征订结果为准。'
         : isManualConfirmedResult
-          ? '控制结论明细表已优先展示人工确认后的自动结果；自动分析原始行仍保留用于对照。'
+          ? '控制结论明细表已优先展示人工确认后的当前结果；自动分析原始信息仅保留为参考。'
           : isManualJudgmentResult
             ? '控制结论明细表已优先展示人工判定结果；同主体同语义的自动分析结果会合并为参考信息。'
-            : `控制结论明细表已优先展示${manualSourceLabel}结果，并使用人工构建路径作为主路径；自动分析行仍保留用于查看。`"
+            : `控制结论明细表已优先展示${manualSourceLabel}结果，并使用人工构建路径作为主路径；自动分析结果仅在需要时以参考信息保留。`"
     />
 
     <el-table
@@ -1838,7 +1829,7 @@ function rowClassName({ row }) {
               {{ row.controller_name || EMPTY_TEXT }}
             </div>
             <div v-if="isOwnershipPatternRow(row)" class="controller-subnote">
-              ownership pattern signal / 非实际控制主体
+              结构信号主体 / 非实际控制主体
             </div>
           </div>
         </template>
@@ -1919,7 +1910,7 @@ function rowClassName({ row }) {
             <template v-if="pathSummary(row).pathCount">
               <div class="table-text table-multi-line path-summary">
                 <div v-if="isOwnershipPatternRow(row)" class="path-structure-note path-structure-note--pattern">
-                  结构信号路径：保留用于研究，不作为 actual controller 路径。
+                  结构信号路径：保留用于研究，不作为实际控制人主路径。
                 </div>
                 <div v-if="pathSummary(row).hasDirectAndIndirect" class="path-structure-note">
                   路径结构：直接 + 间接多路径汇聚；图中突出主路径，其余作为补充路径。

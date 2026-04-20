@@ -4,9 +4,19 @@
 
 本轮导出默认读取：
 
-- `company_test_analysis_industry_v2.db`
+- `ultimate_controller_enhanced_dataset_working.db`
 - 导出目录：`exports/db_handoff/`
 - 编码：`utf-8-sig`，便于 Excel 直接打开
+
+> Update 2026-04-20
+>
+> Current export default now follows the application working database:
+> `ultimate_controller_enhanced_dataset_working.db`
+>
+> Snapshot counts:
+> `companies=10030`, `shareholder_entities=27176`, `shareholder_structures=104112`,
+> `control_relationships=19138`, `country_attributions=10047`,
+> `control_inference_runs=10030`, `control_inference_audit_log=23167`
 
 当前 v2 库的实际数据量如下：
 
@@ -22,7 +32,7 @@
 | `control_inference_runs` | 0 | 当前无运行记录 |
 | `control_inference_audit_log` | 0 | 当前无审计步骤记录 |
 
-同目录的旧库 `company_test_analysis_industry.db` 仍有大量数据，但本轮脚本按要求优先使用 v2 库。后续如需要从旧库重新生成满量 v2 数据，应先确认是否要重新执行升级脚本。
+同目录的旧库 `company_test_analysis_industry.db` 和 `company_test_analysis_industry_v2.db` 仍可作为历史来源或对比样本，但本轮脚本默认优先使用 `ultimate_controller_enhanced_dataset_working.db`。后续如需切换到同结构的新工作库，优先配置 `CORP_DEFAULT_DATABASE_PATH` 或 `CORP_DEFAULT_DATABASE_NAME`。
 
 ## 1. 导出文件
 

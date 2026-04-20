@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 import backend.models  # noqa: F401
 from backend.database import Base, ensure_sqlite_schema, get_database_path
+from backend.database_config import get_default_application_database_path
 from backend.models.annotation_log import AnnotationLog
 from backend.models.business_segment import BusinessSegment
 from backend.models.business_segment_classification import BusinessSegmentClassification
@@ -83,18 +84,9 @@ class ImportSummary:
 def _default_database_path() -> Path:
     env_database_url = os.getenv("DATABASE_URL")
     env_database_path = get_database_path(env_database_url) if env_database_url else None
-    if env_database_path is not None and env_database_path.exists():
+    if env_database_path is not None:
         return env_database_path
-
-    working_copy_candidates = sorted(
-        PROJECT_ROOT.glob("exports/**/company_test_analysis_working_copy.db"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    if working_copy_candidates:
-        return working_copy_candidates[0]
-
-    return (PROJECT_ROOT / "company_test_analysis_industry.db").resolve()
+    return get_default_application_database_path()
 
 
 def _resolve_database_path(database_path: str | None) -> Path:
@@ -528,7 +520,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--database-path",
         default=None,
-        help="Target SQLite database path. Defaults to DATABASE_URL sqlite path or latest working copy.",
+        help=(
+            "Target SQLite database path. Defaults to DATABASE_URL sqlite path "
+            "or the configured application database."
+        ),
     )
     parser.add_argument(
         "--csv-directory",

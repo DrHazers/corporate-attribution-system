@@ -5,13 +5,18 @@
 前后端联调、截图和最终演示请统一使用：
 
 ```powershell
-$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db'
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db'
 .\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
 ```
 
+> Default application database: `ultimate_controller_enhanced_dataset_working.db`
+>
+> To switch to a future working copy without editing code, set `CORP_DEFAULT_DATABASE_PATH`
+> or `CORP_DEFAULT_DATABASE_NAME`.
+
 说明：
-- 不设置 `DATABASE_URL` 时，后端会按 `backend/database.py` 的默认配置连接项目根目录下的 `company_test_analysis_industry_v2.db`。
-- 前端演示推荐固定连接 `company_test_analysis_industry_v2.db`，这份库是在 `company_test_analysis_industry.db` 基础上复制并升级得到的 V2 演示库，覆盖控制链、国别归属、产业分析、多报告期和质量提示等演示场景。
+- 不设置 `DATABASE_URL` 时，后端会按 `backend/database.py` 的默认配置连接项目根目录下的 `ultimate_controller_enhanced_dataset_working.db`。
+- 前端演示与日常联调推荐固定连接 `ultimate_controller_enhanced_dataset_working.db`。如果后续切换到同结构的新工作库，优先通过 `CORP_DEFAULT_DATABASE_PATH` 或 `CORP_DEFAULT_DATABASE_NAME` 调整，而不是在多处代码里手改库名。
 - HTML 验证图、前端 API、手工数据库查询应尽量使用同一份数据库，避免出现“图里有结果、前端接口看不到”或记录 ID 不一致的排查噪音。
 - 这里仅是运行环境约定，不改变 unified control inference、refresh 主链路或任何表结构。
 
@@ -137,7 +142,7 @@ $env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/compa
 
 ### 2. 启动后端
 ```powershell
-$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db'
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db'
 .\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
 ```
 

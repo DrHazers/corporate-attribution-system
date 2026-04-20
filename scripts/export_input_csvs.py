@@ -4,13 +4,20 @@ import argparse
 import csv
 import json
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_DATABASE = BASE_DIR / "company_test_analysis_industry_v2.db"
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from backend.database_config import get_default_application_database_path
+
+
+DEFAULT_DATABASE = get_default_application_database_path()
 DEFAULT_OUTPUT_DIR = BASE_DIR / "exports" / "db_handoff"
 
 CORE_INPUT_TABLES = (

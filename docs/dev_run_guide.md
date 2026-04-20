@@ -7,21 +7,21 @@
 当前后端默认库：
 
 ```text
-company_test_analysis_industry_v2.db
+ultimate_controller_enhanced_dataset_working.db
 ```
 
-原因：`backend/database.py` 中默认数据库已切到 `company_test_analysis_industry_v2.db`，即使没有单独设置 `DATABASE_URL`，当前前后端联调也会优先连接这份 V2 演示库。
+原因：`backend/database.py` 中默认数据库已切到 `ultimate_controller_enhanced_dataset_working.db`，即使没有单独设置 `DATABASE_URL`，当前前后端联调也会优先连接这份工作库。后续如需切换到同结构的新工作库，优先配置 `CORP_DEFAULT_DATABASE_PATH` 或 `CORP_DEFAULT_DATABASE_NAME`。
 
 当前推荐演示库：
 
 ```text
-company_test_analysis_industry_v2.db
+ultimate_controller_enhanced_dataset_working.db
 ```
 
 完整连接串：
 
 ```text
-sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db
+sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db
 ```
 
 推荐原因：
@@ -35,7 +35,7 @@ sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_in
 在项目根目录执行：
 
 ```powershell
-$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db'
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db'
 .\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
 ```
 
@@ -79,17 +79,17 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 生成 HTML 验证图、运行前端 API、手工查询数据库时，建议尽量使用同一份数据库：
 
 ```text
-d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db
+d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db
 ```
 
 如果使用 HTML 验证图脚本，也建议显式传入数据库路径，例如：
 
 ```powershell
-.\venv\Scripts\python.exe scripts\build_demo_visualizations.py --database d:\graduation_project\corp_attribution_system\company_test_analysis_industry.db --company-id 124 --skip-refresh
+.\venv\Scripts\python.exe scripts\build_demo_visualizations.py --database d:\graduation_project\corp_attribution_system\ultimate_controller_enhanced_dataset_working.db --company-id 124 --skip-refresh
 ```
 
 这样可以减少以下问题：
-- HTML 图来自 `company_test_analysis_demo.db`，但前端 API 来自 `company_test_analysis_industry.db`。
+- HTML 图来自 `company_test_analysis_demo.db`，但前端 API 来自 `ultimate_controller_enhanced_dataset_working.db`。
 - 控制结论一致但记录 ID、生成时间不同，导致排查时误判。
 - 前端截图、接口返回、数据库查询三者口径不一致。
 

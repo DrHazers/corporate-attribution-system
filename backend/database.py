@@ -1,18 +1,23 @@
 import os
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+from backend.database_config import (
+    DEFAULT_APPLICATION_DATABASE_NAME,
+    PROJECT_ROOT,
+    get_database_path_from_url,
+    get_default_application_database_url,
+)
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_DATABASE_NAME = "company_test_analysis_industry_v2.db"
+BASE_DIR = PROJECT_ROOT
+DEFAULT_DATABASE_NAME = DEFAULT_APPLICATION_DATABASE_NAME
 SEEDED_DEVELOPMENT_DATABASE_NAMES = {
     "company.db",
     "company_import_test.db",
 }
-DEFAULT_DATABASE_URL = f"sqlite:///{BASE_DIR / DEFAULT_DATABASE_NAME}"
+DEFAULT_DATABASE_URL = get_default_application_database_url()
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -130,18 +135,11 @@ _INDEX_STATEMENTS = {
 }
 
 
-def get_database_path(database_url: str = DATABASE_URL) -> Path | None:
-    parsed = urlparse(database_url)
-    if parsed.scheme != "sqlite":
-        return None
-
-    raw_path = parsed.path or ""
-    if raw_path.startswith("/") and len(raw_path) > 3 and raw_path[2] == ":":
-        raw_path = raw_path[1:]
-    return Path(unquote(raw_path))
+def get_database_path(database_url: str | None = None) -> Path | None:
+    return get_database_path_from_url(database_url or DATABASE_URL)
 
 
-def uses_seeded_development_database(database_url: str = DATABASE_URL) -> bool:
+def uses_seeded_development_database(database_url: str | None = None) -> bool:
     database_path = get_database_path(database_url)
     if database_path is None:
         return False

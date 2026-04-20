@@ -8,8 +8,11 @@ from backend.api.country_attribution import router as country_attribution_router
 from backend.api.industry_analysis import router as industry_analysis_router
 from backend.api.relationship_support import router as relationship_support_router
 from backend.api.shareholder import router as shareholder_router
-from backend.database import DATABASE_URL, get_database_path, init_db
+import backend.database as database_module
+from backend.database_config import describe_default_application_database
 import backend.models  # noqa: F401
+
+DATABASE_URL = database_module.DATABASE_URL
 
 
 app = FastAPI(title="Corporate Attribution System")
@@ -36,7 +39,7 @@ app.include_router(relationship_support_router)
 
 @app.on_event("startup")
 def on_startup():
-    init_db()
+    database_module.init_db()
 
 
 @app.get("/")
@@ -46,8 +49,10 @@ def read_root():
 
 @app.get("/health")
 def health_check():
+    default_database = describe_default_application_database()
     return {
         "status": "ok",
-        "database_url": DATABASE_URL,
-        "database_path": str(get_database_path() or ""),
+        "database_url": database_module.DATABASE_URL,
+        "database_path": str(database_module.get_database_path() or ""),
+        "configured_default_database": default_database,
     }

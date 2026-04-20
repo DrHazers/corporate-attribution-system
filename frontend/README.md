@@ -5,10 +5,10 @@
 前端联调、截图和最终演示时，后端请固定使用：
 
 ```text
-DATABASE_URL=sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry_v2.db
+DATABASE_URL=sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db
 ```
 
-不设置 `DATABASE_URL` 时，后端默认会连接项目根目录下的 `company_test_analysis_industry_v2.db`。这份库是在 `company_test_analysis_industry.db` 基础上复制并升级得到的 V2 演示库，覆盖控制链、国别归属、产业分析、多报告期和质量提示，更适合作为当前前端综合分析页的默认演示库。
+不设置 `DATABASE_URL` 时，后端默认会连接项目根目录下的 `ultimate_controller_enhanced_dataset_working.db`。如果后续切换到同结构的新工作库，优先通过 `CORP_DEFAULT_DATABASE_PATH` 或 `CORP_DEFAULT_DATABASE_NAME` 调整，而不是在前后端文档里逐处替换库名。
 
 这是当前项目的前端第一版，目标是快速跑通一个“企业综合分析展示页”，用于后续逐步扩展。
 
@@ -49,11 +49,11 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 建议先启动 FastAPI，并显式指定演示数据库：
 
 ```powershell
-$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/company_test_analysis_industry.db'
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db'
 .\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
 ```
 
-HTML 验证图、前端 API 和手工数据库查询建议尽量使用同一份 `company_test_analysis_industry.db`，避免不同库之间控制分析记录 ID、生成时间或产业数据覆盖范围不一致。
+HTML 验证图、前端 API 和手工数据库查询建议尽量使用同一份 `ultimate_controller_enhanced_dataset_working.db`，避免不同库之间控制分析记录 ID、生成时间或产业数据覆盖范围不一致。
 
 ## 5. 当前页面能力
 

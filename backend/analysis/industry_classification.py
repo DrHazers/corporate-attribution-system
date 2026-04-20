@@ -1479,6 +1479,47 @@ def _protected_segment_ids(
     return {row[0] for row in query.distinct().all()}
 
 
+def _protected_segment_counts(
+    db: Session,
+    *,
+    segment_ids: list[int] | None = None,
+) -> dict[str, int]:
+    protected_types = ("manual", "llm_assisted", "hybrid")
+    query = db.query(
+        BusinessSegmentClassification.classifier_type,
+        BusinessSegmentClassification.business_segment_id,
+    ).filter(BusinessSegmentClassification.classifier_type.in_(protected_types))
+    if segment_ids:
+        query = query.filter(BusinessSegmentClassification.business_segment_id.in_(segment_ids))
+
+    distinct_pairs = {
+        (classifier_type or "", business_segment_id)
+        for classifier_type, business_segment_id in query.all()
+    }
+    manual_ids = {
+        business_segment_id
+        for classifier_type, business_segment_id in distinct_pairs
+        if classifier_type == "manual"
+    }
+    llm_ids = {
+        business_segment_id
+        for classifier_type, business_segment_id in distinct_pairs
+        if classifier_type == "llm_assisted"
+    }
+    hybrid_ids = {
+        business_segment_id
+        for classifier_type, business_segment_id in distinct_pairs
+        if classifier_type == "hybrid"
+    }
+    protected_ids = manual_ids | llm_ids | hybrid_ids
+    return {
+        "skipped_protected_count": len(protected_ids),
+        "skipped_manual_count": len(manual_ids),
+        "skipped_llm_assisted_count": len(llm_ids),
+        "skipped_hybrid_count": len(hybrid_ids),
+    }
+
+
 def _replace_rule_based_classification_rows(
     db: Session,
     *,
@@ -1514,12 +1555,14 @@ def _build_refresh_summary(
     total_segments: int,
     segment_ids: list[int] | None = None,
     backup_table: str | None,
+    protected_counts: dict[str, int] | None = None,
 ) -> BusinessSegmentClassificationRefreshSummary:
     query = db.query(BusinessSegmentClassification.review_status)
     if segment_ids:
         query = query.filter(BusinessSegmentClassification.business_segment_id.in_(segment_ids))
     rows = query.all()
     status_counts = Counter(row[0] for row in rows)
+    protected_counts = protected_counts or {}
     return BusinessSegmentClassificationRefreshSummary(
         total_segments=total_segments,
         classification_rows=len(rows),
@@ -1529,6 +1572,10 @@ def _build_refresh_summary(
         needs_manual_review_count=status_counts.get("needs_manual_review", 0),
         conflicted_count=status_counts.get("conflicted", 0),
         unmapped_count=status_counts.get("unmapped", 0),
+        skipped_protected_count=protected_counts.get("skipped_protected_count", 0),
+        skipped_manual_count=protected_counts.get("skipped_manual_count", 0),
+        skipped_llm_assisted_count=protected_counts.get("skipped_llm_assisted_count", 0),
+        skipped_hybrid_count=protected_counts.get("skipped_hybrid_count", 0),
         backup_table=backup_table,
     )
 
@@ -1547,6 +1594,7 @@ def refresh_business_segment_classifications(
         query = query.filter(BusinessSegment.id.in_(segment_ids))
     segments = query.all()
     peer_lookup = _build_peer_lookup(segments)
+    protected_counts = _protected_segment_counts(db, segment_ids=segment_ids)
 
     backup_table: str | None = None
     if segment_ids is None:
@@ -1573,6 +1621,7 @@ def refresh_business_segment_classifications(
         total_segments=len(segments),
         segment_ids=segment_ids,
         backup_table=backup_table,
+        protected_counts=protected_counts,
     )
 
 

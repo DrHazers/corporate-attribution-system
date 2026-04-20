@@ -237,6 +237,10 @@ class BusinessSegmentClassificationRefreshSummary(BaseModel):
     needs_manual_review_count: int
     conflicted_count: int
     unmapped_count: int
+    skipped_protected_count: int = 0
+    skipped_manual_count: int = 0
+    skipped_llm_assisted_count: int = 0
+    skipped_hybrid_count: int = 0
     backup_table: str | None = None
 
 

@@ -334,6 +334,10 @@ def test_refresh_builds_research_style_rule_results_and_preserves_manual_rows(tm
     assert summary.conflicted_count >= 1
     assert summary.unmapped_count >= 1
     assert summary.needs_manual_review_count == 1
+    assert summary.skipped_protected_count == 1
+    assert summary.skipped_manual_count == 1
+    assert summary.skipped_llm_assisted_count == 0
+    assert summary.skipped_hybrid_count == 0
 
     rows_by_segment = {row["business_segment_id"]: row for row in rows}
     assert rows_by_segment[1]["review_status"] == "confirmed"

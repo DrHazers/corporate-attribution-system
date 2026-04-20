@@ -8,6 +8,14 @@ export function fetchCompanyIndustryAnalysis(companyId, params = {}) {
   return http.get(`/companies/${companyId}/industry-analysis`, { params })
 }
 
+export function fetchBusinessSegmentClassifications(segmentId) {
+  return http.get(`/business-segments/${segmentId}/classifications`)
+}
+
+export function requestBusinessSegmentLlmAnalysis(segmentId) {
+  return http.post(`/business-segments/${segmentId}/classify-with-llm`)
+}
+
 export function fetchCompanyControlChain(companyId) {
   return http.get(`/companies/${companyId}/control-chain`)
 }

@@ -317,6 +317,18 @@ def test_refresh_builds_research_style_rule_results_and_preserves_manual_rows(tm
                     """
                 ).fetchall()
             ]
+            backup_tables = [
+                row["name"]
+                for row in connection.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name LIKE 'business_segment_classifications_backup_%'
+                    ORDER BY name
+                    """
+                ).fetchall()
+            ]
         finally:
             connection.close()
     finally:
@@ -338,6 +350,8 @@ def test_refresh_builds_research_style_rule_results_and_preserves_manual_rows(tm
     assert summary.skipped_manual_count == 1
     assert summary.skipped_llm_assisted_count == 0
     assert summary.skipped_hybrid_count == 0
+    assert summary.backup_table is None
+    assert backup_tables == []
 
     rows_by_segment = {row["business_segment_id"]: row for row in rows}
     assert rows_by_segment[1]["review_status"] == "confirmed"

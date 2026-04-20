@@ -12,12 +12,12 @@ import {
   submitManualControlOverride,
 } from '@/api/analysis'
 import { fetchCompanyRelationshipGraph } from '@/api/company'
-import BusinessSegmentsTable from '@/components/BusinessSegmentsTable.vue'
 import CompanyOverviewCard from '@/components/CompanyOverviewCard.vue'
 import ControlRelationsTable from '@/components/ControlRelationsTable.vue'
 import ControlStructureDiagram from '@/components/ControlStructureDiagram.vue'
 import ControlSummaryCard from '@/components/ControlSummaryCard.vue'
-import IndustrySummaryCard from '@/components/IndustrySummaryCard.vue'
+import IndustryAnalysisPanel from '@/components/IndustryAnalysisPanel.vue'
+import IndustryWorkbenchDrawer from '@/components/IndustryWorkbenchDrawer.vue'
 import SearchBar from '@/components/SearchBar.vue'
 import {
   buildManualPathPayloads as buildManualPathPayloadRecords,
@@ -39,6 +39,7 @@ const resolvedCompanyId = ref('')
 const summaryData = ref(null)
 const relationshipGraph = ref(null)
 const manualPanelExpanded = ref(false)
+const industryWorkbenchVisible = ref(false)
 const manualSaving = ref(false)
 const shareholderEntityOptions = ref([])
 const shareholderEntityLoading = ref(false)
@@ -233,6 +234,7 @@ watch(
     const normalizedCompanyId = rawValue.trim()
     if (normalizedCompanyId !== resolvedCompanyId.value) {
       manualPanelExpanded.value = false
+      industryWorkbenchVisible.value = false
     }
     await loadCompanyData(normalizedCompanyId)
   },
@@ -255,10 +257,6 @@ const industryAnalysis = computed(() => summaryData.value?.industry_analysis || 
 const controlRelationships = computed(
   () => summaryData.value?.control_analysis?.control_relationships || [],
 )
-const businessSegments = computed(
-  () => summaryData.value?.industry_analysis?.segments || [],
-)
-
 const currentSummaryNote = computed(() => {
   if (!company.value) {
     return '请输入 company_id 后查询企业综合分析结果。'
@@ -266,6 +264,10 @@ const currentSummaryNote = computed(() => {
 
   return `当前展示企业：${company.value.name}（company_id: ${company.value.id}）`
 })
+
+function openIndustryWorkbench() {
+  industryWorkbenchVisible.value = true
+}
 
 const manualOverride = computed(
   () =>
@@ -1143,19 +1145,33 @@ async function handleRestoreAutomaticResult() {
           </section>
 
           <section class="analysis-module analysis-module--industry">
-            <div class="analysis-module__header">
+            <div class="analysis-module__header analysis-module__header--actionable">
               <div>
                 <h2>产业分析</h2>
-                <p>先把产业研究部分独立成模块容器，集中展示业务结构、产业标签、质量提示和业务线明细。</p>
+                <p>聚合展示当前公司的正式 refresh 结果，并衔接后续工作台分析。</p>
               </div>
+              <el-button type="primary" @click="openIndustryWorkbench">
+                进入产业分析工作台
+              </el-button>
             </div>
 
             <div class="analysis-module__body">
-              <IndustrySummaryCard :industry-analysis="industryAnalysis" />
-              <BusinessSegmentsTable :segments="businessSegments" :loading="loading" />
+              <IndustryAnalysisPanel
+                :company="company"
+                :company-id="company?.id || resolvedCompanyId"
+                :industry-analysis="industryAnalysis"
+                :loading="loading"
+              />
             </div>
           </section>
         </div>
+
+        <IndustryWorkbenchDrawer
+          v-model="industryWorkbenchVisible"
+          :company="company"
+          :company-id="company?.id || resolvedCompanyId"
+          :industry-analysis="industryAnalysis"
+        />
       </div>
     </template>
 
@@ -1174,18 +1190,20 @@ async function handleRestoreAutomaticResult() {
 <style scoped>
 .analysis-report {
   display: grid;
-  gap: 36px;
+  gap: 28px;
   margin-top: 24px;
+  min-width: 0;
 }
 
 .analysis-module {
   display: grid;
   gap: 18px;
-  padding: 22px;
+  padding: 20px;
   border-radius: 18px;
   border: 1px solid rgba(31, 59, 87, 0.1);
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 14px 34px rgba(17, 37, 58, 0.05);
+  min-width: 0;
 }
 
 .analysis-module--control {
@@ -1205,6 +1223,12 @@ async function handleRestoreAutomaticResult() {
   border-bottom: 1px solid rgba(31, 59, 87, 0.08);
 }
 
+.analysis-module__header--actionable {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px;
+}
+
 .analysis-module__header h2 {
   margin: 0;
   color: var(--brand-ink);
@@ -1220,6 +1244,13 @@ async function handleRestoreAutomaticResult() {
 .analysis-module__body {
   display: grid;
   gap: 18px;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .analysis-module__header--actionable {
+    grid-template-columns: 1fr;
+  }
 }
 
 .manual-entry-card {

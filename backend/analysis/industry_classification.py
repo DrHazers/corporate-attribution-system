@@ -1584,6 +1584,7 @@ def refresh_business_segment_classifications(
     db: Session,
     *,
     segment_ids: list[int] | None = None,
+    create_backup: bool = False,
 ) -> BusinessSegmentClassificationRefreshSummary:
     query = (
         db.query(BusinessSegment)
@@ -1597,7 +1598,7 @@ def refresh_business_segment_classifications(
     protected_counts = _protected_segment_counts(db, segment_ids=segment_ids)
 
     backup_table: str | None = None
-    if segment_ids is None:
+    if create_backup and segment_ids is None:
         backup_table = (
             "business_segment_classifications_backup_"
             + datetime.now().strftime("%Y%m%d_%H%M%S")

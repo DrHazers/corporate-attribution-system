@@ -20,7 +20,12 @@ def _build_database(path: Path) -> None:
             """
             CREATE TABLE companies (
                 id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL
+                name TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                incorporation_country TEXT NOT NULL,
+                listing_country TEXT NOT NULL,
+                headquarters TEXT NOT NULL,
+                description TEXT
             );
 
             CREATE TABLE business_segments (
@@ -61,13 +66,28 @@ def _build_database(path: Path) -> None:
             """
         )
         connection.executemany(
-            "INSERT INTO companies (id, name) VALUES (?, ?)",
+            """
+            INSERT INTO companies (
+                id,
+                name,
+                stock_code,
+                incorporation_country,
+                listing_country,
+                headquarters,
+                description
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
             [
-                (1, "Demo A"),
-                (2, "Demo B"),
-                (3, "Demo C"),
-                (4, "Demo D"),
-                (5, "Demo E"),
+                (1, "CloudCo", "CC", "US", "US", "Seattle", "Enterprise software company"),
+                (2, "WorkflowCo", "WF", "US", "US", "Austin", "Enterprise workflow company"),
+                (3, "GenericCo", "GC", "US", "US", "Boston", "Diversified business"),
+                (4, "AdMarket", "AM", "US", "US", "New York", "Digital media and marketplace platform"),
+                (5, "MysteryCo", "MC", "US", "US", "Chicago", "Standalone holding"),
+                (6, "PayCo", "PC", "US", "US", "San Jose", "Financial technology services"),
+                (7, "SemiFab", "SF", "US", "US", "Hsinchu", "Advanced semiconductor manufacturing"),
+                (8, "EdgeInfra", "EI", "US", "US", "San Francisco", "Infrastructure technology group"),
+                (9, "ManualHealth", "MH", "US", "US", "Boston", "Digital health company"),
+                (10, "EnergyCo", "EN", "US", "US", "Houston", "Energy transition company")
             ],
         )
         connection.executemany(
@@ -89,10 +109,10 @@ def _build_database(path: Path) -> None:
                 (
                     1,
                     1,
-                    "Cloud Infrastructure Software",
-                    "Enterprise Cloud SaaS",
+                    "Cloud ERP Platform",
+                    "Enterprise SaaS",
                     "primary",
-                    "Cloud software and developer tools platform",
+                    "Cloud software and workflow tools for enterprise planning",
                     "2025A",
                     1,
                     "2026-04-20 00:00:00",
@@ -101,10 +121,10 @@ def _build_database(path: Path) -> None:
                 (
                     2,
                     2,
-                    "Network Solutions",
-                    "Carrier Network",
+                    "Workflow Software",
+                    None,
                     "secondary",
-                    "Telecom related solutions",
+                    "Integration tools for enterprise teams",
                     "2025A",
                     1,
                     "2026-04-20 00:00:00",
@@ -113,10 +133,10 @@ def _build_database(path: Path) -> None:
                 (
                     3,
                     3,
-                    "Emerging Ventures",
+                    "Platform Services",
                     None,
                     "other",
-                    "Exploratory innovation initiatives",
+                    "Integrated services for digital ecosystem initiatives",
                     "2025A",
                     1,
                     "2026-04-20 00:00:00",
@@ -125,10 +145,10 @@ def _build_database(path: Path) -> None:
                 (
                     4,
                     4,
-                    "Energy Payments Platform",
-                    None,
+                    "Digital Advertising Marketplace",
+                    "Payment Gateway",
                     "primary",
-                    "Energy and payments business line",
+                    "Adtech platform with merchant acquiring and marketplace monetization",
                     "2025A",
                     1,
                     "2026-04-20 00:00:00",
@@ -146,15 +166,118 @@ def _build_database(path: Path) -> None:
                     "2026-04-20 00:00:00",
                     "2026-04-20 00:00:00",
                 ),
+                (
+                    6,
+                    6,
+                    "Merchant Payment Gateway",
+                    "Digital Wallet",
+                    "primary",
+                    "Payment processing and checkout services for merchants",
+                    "2025A",
+                    1,
+                    "2026-04-20 00:00:00",
+                    "2026-04-20 00:00:00",
+                ),
+                (
+                    7,
+                    7,
+                    "Advanced Foundry Services",
+                    "Wafer Manufacturing",
+                    "primary",
+                    "Semiconductor wafer fabrication and chip production",
+                    "2025A",
+                    1,
+                    "2026-04-20 00:00:00",
+                    "2026-04-20 00:00:00",
+                ),
+                (
+                    8,
+                    8,
+                    "Cloud and AI Infrastructure",
+                    None,
+                    "secondary",
+                    "Integrated services for enterprise customers",
+                    "2025A",
+                    1,
+                    "2026-04-20 00:00:00",
+                    "2026-04-20 00:00:00",
+                ),
+                (
+                    9,
+                    9,
+                    "Clinical Platform",
+                    "Digital Health",
+                    "primary",
+                    "Clinical software for hospitals",
+                    "2025A",
+                    1,
+                    "2026-04-20 00:00:00",
+                    "2026-04-20 00:00:00",
+                ),
+                (
+                    10,
+                    10,
+                    "Energy Storage Systems",
+                    "Battery Platforms",
+                    "primary",
+                    "Battery and charging hardware for commercial fleets",
+                    "2025A",
+                    1,
+                    "2026-04-20 00:00:00",
+                    "2026-04-20 00:00:00",
+                ),
             ],
+        )
+        connection.execute(
+            """
+            INSERT INTO business_segment_classifications (
+                id,
+                business_segment_id,
+                standard_system,
+                level_1,
+                level_2,
+                level_3,
+                level_4,
+                is_primary,
+                mapping_basis,
+                review_status,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                100,
+                9,
+                "GICS",
+                "Health Care",
+                "Health Care Equipment & Services",
+                "Health Care Technology",
+                "Health Care Technology",
+                1,
+                "manual placeholder",
+                "needs_manual_review",
+                "2026-04-20 00:00:00",
+                "2026-04-20 00:00:00",
+            ),
         )
         connection.commit()
         ensure_sqlite_schema(connection)
+        connection.execute(
+            """
+            UPDATE business_segment_classifications
+            SET classifier_type = 'manual',
+                confidence = 1.0,
+                review_reason = 'manual_override',
+                mapping_basis = 'decision=needs_manual_review | rules=manual_override | hits=name[] alias[] description[] company[] peer[] | negatives=[] | depth=level_4 | comment=preserved manual classification'
+            WHERE id = 100
+            """
+        )
+        connection.commit()
     finally:
         connection.close()
 
 
-def test_refresh_adds_missing_columns_and_generates_conservative_statuses(tmp_path: Path):
+def test_refresh_builds_research_style_rule_results_and_preserves_manual_rows(tmp_path: Path):
     database_path = tmp_path / "industry_refresh.db"
     _build_database(database_path)
 
@@ -167,7 +290,7 @@ def test_refresh_adds_missing_columns_and_generates_conservative_statuses(tmp_pa
     try:
         with session_factory() as session:
             summary = refresh_business_segment_classifications(session)
-            llm_payload = classify_business_segment_with_llm(session, segment_id=1)
+            llm_payload = classify_business_segment_with_llm(session, segment_id=4)
 
         connection = sqlite3.connect(database_path)
         connection.row_factory = sqlite3.Row
@@ -187,9 +310,10 @@ def test_refresh_adds_missing_columns_and_generates_conservative_statuses(tmp_pa
                         review_status,
                         classifier_type,
                         confidence,
-                        review_reason
+                        review_reason,
+                        mapping_basis
                     FROM business_segment_classifications
-                    ORDER BY business_segment_id
+                    ORDER BY business_segment_id, id
                     """
                 ).fetchall()
             ]
@@ -202,23 +326,37 @@ def test_refresh_adds_missing_columns_and_generates_conservative_statuses(tmp_pa
     assert "confidence" in columns
     assert "review_reason" in columns
 
-    assert summary.total_segments == 5
-    assert summary.classification_rows == 5
-    assert summary.confirmed_count >= 1
+    assert summary.total_segments == 10
+    assert summary.classification_rows == 10
+    assert summary.confirmed_count >= 3
     assert summary.pending_count >= 1
     assert summary.needs_llm_review_count >= 1
     assert summary.conflicted_count >= 1
     assert summary.unmapped_count >= 1
+    assert summary.needs_manual_review_count == 1
 
-    status_by_segment = {row["business_segment_id"]: row for row in rows}
-    assert status_by_segment[1]["review_status"] == "confirmed"
-    assert status_by_segment[1]["classifier_type"] == "rule_based"
-    assert status_by_segment[2]["review_status"] == "pending"
-    assert status_by_segment[3]["review_status"] == "needs_llm_review"
-    assert status_by_segment[4]["review_status"] == "conflicted"
-    assert status_by_segment[5]["review_status"] == "unmapped"
+    rows_by_segment = {row["business_segment_id"]: row for row in rows}
+    assert rows_by_segment[1]["review_status"] == "confirmed"
+    assert rows_by_segment[2]["review_status"] == "pending"
+    assert rows_by_segment[3]["review_status"] == "needs_llm_review"
+    assert rows_by_segment[4]["review_status"] == "conflicted"
+    assert rows_by_segment[5]["review_status"] == "unmapped"
+    assert rows_by_segment[6]["review_status"] == "confirmed"
+    assert rows_by_segment[7]["review_status"] == "confirmed"
+    assert rows_by_segment[9]["classifier_type"] == "manual"
+    assert rows_by_segment[9]["review_reason"] == "manual_override"
 
-    assert llm_payload.segment_id == 1
+    for row in rows:
+        assert row["mapping_basis"].startswith("decision=")
+        assert " | rules=" in row["mapping_basis"]
+        assert " | hits=" in row["mapping_basis"]
+        assert " | negatives=" in row["mapping_basis"]
+        assert " | depth=" in row["mapping_basis"]
+
+    assert llm_payload.segment_id == 4
     assert llm_payload.status == "placeholder"
     assert llm_payload.current_classification is not None
     assert llm_payload.suggested_classification.classifier_type == "llm_assisted"
+    assert llm_payload.request_context is not None
+    assert "digital advertising marketplace" == llm_payload.request_context.segment_name.lower()
+    assert llm_payload.request_context.rule_candidates

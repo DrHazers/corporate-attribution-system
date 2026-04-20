@@ -240,9 +240,19 @@ class BusinessSegmentClassificationRefreshSummary(BaseModel):
     backup_table: str | None = None
 
 
+class BusinessSegmentLlmRequestContext(BaseModel):
+    segment_name: str
+    segment_alias: str | None = None
+    description: str | None = None
+    company_text: str | None = None
+    peer_text: str | None = None
+    rule_candidates: list[str] = []
+
+
 class BusinessSegmentLlmSuggestionResponse(BaseModel):
     segment_id: int
     status: str
     message: str
     current_classification: BusinessSegmentClassificationRead | None = None
     suggested_classification: BusinessSegmentClassificationSuggestionRead
+    request_context: BusinessSegmentLlmRequestContext | None = None

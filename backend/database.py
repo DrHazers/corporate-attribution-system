@@ -25,6 +25,15 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 _TABLE_COLUMN_DEFINITIONS = {
+    "business_segments": {
+        "segment_alias": "VARCHAR(255)",
+        "currency": "VARCHAR(20)",
+    },
+    "business_segment_classifications": {
+        "classifier_type": "VARCHAR(30)",
+        "confidence": "NUMERIC(5,4)",
+        "review_reason": "VARCHAR(50)",
+    },
     "shareholder_entities": {
         "entity_subtype": "VARCHAR(50) DEFAULT 'unknown'",
         "ultimate_owner_hint": "BOOLEAN NOT NULL DEFAULT 0",
@@ -90,6 +99,18 @@ _TABLE_COLUMN_DEFINITIONS = {
     },
 }
 _INDEX_STATEMENTS = {
+    "business_segments": (
+        "CREATE INDEX IF NOT EXISTS ix_business_segments_company_id "
+        "ON business_segments (company_id)",
+    ),
+    "business_segment_classifications": (
+        "CREATE INDEX IF NOT EXISTS ix_business_segment_classifications_business_segment_id "
+        "ON business_segment_classifications (business_segment_id)",
+        "CREATE INDEX IF NOT EXISTS ix_business_segment_classifications_review_status "
+        "ON business_segment_classifications (review_status)",
+        "CREATE INDEX IF NOT EXISTS ix_business_segment_classifications_classifier_type "
+        "ON business_segment_classifications (classifier_type)",
+    ),
     "shareholder_entities": (
         "CREATE INDEX IF NOT EXISTS ix_shareholder_entities_entity_subtype "
         "ON shareholder_entities (entity_subtype)",
@@ -364,6 +385,68 @@ def _backfill_shareholder_entities(dbapi_connection) -> None:
         cursor.close()
 
 
+def _backfill_business_segment_classifications(dbapi_connection) -> None:
+    if not _sqlite_table_exists(dbapi_connection, "business_segment_classifications"):
+        return
+
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE business_segment_classifications
+            SET review_status = CASE
+                WHEN review_status IS NULL OR TRIM(review_status) = '' THEN 'pending'
+                WHEN LOWER(TRIM(review_status)) IN ('auto', 'manual_confirmed', 'manual_adjusted') THEN 'confirmed'
+                WHEN LOWER(TRIM(review_status)) = 'needs_review' THEN 'needs_manual_review'
+                ELSE LOWER(TRIM(review_status))
+            END
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE business_segment_classifications
+            SET classifier_type = CASE
+                WHEN classifier_type IS NOT NULL AND TRIM(classifier_type) != '' THEN LOWER(TRIM(classifier_type))
+                WHEN review_status = 'confirmed' AND review_reason = 'manual_override' THEN 'manual'
+                ELSE 'rule_based'
+            END
+            WHERE classifier_type IS NULL OR TRIM(classifier_type) = ''
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE business_segment_classifications
+            SET confidence = CASE
+                WHEN confidence IS NOT NULL THEN confidence
+                WHEN review_status = 'confirmed' THEN 0.9
+                WHEN review_status = 'pending' THEN 0.6
+                WHEN review_status = 'needs_llm_review' THEN 0.35
+                WHEN review_status = 'needs_manual_review' THEN 0.4
+                WHEN review_status = 'conflicted' THEN 0.25
+                ELSE 0.0
+            END
+            WHERE confidence IS NULL
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE business_segment_classifications
+            SET review_reason = CASE
+                WHEN review_reason IS NOT NULL AND TRIM(review_reason) != '' THEN review_reason
+                WHEN classifier_type = 'manual' THEN 'manual_override'
+                WHEN review_status = 'needs_llm_review' THEN 'low_confidence'
+                WHEN review_status = 'needs_manual_review' THEN 'manual_override'
+                WHEN review_status = 'conflicted' THEN 'multi_candidate_conflict'
+                WHEN review_status = 'unmapped' THEN 'rule_not_matched'
+                ELSE review_reason
+            END
+            WHERE review_reason IS NULL OR TRIM(review_reason) = ''
+            """
+        )
+    finally:
+        cursor.close()
+
+
 def _backfill_control_relationships(dbapi_connection) -> None:
     if not _sqlite_table_exists(dbapi_connection, "control_relationships"):
         return
@@ -486,6 +569,7 @@ def ensure_sqlite_schema(dbapi_connection) -> None:
 
     _backfill_shareholder_structures(dbapi_connection)
     _backfill_shareholder_entities(dbapi_connection)
+    _backfill_business_segment_classifications(dbapi_connection)
     _backfill_control_relationships(dbapi_connection)
     _backfill_country_attributions(dbapi_connection)
     dbapi_connection.commit()

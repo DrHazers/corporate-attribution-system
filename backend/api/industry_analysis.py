@@ -13,6 +13,10 @@ from backend.analysis.industry_analysis import (
     get_company_industry_analysis_periods,
     get_company_industry_analysis_quality,
 )
+from backend.analysis.industry_classification import (
+    classify_business_segment_with_llm,
+    refresh_business_segment_classifications,
+)
 from backend.crud.business_segment import (
     create_business_segment,
     delete_business_segment,
@@ -36,6 +40,8 @@ from backend.schemas.business_segment import (
 )
 from backend.schemas.business_segment_classification import (
     BusinessSegmentClassificationCreate,
+    BusinessSegmentClassificationRefreshSummary,
+    BusinessSegmentLlmSuggestionResponse,
     BusinessSegmentClassificationRead,
     BusinessSegmentClassificationUpdate,
 )
@@ -326,6 +332,58 @@ def delete_business_segment_classification_endpoint(
         reason=reason,
         operator=operator,
     )
+
+
+@router.post(
+    "/industry-analysis/classifications/refresh",
+    response_model=BusinessSegmentClassificationRefreshSummary,
+    summary="Refresh business segment classifications",
+    description=(
+        "Run the current rule-based v1 classification refresh over all "
+        "business segments and rebuild the formal business_segment_classifications "
+        "result table without generating duplicate rows."
+    ),
+    response_description="Batch refresh summary with status counts.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def refresh_business_segment_classifications_endpoint(
+    db: Session = Depends(get_db),
+):
+    try:
+        return refresh_business_segment_classifications(db)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/business-segments/{segment_id}/classify-with-llm",
+    response_model=BusinessSegmentLlmSuggestionResponse,
+    summary="Prepare a single business segment for LLM-assisted classification",
+    description=(
+        "Placeholder endpoint for the future frontend button that will trigger "
+        "single-segment LLM-assisted classification. Current version returns a "
+        "stable mock contract without writing new classification rows."
+    ),
+    response_description="Placeholder LLM suggestion payload for future model integration.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def classify_business_segment_with_llm_endpoint(
+    segment_id: int,
+    db: Session = Depends(get_db),
+):
+    try:
+        return classify_business_segment_with_llm(
+            db,
+            segment_id=segment_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(

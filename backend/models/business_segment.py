@@ -10,10 +10,12 @@ class BusinessSegment(Base):
     id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
     segment_name = Column(String(255), nullable=False)
+    segment_alias = Column(String(255), nullable=True)
     segment_type = Column(String(30), nullable=False)
     revenue_ratio = Column(Numeric(7, 4), nullable=True)
     profit_ratio = Column(Numeric(7, 4), nullable=True)
     description = Column(Text, nullable=True)
+    currency = Column(String(20), nullable=True)
     source = Column(String(255), nullable=True)
     reporting_period = Column(String(20), nullable=True)
     is_current = Column(

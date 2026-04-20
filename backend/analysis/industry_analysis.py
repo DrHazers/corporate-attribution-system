@@ -35,8 +35,8 @@ from backend.schemas.company import CompanyRead
 
 
 MANUAL_REVIEW_STATUSES = {
-    "manual_confirmed",
-    "manual_adjusted",
+    "confirmed",
+    "needs_manual_review",
 }
 
 
@@ -161,6 +161,9 @@ def build_classification_summary(
         "is_primary": classification.is_primary,
         "mapping_basis": classification.mapping_basis,
         "review_status": classification.review_status,
+        "classifier_type": classification.classifier_type,
+        "confidence": classification.confidence,
+        "review_reason": classification.review_reason,
         "created_at": classification.created_at,
         "updated_at": classification.updated_at,
     }
@@ -203,10 +206,12 @@ def build_business_segment_detail(
         "id": segment.id,
         "company_id": segment.company_id,
         "segment_name": segment.segment_name,
+        "segment_alias": segment.segment_alias,
         "segment_type": segment.segment_type,
         "revenue_ratio": segment.revenue_ratio,
         "profit_ratio": segment.profit_ratio,
         "description": segment.description,
+        "currency": segment.currency,
         "source": segment.source,
         "reporting_period": segment.reporting_period,
         "is_current": segment.is_current,
@@ -224,9 +229,11 @@ def _build_business_segment_headline(
     return {
         "id": segment.id,
         "segment_name": segment.segment_name,
+        "segment_alias": segment.segment_alias,
         "segment_type": segment.segment_type,
         "revenue_ratio": segment.revenue_ratio,
         "profit_ratio": segment.profit_ratio,
+        "currency": segment.currency,
         "reporting_period": segment.reporting_period,
         "is_current": segment.is_current,
         "confidence": segment.confidence,

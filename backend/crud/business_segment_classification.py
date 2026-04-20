@@ -9,11 +9,25 @@ from backend.schemas.business_segment_classification import (
 
 
 def _classification_action_type(
+    *,
     review_status: str | None,
+    classifier_type: str | None,
 ) -> str:
-    if review_status == "manual_confirmed":
+    if classifier_type == "manual":
         return "confirm"
-    if review_status == "manual_adjusted":
+    if review_status == "needs_llm_review":
+        return "flag_for_llm"
+    if review_status == "needs_manual_review":
+        return "flag_for_manual_review"
+    if classifier_type == "llm_assisted":
+        return "llm_classification"
+    if classifier_type == "hybrid":
+        return "hybrid_classification"
+    if review_status == "conflicted":
+        return "classification_conflict"
+    if review_status == "unmapped":
+        return "classification_unmapped"
+    if classifier_type == "manual":
         return "manual_override"
     return "update"
 
@@ -94,7 +108,10 @@ def update_business_segment_classification(
             db,
             target_type="business_segment_classification",
             target_id=classification.id,
-            action_type=_classification_action_type(classification.review_status),
+            action_type=_classification_action_type(
+                review_status=classification.review_status,
+                classifier_type=classification.classifier_type,
+            ),
             old_value=previous_snapshot,
             new_value=serialize_model_snapshot(classification),
             reason=reason,

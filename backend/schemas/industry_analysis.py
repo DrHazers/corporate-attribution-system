@@ -17,9 +17,11 @@ from backend.schemas.company import CompanyRead
 class BusinessSegmentHeadlineRead(BaseModel):
     id: int
     segment_name: str
+    segment_alias: str | None = None
     segment_type: BusinessSegmentType
     revenue_ratio: Decimal | None = None
     profit_ratio: Decimal | None = None
+    currency: str | None = None
     reporting_period: str | None = None
     is_current: bool
     confidence: Decimal | None = None
@@ -38,6 +40,9 @@ class BusinessSegmentClassificationSummaryRead(BaseModel):
     is_primary: bool
     mapping_basis: str | None = None
     review_status: BusinessSegmentClassificationReviewStatus | None = None
+    classifier_type: str | None = None
+    confidence: Decimal | None = None
+    review_reason: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -46,10 +51,12 @@ class BusinessSegmentDetailRead(BaseModel):
     id: int
     company_id: int
     segment_name: str
+    segment_alias: str | None = None
     segment_type: BusinessSegmentType
     revenue_ratio: Decimal | None = None
     profit_ratio: Decimal | None = None
     description: str | None = None
+    currency: str | None = None
     source: str | None = None
     reporting_period: str | None = None
     is_current: bool

@@ -1,4 +1,15 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.orm import relationship
 
 from backend.database import Base
@@ -32,6 +43,9 @@ class BusinessSegmentClassification(Base):
     )
     mapping_basis = Column(Text, nullable=True)
     review_status = Column(String(30), nullable=True, index=True)
+    classifier_type = Column(String(30), nullable=True, index=True)
+    confidence = Column(Numeric(5, 4), nullable=True)
+    review_reason = Column(String(50), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(
         DateTime,

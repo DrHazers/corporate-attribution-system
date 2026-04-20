@@ -47,7 +47,9 @@ class BusinessSegmentBase(BaseModel):
         return normalize_business_segment_type(value)
 
     @field_validator(
+        "segment_alias",
         "description",
+        "currency",
         "source",
         "reporting_period",
         mode="before",
@@ -78,10 +80,12 @@ class BusinessSegmentBase(BaseModel):
 
 class BusinessSegmentCreate(BusinessSegmentBase):
     segment_name: str
+    segment_alias: str | None = None
     segment_type: BusinessSegmentType
     revenue_ratio: Decimal | None = None
     profit_ratio: Decimal | None = None
     description: str | None = None
+    currency: str | None = None
     source: str | None = None
     reporting_period: str | None = None
     is_current: bool = True
@@ -95,10 +99,12 @@ class BusinessSegmentCreate(BusinessSegmentBase):
 
 class BusinessSegmentUpdate(BusinessSegmentBase):
     segment_name: str | None = None
+    segment_alias: str | None = None
     segment_type: BusinessSegmentType | None = None
     revenue_ratio: Decimal | None = None
     profit_ratio: Decimal | None = None
     description: str | None = None
+    currency: str | None = None
     source: str | None = None
     reporting_period: str | None = None
     is_current: bool | None = None
@@ -118,10 +124,12 @@ class BusinessSegmentRead(BaseModel):
     id: int
     company_id: int
     segment_name: str
+    segment_alias: str | None = None
     segment_type: BusinessSegmentType
     revenue_ratio: Decimal | None = None
     profit_ratio: Decimal | None = None
     description: str | None = None
+    currency: str | None = None
     source: str | None = None
     reporting_period: str | None = None
     is_current: bool

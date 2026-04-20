@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -12,7 +12,6 @@ import {
   submitManualControlOverride,
 } from '@/api/analysis'
 import { fetchCompanyRelationshipGraph } from '@/api/company'
-import AutoAnalysisExplainPanel from '@/components/AutoAnalysisExplainPanel.vue'
 import BusinessSegmentsTable from '@/components/BusinessSegmentsTable.vue'
 import CompanyOverviewCard from '@/components/CompanyOverviewCard.vue'
 import ControlRelationsTable from '@/components/ControlRelationsTable.vue'
@@ -261,12 +260,6 @@ const manualSnapshotOnlyActive = computed(() => {
       !override?.actual_controller_entity_id,
   )
 })
-const automaticControlAnalysis = computed(
-  () => summaryData.value?.automatic_control_analysis || {},
-)
-const automaticCountryAttribution = computed(
-  () => summaryData.value?.automatic_country_attribution || {},
-)
 const currentResultSourceLabel = computed(() => {
   const source = summaryData.value?.control_analysis?.result_source || summaryData.value?.country_attribution?.result_source
   if (source === 'manual_confirmed') {
@@ -670,10 +663,10 @@ async function handleRestoreAutomaticResult() {
 <template>
   <div class="page-shell">
     <header class="page-header">
-      <div class="page-kicker">毕业设计演示版 · 企业综合分析</div>
+      <div class="page-kicker">毕业设计演示页 · 企业综合分析</div>
       <h1 class="page-title">企业综合分析展示页</h1>
       <p class="page-subtitle">
-        以现有后端接口为主入口，聚合展示企业基础信息、控制链与国别归属、业务结构与产业标注，以及底部明细表格。
+        基于现有后端接口，串联展示公司总览、控股结构分析与产业分析，并将人工征订入口收束到控股结构模块内部。
       </p>
     </header>
 
@@ -692,7 +685,7 @@ async function handleRestoreAutomaticResult() {
       <el-empty description="请输入 company_id 后查询企业综合分析结果" :image-size="96">
         <template #description>
           <div class="table-text table-text--muted">
-            可直接使用上方推荐演示 ID，例如 128、240、9717。
+            可直接使用上方推荐演示 ID，例如 128、240、717。
           </div>
         </template>
       </el-empty>
@@ -713,410 +706,423 @@ async function handleRestoreAutomaticResult() {
           :control-analysis="controlAnalysis"
           :country-attribution="countryAttribution"
           :industry-analysis="industryAnalysis"
-          :manual-effective="manualEffective"
-          :manual-panel-expanded="manualPanelExpanded"
           :result-source-label="currentResultSourceLabel"
-          @toggle-manual-panel="toggleManualPanel"
         />
 
-        <el-alert
-          v-if="manualSnapshotOnlyActive"
-          class="status-banner"
-          type="info"
-          show-icon
-          :closable="false"
-          title="当前人工征订控制人仅为名称快照，未绑定实体库；图中未作为正式结构节点展示。"
-          :description="`当前人工征订控制人名称：${manualOverride?.actual_controller_name}`"
-        />
-
-        <transition name="manual-panel">
-          <section v-if="manualPanelExpanded" class="manual-control-panel">
-            <div class="manual-control-panel__head">
+        <div class="analysis-report">
+          <section class="analysis-module analysis-module--control">
+            <div class="analysis-module__header">
               <div>
-                <h2>人工征订结果层</h2>
-                <p>
-                  当前生效：<strong>{{ currentResultSourceLabel }}</strong>。
-                  人工征订会写回数据库，自动分析结果保留在下方可查看。
-                </p>
+                <h2>控股结构分析</h2>
+                <p>当前阶段先收束为“摘要与结构图 + 明细表 + 人工征订操作区”，自动分析解释边栏暂时移除。</p>
               </div>
-              <span
-                class="manual-control-panel__status"
-                :class="manualEffective ? 'manual-control-panel__status--manual' : 'manual-control-panel__status--auto'"
-              >
-                {{ manualEffective ? '人工征订/确认生效' : '自动结果生效' }}
-              </span>
             </div>
 
-            <el-alert
-              v-if="manualEffective"
-              class="manual-control-panel__alert"
-              type="warning"
-              show-icon
-              :closable="false"
-              title="当前实际控制结论由人工征订或人工确认确定"
-              :description="`说明：${optionalText(manualOverride?.reason)}；依据：${optionalText(manualOverride?.evidence)}`"
-            />
+            <div class="analysis-module__body">
+              <ControlSummaryCard
+                :company="company"
+                :control-analysis="controlAnalysis"
+                :country-attribution="countryAttribution"
+                :relationship-graph="relationshipGraph || buildEmptyGraphState(resolvedCompanyId)"
+                :graph-error="sectionErrors.graph"
+              />
 
-            <div class="manual-control-panel__grid">
-              <div class="manual-control-panel__form">
-                <el-form label-position="top">
-                  <el-form-item label="实际控制人主体来源" class="manual-subject-source">
-                    <div class="manual-subject-source__control">
-                      <el-radio-group
-                        v-model="manualForm.actual_controller_subject_mode"
-                        class="manual-subject-source__radio-group"
-                      >
-                        <el-radio-button :label="SUBJECT_MODE_EXISTING_ENTITY">
-                          使用现有主体
-                        </el-radio-button>
-                        <el-radio-button :label="SUBJECT_MODE_NEW_ENTITY">
-                          新建主体并入库
-                        </el-radio-button>
-                        <el-radio-button :label="SUBJECT_MODE_NAME_SNAPSHOT">
-                          仅名称快照
-                        </el-radio-button>
-                      </el-radio-group>
-                    </div>
-                    <p class="manual-subject-source__help">
-                      仅绑定 entity_id 的主体会进入正式图结构和 Path Builder。
-                    </p>
-                  </el-form-item>
+              <ControlRelationsTable
+                :company-id="resolvedCompanyId"
+                :relationships="controlRelationships"
+                :loading="loading"
+                :control-analysis="controlAnalysis"
+                :country-attribution="countryAttribution"
+                :company="company"
+                @manual-judgment-change="loadCompanyData(resolvedCompanyId)"
+              />
 
-                  <template v-if="isExistingEntityMode">
-                    <el-form-item label="选择已有主体">
-                      <el-select
-                        v-model="manualForm.actual_controller_entity_id"
-                        filterable
-                        remote
-                        reserve-keyword
-                        clearable
-                        :remote-method="searchShareholderEntityOptions"
-                        :loading="shareholderEntityLoading"
-                        placeholder="输入主体名称或 entity_id 搜索"
-                        @change="syncSelectedExistingEntity"
-                      >
-                        <el-option
-                          v-for="entity in shareholderEntityOptions"
-                          :key="entity.id"
-                          :label="entityOptionLabel(entity)"
-                          :value="String(entity.id)"
-                        />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="实际控制人 entity_id">
-                      <el-input
-                        v-model="manualForm.actual_controller_entity_id"
-                        placeholder="也可直接填写 entity_id；仅征订国别时可留空"
-                        clearable
-                      />
-                    </el-form-item>
-                    <el-form-item label="实际控制人名称快照（可选）">
-                      <el-input
-                        v-model="manualForm.actual_controller_name"
-                        placeholder="未填时后端按 entity_id 对应主体名称补全"
-                        clearable
-                      />
-                    </el-form-item>
-                  </template>
+              <section class="manual-entry-card">
+                <div class="manual-entry-card__head">
+                  <div>
+                    <h3>人工征订结果层</h3>
+                    <p>当前只保留为纯操作区，用于征订控制主体、控制国别与控制路径，不再承担自动分析解释职责。</p>
+                  </div>
+                  <div class="manual-entry-card__actions">
+                    <span
+                      class="manual-control-panel__status"
+                      :class="manualEffective ? 'manual-control-panel__status--manual' : 'manual-control-panel__status--auto'"
+                    >
+                      {{ manualEffective ? '人工征订/确认生效' : '自动结果生效' }}
+                    </span>
+                    <el-button size="small" plain @click="toggleManualPanel">
+                      {{ manualPanelExpanded ? '收起人工征订' : '展开人工征订' }}
+                    </el-button>
+                  </div>
+                </div>
 
-                  <template v-else-if="isNewEntityMode">
-                    <el-form-item label="新建主体名称">
-                      <el-input
-                        v-model="manualForm.new_actual_controller_name"
-                        placeholder="保存时先写入 shareholder_entities，再绑定为实际控制人"
-                        clearable
-                      />
-                    </el-form-item>
-                    <div class="manual-control-panel__inline-fields">
-                      <el-form-item label="主体类型">
-                        <el-select v-model="manualForm.new_actual_controller_type" placeholder="主体类型">
-                          <el-option label="公司主体" value="company" />
-                          <el-option label="自然人" value="person" />
-                          <el-option label="机构投资者" value="institution" />
-                          <el-option label="基金 / 公众持股" value="fund" />
-                          <el-option label="政府 / 国资主体" value="government" />
-                          <el-option label="其他主体" value="other" />
-                        </el-select>
-                      </el-form-item>
-                      <el-form-item label="国家/地区（可选）">
-                        <el-input
-                          v-model="manualForm.new_actual_controller_country"
-                          placeholder="例如 China、United States"
-                          clearable
-                        />
-                      </el-form-item>
-                    </div>
-                    <el-form-item label="新建主体备注（可选）">
-                      <el-input
-                        v-model="manualForm.new_actual_controller_notes"
-                        type="textarea"
-                        :rows="2"
-                        placeholder="例如：由人工征订创建，用于绑定控制结论"
-                      />
-                    </el-form-item>
-                  </template>
+                <div class="manual-entry-card__summary">
+                  当前生效：<strong>{{ currentResultSourceLabel }}</strong>。
+                </div>
 
-                  <template v-else>
-                    <el-form-item label="实际控制人名称快照">
-                      <el-input
-                        v-model="manualForm.actual_controller_name"
-                        placeholder="仅记录名称，不创建实体、不绑定 entity_id"
-                        clearable
-                      />
-                      <span class="manual-control-panel__field-help">
-                        仅名称快照不会写入 shareholder_entities，也不会作为正式结构节点进入图或路径。
-                      </span>
-                    </el-form-item>
-                  </template>
-                  <el-form-item label="实际控制国别">
-                    <el-input
-                      v-model="manualForm.actual_control_country"
-                      placeholder="可单独征订国别"
-                      clearable
-                    />
-                  </el-form-item>
-                  <el-form-item label="征订说明">
-                    <el-input
-                      v-model="manualForm.reason"
-                      type="textarea"
-                      :rows="2"
-                      placeholder="例如：根据研究材料确认最终控制人为该主体"
-                    />
-                  </el-form-item>
-                  <el-form-item label="征订依据">
-                    <el-input
-                      v-model="manualForm.evidence"
-                      type="textarea"
-                      :rows="2"
-                      placeholder="例如：年报、监管披露、人工核验记录"
-                    />
-                  </el-form-item>
+                <el-alert
+                  v-if="manualSnapshotOnlyActive"
+                  class="manual-control-panel__alert"
+                  type="info"
+                  show-icon
+                  :closable="false"
+                  title="当前人工征订控制人仅为名称快照，未绑定实体库；图中未作为正式结构节点展示。"
+                  :description="`当前人工征订控制人名称：${manualOverride?.actual_controller_name}`"
+                />
 
-                  <section class="manual-path-builder">
-                    <div class="manual-path-builder__head">
-                      <div>
-                        <h3>控制路径 Path Builder</h3>
-                        <p>起点必须是已绑定或即将新建入库的正式主体，终点固定为当前目标公司。</p>
-                      </div>
-                      <el-button
-                        size="small"
-                        type="primary"
-                        plain
-                        :disabled="!manualCanEditPaths"
-                        @click="addManualPath"
-                      >
-                        添加路径
-                      </el-button>
-                    </div>
+                <el-alert
+                  v-if="manualEffective"
+                  class="manual-control-panel__alert"
+                  type="warning"
+                  show-icon
+                  :closable="false"
+                  title="当前实际控制结论由人工征订或人工确认确定"
+                  :description="`说明：${optionalText(manualOverride?.reason)}；依据：${optionalText(manualOverride?.evidence)}`"
+                />
 
-                    <el-alert
-                      v-if="!manualHasControllerForPaths"
-                      class="manual-path-builder__alert"
-                      type="info"
-                      show-icon
-                      :closable="false"
-                      :title="manualPathBuilderBlockedTitle"
-                    />
+                <transition name="manual-panel">
+                  <section v-if="manualPanelExpanded" class="manual-control-panel">
+                    <div class="manual-control-panel__form">
+                      <el-form label-position="top">
+                        <el-form-item label="实际控制人主体来源" class="manual-subject-source">
+                          <div class="manual-subject-source__control">
+                            <el-radio-group
+                              v-model="manualForm.actual_controller_subject_mode"
+                              class="manual-subject-source__radio-group"
+                            >
+                              <el-radio-button :label="SUBJECT_MODE_EXISTING_ENTITY">
+                                使用现有主体
+                              </el-radio-button>
+                              <el-radio-button :label="SUBJECT_MODE_NEW_ENTITY">
+                                新建主体并入库
+                              </el-radio-button>
+                              <el-radio-button :label="SUBJECT_MODE_NAME_SNAPSHOT">
+                                仅名称快照
+                              </el-radio-button>
+                            </el-radio-group>
+                          </div>
+                          <p class="manual-subject-source__help">
+                            仅绑定 entity_id 的主体会进入正式结构图和 Path Builder。
+                          </p>
+                        </el-form-item>
 
-                    <div class="manual-path-builder__stats">
-                      <div>
-                        <span>自动摘要</span>
-                        <strong>{{ manualGeneratedPathSummary || '未生成正式路径' }}</strong>
-                      </div>
-                      <div>
-                        <span>路径数量</span>
-                        <strong>{{ manualGeneratedPathCount }} 条</strong>
-                      </div>
-                      <div>
-                        <span>主路径链路深度</span>
-                        <strong>{{ manualGeneratedPathDepth ?? '—' }}</strong>
-                      </div>
-                    </div>
-
-                    <div class="manual-path-builder__list">
-                      <div
-                        v-for="(path, pathIndex) in manualForm.manual_paths"
-                        :key="path.key"
-                        class="manual-path-row"
-                      >
-                        <div class="manual-path-row__head">
-                          <strong>路径 {{ pathIndex + 1 }}{{ pathIndex === 0 ? ' · 主路径' : '' }}</strong>
-                          <el-button
-                            v-if="manualForm.manual_paths.length > 1"
-                            size="small"
-                            link
-                            type="danger"
-                            :disabled="!manualCanEditPaths"
-                            @click="removeManualPath(pathIndex)"
-                          >
-                            删除路径
-                          </el-button>
-                        </div>
-                        <div class="manual-path-row__nodes">
-                          <span class="manual-path-node manual-path-node--fixed">
-                            {{ manualControllerLabel }}
-                          </span>
-                          <span class="manual-path-arrow">→</span>
-                          <template
-                            v-for="(node, nodeIndex) in path.intermediate_nodes"
-                            :key="node.key"
-                          >
-                            <div class="manual-path-node manual-path-node--editable">
-                              <el-input
-                                v-model="node.name"
-                                size="small"
-                                placeholder="中间节点名称"
-                                :disabled="!manualCanEditPaths"
-                                clearable
+                        <template v-if="isExistingEntityMode">
+                          <el-form-item label="选择现有主体">
+                            <el-select
+                              v-model="manualForm.actual_controller_entity_id"
+                              filterable
+                              remote
+                              reserve-keyword
+                              clearable
+                              :remote-method="searchShareholderEntityOptions"
+                              :loading="shareholderEntityLoading"
+                              placeholder="输入主体名称或 entity_id 搜索"
+                              @change="syncSelectedExistingEntity"
+                            >
+                              <el-option
+                                v-for="entity in shareholderEntityOptions"
+                                :key="entity.id"
+                                :label="entityOptionLabel(entity)"
+                                :value="String(entity.id)"
                               />
-                              <el-button
-                                size="small"
-                                link
-                                type="danger"
-                                :disabled="!manualCanEditPaths"
-                                @click="removeManualIntermediateNode(path, nodeIndex)"
-                              >
-                                删除
-                              </el-button>
-                            </div>
-                            <span class="manual-path-arrow">→</span>
-                          </template>
-                          <span class="manual-path-node manual-path-node--fixed">
-                            {{ manualTargetCompanyName }}
-                          </span>
-                        </div>
-                        <div class="manual-path-row__ratio">
-                          <el-form-item label="路径支持比例（可选）">
+                            </el-select>
+                          </el-form-item>
+                          <el-form-item label="实际控制人 entity_id">
                             <el-input
-                              v-model="path.path_ratio"
-                              size="small"
-                              placeholder="整条路径口径，例如 63.5 或 63.5%"
-                              :disabled="!manualCanEditPaths"
+                              v-model="manualForm.actual_controller_entity_id"
+                              placeholder="也可直接填写 entity_id；仅征订国别时可留空"
                               clearable
                             />
                           </el-form-item>
-                          <span>
-                            表示该路径对控制结论的支持强度，仅针对本路径。可留空；留空时仅表示结构支持关系。
-                          </span>
-                        </div>
-                        <div class="manual-path-row__actions">
-                          <el-button
-                            size="small"
-                            plain
-                            :disabled="!manualCanEditPaths"
-                            @click="addManualIntermediateNode(path)"
-                          >
-                            添加中间节点
-                          </el-button>
-                        </div>
+                          <el-form-item label="实际控制人名称快照（可选）">
+                            <el-input
+                              v-model="manualForm.actual_controller_name"
+                              placeholder="未填写时后端按 entity_id 对应主体名称补全"
+                              clearable
+                            />
+                          </el-form-item>
+                        </template>
+
+                        <template v-else-if="isNewEntityMode">
+                          <el-form-item label="新建主体名称">
+                            <el-input
+                              v-model="manualForm.new_actual_controller_name"
+                              placeholder="保存时先写入 shareholder_entities，再绑定为实际控制人"
+                              clearable
+                            />
+                          </el-form-item>
+                          <div class="manual-control-panel__inline-fields">
+                            <el-form-item label="主体类型">
+                              <el-select v-model="manualForm.new_actual_controller_type" placeholder="主体类型">
+                                <el-option label="公司主体" value="company" />
+                                <el-option label="自然人" value="person" />
+                                <el-option label="机构投资者" value="institution" />
+                                <el-option label="基金 / 公众持股" value="fund" />
+                                <el-option label="政府 / 国资主体" value="government" />
+                                <el-option label="其他主体" value="other" />
+                              </el-select>
+                            </el-form-item>
+                            <el-form-item label="国家 / 地区（可选）">
+                              <el-input
+                                v-model="manualForm.new_actual_controller_country"
+                                placeholder="例如 China、United States"
+                                clearable
+                              />
+                            </el-form-item>
+                          </div>
+                          <el-form-item label="新建主体备注（可选）">
+                            <el-input
+                              v-model="manualForm.new_actual_controller_notes"
+                              type="textarea"
+                              :rows="2"
+                              placeholder="例如：由人工征订创建，用于绑定控制结论"
+                            />
+                          </el-form-item>
+                        </template>
+
+                        <template v-else>
+                          <el-form-item label="实际控制人名称快照">
+                            <el-input
+                              v-model="manualForm.actual_controller_name"
+                              placeholder="仅记录名称，不创建实体，不绑定 entity_id"
+                              clearable
+                            />
+                            <span class="manual-control-panel__field-help">
+                              仅名称快照不会写入 shareholder_entities，也不会作为正式结构节点进入图或路径。
+                            </span>
+                          </el-form-item>
+                        </template>
+
+                        <el-form-item label="实际控制国别">
+                          <el-input
+                            v-model="manualForm.actual_control_country"
+                            placeholder="可单独征订国别"
+                            clearable
+                          />
+                        </el-form-item>
+                        <el-form-item label="征订说明">
+                          <el-input
+                            v-model="manualForm.reason"
+                            type="textarea"
+                            :rows="2"
+                            placeholder="例如：根据研究资料确认最终控制人为该主体"
+                          />
+                        </el-form-item>
+                        <el-form-item label="征订依据">
+                          <el-input
+                            v-model="manualForm.evidence"
+                            type="textarea"
+                            :rows="2"
+                            placeholder="例如：年报、监管披露、人工核验记录"
+                          />
+                        </el-form-item>
+
+                        <section class="manual-path-builder">
+                          <div class="manual-path-builder__head">
+                            <div>
+                              <h3>控制路径 Path Builder</h3>
+                              <p>起点必须是已绑定或即将新建入库的正式主体，终点固定为当前目标公司。</p>
+                            </div>
+                            <el-button
+                              size="small"
+                              type="primary"
+                              plain
+                              :disabled="!manualCanEditPaths"
+                              @click="addManualPath"
+                            >
+                              添加路径
+                            </el-button>
+                          </div>
+
+                          <el-alert
+                            v-if="!manualHasControllerForPaths"
+                            class="manual-path-builder__alert"
+                            type="info"
+                            show-icon
+                            :closable="false"
+                            :title="manualPathBuilderBlockedTitle"
+                          />
+
+                          <div class="manual-path-builder__stats">
+                            <div>
+                              <span>自动摘要</span>
+                              <strong>{{ manualGeneratedPathSummary || '未生成正式路径' }}</strong>
+                            </div>
+                            <div>
+                              <span>路径数量</span>
+                              <strong>{{ manualGeneratedPathCount }} 条</strong>
+                            </div>
+                            <div>
+                              <span>主路径链路深度</span>
+                              <strong>{{ manualGeneratedPathDepth ?? '—' }}</strong>
+                            </div>
+                          </div>
+
+                          <div class="manual-path-builder__list">
+                            <div
+                              v-for="(path, pathIndex) in manualForm.manual_paths"
+                              :key="path.key"
+                              class="manual-path-row"
+                            >
+                              <div class="manual-path-row__head">
+                                <strong>路径 {{ pathIndex + 1 }}{{ pathIndex === 0 ? ' · 主路径' : '' }}</strong>
+                                <el-button
+                                  v-if="manualForm.manual_paths.length > 1"
+                                  size="small"
+                                  link
+                                  type="danger"
+                                  :disabled="!manualCanEditPaths"
+                                  @click="removeManualPath(pathIndex)"
+                                >
+                                  删除路径
+                                </el-button>
+                              </div>
+                              <div class="manual-path-row__nodes">
+                                <span class="manual-path-node manual-path-node--fixed">
+                                  {{ manualControllerLabel }}
+                                </span>
+                                <span class="manual-path-arrow">→</span>
+                                <template
+                                  v-for="(node, nodeIndex) in path.intermediate_nodes"
+                                  :key="node.key"
+                                >
+                                  <div class="manual-path-node manual-path-node--editable">
+                                    <el-input
+                                      v-model="node.name"
+                                      size="small"
+                                      placeholder="中间节点名称"
+                                      :disabled="!manualCanEditPaths"
+                                      clearable
+                                    />
+                                    <el-button
+                                      size="small"
+                                      link
+                                      type="danger"
+                                      :disabled="!manualCanEditPaths"
+                                      @click="removeManualIntermediateNode(path, nodeIndex)"
+                                    >
+                                      删除
+                                    </el-button>
+                                  </div>
+                                  <span class="manual-path-arrow">→</span>
+                                </template>
+                                <span class="manual-path-node manual-path-node--fixed">
+                                  {{ manualTargetCompanyName }}
+                                </span>
+                              </div>
+                              <div class="manual-path-row__ratio">
+                                <el-form-item label="路径支持比例（可选）">
+                                  <el-input
+                                    v-model="path.path_ratio"
+                                    size="small"
+                                    placeholder="例如 63.5 或 63.5%"
+                                    :disabled="!manualCanEditPaths"
+                                    clearable
+                                  />
+                                </el-form-item>
+                                <span>表示该路径对控制结论的支持强度，仅针对本路径，可留空。</span>
+                              </div>
+                              <div class="manual-path-row__actions">
+                                <el-button
+                                  size="small"
+                                  plain
+                                  :disabled="!manualCanEditPaths"
+                                  @click="addManualIntermediateNode(path)"
+                                >
+                                  添加中间节点
+                                </el-button>
+                              </div>
+                            </div>
+                          </div>
+                        </section>
+
+                        <el-collapse class="manual-control-panel__optional">
+                          <el-collapse-item title="可选补充展示信息" name="manual-details">
+                            <div class="manual-control-panel__optional-grid">
+                              <el-form-item label="最终展示控制强度（可选）">
+                                <el-input
+                                  v-model="manualForm.manual_control_ratio"
+                                  placeholder="例如 63.5 或 63.5%"
+                                  clearable
+                                />
+                                <span class="manual-control-panel__field-help">
+                                  用于控制结论明细表展示的最终控制强度。若未填写，将优先使用主路径比例。
+                                  <template v-if="manualForm.manual_paths.length === 1">
+                                    当前仅一条路径，默认使用该路径比例作为展示值。
+                                  </template>
+                                </span>
+                              </el-form-item>
+                              <el-form-item label="控制强度标签">
+                                <el-input
+                                  v-model="manualForm.manual_control_strength_label"
+                                  placeholder="例如：人工认定强控制"
+                                  clearable
+                                />
+                              </el-form-item>
+                              <el-form-item label="认定类型">
+                                <el-input
+                                  v-model="manualForm.manual_control_type"
+                                  placeholder="例如：股权控制（人工征订）"
+                                  clearable
+                                />
+                              </el-form-item>
+                              <el-form-item label="判定原因">
+                                <el-input
+                                  v-model="manualForm.manual_decision_reason"
+                                  type="textarea"
+                                  :rows="2"
+                                  placeholder="例如：根据研究资料人工确认最终控制人为该主体"
+                                />
+                              </el-form-item>
+                            </div>
+                          </el-collapse-item>
+                        </el-collapse>
+                      </el-form>
+
+                      <div class="manual-control-panel__actions">
+                        <el-button
+                          type="primary"
+                          :loading="manualSaving"
+                          @click="handleSubmitManualOverride"
+                        >
+                          写入人工征订
+                        </el-button>
+                        <el-button
+                          :loading="manualSaving"
+                          @click="handleConfirmAutomaticResult"
+                        >
+                          确认自动结果
+                        </el-button>
+                        <el-button
+                          v-if="manualEffective"
+                          type="warning"
+                          plain
+                          :loading="manualSaving"
+                          @click="handleRestoreAutomaticResult"
+                        >
+                          恢复自动结果
+                        </el-button>
                       </div>
                     </div>
                   </section>
-
-                  <el-collapse class="manual-control-panel__optional">
-                    <el-collapse-item title="可选补充展示信息" name="manual-details">
-                      <div class="manual-control-panel__optional-grid">
-                        <el-form-item label="最终展示控制强度（可选）">
-                          <el-input
-                            v-model="manualForm.manual_control_ratio"
-                            placeholder="例如：63.5 或 63.5%"
-                            clearable
-                          />
-                          <span class="manual-control-panel__field-help">
-                            用于控制结论明细表展示的最终控制强度。若未填写，将优先使用主路径比例。
-                            <template v-if="manualForm.manual_paths.length === 1">
-                              当前仅一条路径，默认使用该路径比例作为展示值。
-                            </template>
-                          </span>
-                        </el-form-item>
-                        <el-form-item label="控制强度标签">
-                          <el-input
-                            v-model="manualForm.manual_control_strength_label"
-                            placeholder="例如：人工认定强控制"
-                            clearable
-                          />
-                        </el-form-item>
-                        <el-form-item label="认定类型">
-                          <el-input
-                            v-model="manualForm.manual_control_type"
-                            placeholder="例如：股权控制（人工征订）"
-                            clearable
-                          />
-                        </el-form-item>
-                        <el-form-item label="判定原因">
-                          <el-input
-                            v-model="manualForm.manual_decision_reason"
-                            type="textarea"
-                            :rows="2"
-                            placeholder="例如：根据研究资料人工确认最终控制人为该主体"
-                          />
-                        </el-form-item>
-                      </div>
-                    </el-collapse-item>
-                  </el-collapse>
-                </el-form>
-                <div class="manual-control-panel__actions">
-                  <el-button
-                    type="primary"
-                    :loading="manualSaving"
-                    @click="handleSubmitManualOverride"
-                  >
-                    写入人工征订
-                  </el-button>
-                  <el-button
-                    :loading="manualSaving"
-                    @click="handleConfirmAutomaticResult"
-                  >
-                    确认自动结果
-                  </el-button>
-                  <el-button
-                    v-if="manualEffective"
-                    type="warning"
-                    plain
-                    :loading="manualSaving"
-                    @click="handleRestoreAutomaticResult"
-                  >
-                    恢复自动结果
-                  </el-button>
-                </div>
-              </div>
-
-              <div class="manual-control-panel__auto">
-                <AutoAnalysisExplainPanel
-                  :company="company"
-                  :auto-control-analysis="automaticControlAnalysis"
-                  :auto-country-attribution="automaticCountryAttribution"
-                  :current-control-analysis="controlAnalysis"
-                  :current-country-attribution="countryAttribution"
-                  :manual-override="manualOverride"
-                />
-              </div>
+                </transition>
+              </section>
             </div>
           </section>
-        </transition>
 
-        <div class="analysis-report">
-          <ControlSummaryCard
-            :company="company"
-            :control-analysis="controlAnalysis"
-            :country-attribution="countryAttribution"
-            :relationship-graph="relationshipGraph || buildEmptyGraphState(resolvedCompanyId)"
-            :graph-error="sectionErrors.graph"
-          />
+          <section class="analysis-module analysis-module--industry">
+            <div class="analysis-module__header">
+              <div>
+                <h2>产业分析</h2>
+                <p>先把产业研究部分独立成模块容器，集中展示业务结构、产业标签、质量提示和业务线明细。</p>
+              </div>
+            </div>
 
-          <ControlRelationsTable
-            :company-id="resolvedCompanyId"
-            :relationships="controlRelationships"
-            :loading="loading"
-            :control-analysis="controlAnalysis"
-            :country-attribution="countryAttribution"
-            :company="company"
-            @manual-judgment-change="loadCompanyData(resolvedCompanyId)"
-          />
-
-          <IndustrySummaryCard :industry-analysis="industryAnalysis" />
-
-          <BusinessSegmentsTable :segments="businessSegments" :loading="loading" />
+            <div class="analysis-module__body">
+              <IndustrySummaryCard :industry-analysis="industryAnalysis" />
+              <BusinessSegmentsTable :segments="businessSegments" :loading="loading" />
+            </div>
+          </section>
         </div>
       </div>
     </template>
@@ -1125,7 +1131,7 @@ async function handleRestoreAutomaticResult() {
       <el-empty description="未获取到企业分析结果" :image-size="96">
         <template #description>
           <div class="table-text table-text--muted">
-            请检查 company_id 是否有效，以及后端服务是否已启动。
+            请检查 company_id 是否有效，以及后端服务是否已经启动。
           </div>
         </template>
       </el-empty>
@@ -1134,14 +1140,108 @@ async function handleRestoreAutomaticResult() {
 </template>
 
 <style scoped>
+.analysis-report {
+  display: grid;
+  gap: 36px;
+  margin-top: 24px;
+}
+
+.analysis-module {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border-radius: 18px;
+  border: 1px solid rgba(31, 59, 87, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 34px rgba(17, 37, 58, 0.05);
+}
+
+.analysis-module--control {
+  background: linear-gradient(180deg, rgba(248, 251, 254, 0.96), rgba(255, 255, 255, 0.94));
+  border-color: rgba(48, 95, 131, 0.14);
+}
+
+.analysis-module--industry {
+  background: linear-gradient(180deg, rgba(252, 250, 246, 0.96), rgba(255, 255, 255, 0.94));
+  border-color: rgba(144, 116, 77, 0.14);
+}
+
+.analysis-module__header {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(31, 59, 87, 0.08);
+}
+
+.analysis-module__header h2 {
+  margin: 0;
+  color: var(--brand-ink);
+  font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
+}
+
+.analysis-module__header p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.analysis-module__body {
+  display: grid;
+  gap: 18px;
+}
+
+.manual-entry-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(31, 59, 87, 0.1);
+  border-radius: 14px;
+  background: rgba(248, 251, 253, 0.9);
+}
+
+.manual-entry-card__head {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.manual-entry-card__head h3 {
+  margin: 0;
+  color: var(--brand-ink);
+  font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
+}
+
+.manual-entry-card__head p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+.manual-entry-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.manual-entry-card__summary {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(48, 95, 131, 0.12);
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
 .manual-control-panel {
   display: grid;
   gap: 14px;
-  margin: 18px 0;
   padding: 18px;
   border: 1px solid rgba(31, 59, 87, 0.1);
-  border-radius: 8px;
-  background: rgba(248, 251, 253, 0.94);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .manual-panel-enter-active,
@@ -1155,25 +1255,6 @@ async function handleRestoreAutomaticResult() {
 .manual-panel-leave-to {
   opacity: 0;
   transform: translateY(-6px);
-}
-
-.manual-control-panel__head {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-  justify-content: space-between;
-}
-
-.manual-control-panel__head h2 {
-  margin: 0;
-  color: var(--brand-ink);
-  font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
-}
-
-.manual-control-panel__head p {
-  margin: 6px 0 0;
-  color: var(--text-secondary);
-  line-height: 1.65;
 }
 
 .manual-control-panel__status {
@@ -1201,12 +1282,6 @@ async function handleRestoreAutomaticResult() {
 
 .manual-control-panel__alert {
   margin: 0;
-}
-
-.manual-control-panel__grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
-  gap: 18px;
 }
 
 .manual-control-panel__form {
@@ -1440,26 +1515,17 @@ async function handleRestoreAutomaticResult() {
   gap: 10px;
 }
 
-.manual-control-panel__auto {
-  display: grid;
-  align-content: start;
-  min-width: 0;
-  padding: 0;
-  border-radius: 8px;
-}
-
 @media (max-width: 980px) {
-  .manual-control-panel__head,
-  .manual-control-panel__grid {
-    grid-template-columns: 1fr;
-  }
-
-  .manual-control-panel__head {
+  .manual-entry-card__head {
     display: grid;
   }
 }
 
 @media (max-width: 560px) {
+  .analysis-module {
+    padding: 16px;
+  }
+
   .manual-control-panel__inline-fields,
   .manual-path-builder__stats {
     grid-template-columns: 1fr;
@@ -1477,6 +1543,5 @@ async function handleRestoreAutomaticResult() {
   .manual-path-row__ratio {
     grid-template-columns: 1fr;
   }
-
 }
 </style>

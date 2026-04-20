@@ -18,25 +18,16 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
-  manualEffective: {
-    type: Boolean,
-    default: false,
-  },
-  manualPanelExpanded: {
-    type: Boolean,
-    default: false,
-  },
   resultSourceLabel: {
     type: String,
     default: '自动分析结果',
   },
 })
 
-const emit = defineEmits(['toggle-manual-panel'])
-
 const displayController = computed(
   () => props.controlAnalysis?.display_controller || props.controlAnalysis?.actual_controller || null,
 )
+
 const controllerDisplayText = computed(() => {
   const name = displayController.value?.controller_name
   if (!name) {
@@ -46,22 +37,20 @@ const controllerDisplayText = computed(() => {
     ? `重点控制候选：${name}`
     : name
 })
+
 const actualControlCountry = computed(
   () => props.countryAttribution?.actual_control_country || '未识别',
 )
+
 const primaryIndustry = computed(
   () => props.industryAnalysis?.primary_industries?.[0] || '未识别',
 )
+
 const businessSegmentCount = computed(
   () => props.industryAnalysis?.business_segment_count ?? 0,
 )
+
 const warnings = computed(() => props.industryAnalysis?.quality_warnings || [])
-const manualButtonLabel = computed(() => {
-  if (props.manualPanelExpanded) {
-    return '收起人工征订'
-  }
-  return props.manualEffective ? '查看/校正' : '人工征订/校正'
-})
 
 const overviewItems = computed(() => [
   { label: '公司名称', value: props.company?.name || '暂无' },
@@ -83,17 +72,7 @@ const overviewItems = computed(() => [
       <div class="section-heading">
         <div>
           <h2>公司总览</h2>
-          <p>聚合展示公司基础信息、控制结果与当前产业分析摘要。</p>
-        </div>
-        <div class="overview-manual-entry">
-          <el-button
-            class="overview-manual-entry__button"
-            size="small"
-            plain
-            @click="emit('toggle-manual-panel')"
-          >
-            {{ manualButtonLabel }}
-          </el-button>
+          <p>聚合展示公司基础信息、当前控制结论与产业分析摘要，作为全局阅读入口。</p>
         </div>
       </div>
     </template>
@@ -122,18 +101,6 @@ const overviewItems = computed(() => [
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
-}
-
-.overview-manual-entry {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.overview-manual-entry__button {
-  border-radius: 8px;
 }
 
 .overview-grid__item {
@@ -177,10 +144,6 @@ const overviewItems = computed(() => [
 @media (max-width: 900px) {
   .overview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .overview-manual-entry {
-    justify-content: flex-start;
   }
 }
 

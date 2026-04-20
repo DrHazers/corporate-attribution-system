@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { computed } from 'vue'
 
 import ControlStructureDiagram from '@/components/ControlStructureDiagram.vue'
@@ -804,7 +804,7 @@ const explanationItems = computed(() => [
       <div class="section-heading">
         <div>
           <div class="control-summary-title-row">
-            <h2>控制链与国别归属</h2>
+            <h3>控制链与国别归属</h3>
             <span v-if="manualEffective" class="manual-source-badge">
               {{ manualSourceLabel || '人工征订' }}
             </span>
@@ -1119,3 +1119,5 @@ const explanationItems = computed(() => [
   }
 }
 </style>
+
+

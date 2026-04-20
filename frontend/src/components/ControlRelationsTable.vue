@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
@@ -1797,7 +1797,7 @@ function rowClassName({ row }) {
     <template #header>
       <div class="section-heading">
         <div>
-          <h2>控制结论明细表</h2>
+          <h3>控制结论明细表</h3>
           <p>展示谁被采纳、谁被排除，以及候选主体、结构信号和控制路径的判定依据。</p>
         </div>
       </div>
@@ -2572,3 +2572,5 @@ function rowClassName({ row }) {
   font-weight: 700;
 }
 </style>
+
+

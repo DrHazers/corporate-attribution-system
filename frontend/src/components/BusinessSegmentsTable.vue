@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 const props = defineProps({
   segments: {
     type: Array,
@@ -55,7 +55,7 @@ function segmentTagType(segmentType) {
     <template #header>
       <div class="section-heading">
         <div>
-          <h2>业务线与产业分类明细表</h2>
+          <h3>业务线与产业分类明细表</h3>
           <p>展示当前选中报告期下的业务线、比例信息、分类标签与审核状态。</p>
         </div>
       </div>
@@ -137,3 +137,5 @@ function segmentTagType(segmentType) {
   line-height: 1.35;
 }
 </style>
+
+

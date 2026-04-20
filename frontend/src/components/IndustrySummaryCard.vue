@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { computed } from 'vue'
 
 const props = defineProps({
@@ -46,7 +46,7 @@ const metrics = computed(() => [
     <template #header>
       <div class="section-heading">
         <div>
-          <h2>业务结构与产业标注</h2>
+          <h3>业务结构与产业标注</h3>
           <p>聚合展示产业摘要、主营业务、新兴业务与全部产业标签。</p>
         </div>
       </div>
@@ -225,3 +225,5 @@ const metrics = computed(() => [
   }
 }
 </style>
+
+

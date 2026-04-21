@@ -57,20 +57,20 @@ function renderChart() {
         `
       },
     },
-    legend: {
-      type: 'scroll',
-      orient: 'horizontal',
-      left: 'center',
-      bottom: 6,
-      itemWidth: 10,
-      itemHeight: 10,
-      itemGap: 14,
-      textStyle: {
-        color: '#4b5c70',
-        fontSize: 11,
-        lineHeight: 16,
+      legend: {
+        type: 'scroll',
+        orient: 'horizontal',
+        left: 'center',
+        bottom: 6,
+        itemWidth: 10,
+        itemHeight: 10,
+        itemGap: 12,
+        textStyle: {
+          color: '#4b5c70',
+          fontSize: 10,
+          lineHeight: 14,
+        },
       },
-    },
     series: [
       {
         name: props.metricLabel,
@@ -86,8 +86,8 @@ function renderChart() {
         },
         label: {
           color: '#314255',
-          fontSize: 11,
-          lineHeight: 16,
+          fontSize: 10,
+          lineHeight: 14,
           formatter: '{b}\n{d}%',
         },
         labelLine: {
@@ -158,17 +158,17 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .industry-pie {
-  min-height: 316px;
+  min-height: 320px;
   min-width: 0;
 }
 
 .industry-pie__canvas {
   width: 100%;
-  height: 316px;
+  height: 320px;
 }
 
 .industry-pie__empty {
-  min-height: 316px;
+  min-height: 320px;
   display: grid;
   place-items: center;
   border-radius: 18px;

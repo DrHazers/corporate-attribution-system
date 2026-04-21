@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,6 +13,30 @@ from backend.analysis.industry_classification import (
     refresh_business_segment_classifications,
 )
 from backend.database import ensure_sqlite_schema
+
+
+class _FakeDeepSeekChatClient:
+    def create_chat_completion(self, *, messages):
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        return SimpleNamespace(
+            content=json.dumps(
+                {
+                    "standard_system": "GICS",
+                    "level_1": "Communication Services",
+                    "level_2": "Media & Entertainment",
+                    "level_3": "Interactive Media & Services",
+                    "level_4": "Interactive Media & Services",
+                    "is_primary": True,
+                    "confidence": 0.78,
+                    "mapping_basis": "The segment focuses on digital advertising marketplace and merchant monetization.",
+                    "review_status": "needs_manual_review",
+                    "classifier_type": "llm_assisted",
+                    "review_reason": "llm_suggested",
+                }
+            )
+        )
 
 
 def _build_database(path: Path) -> None:
@@ -277,9 +303,16 @@ def _build_database(path: Path) -> None:
         connection.close()
 
 
-def test_refresh_builds_research_style_rule_results_and_preserves_manual_rows(tmp_path: Path):
+def test_refresh_builds_research_style_rule_results_and_preserves_manual_rows(
+    tmp_path: Path,
+    monkeypatch,
+):
     database_path = tmp_path / "industry_refresh.db"
     _build_database(database_path)
+    monkeypatch.setattr(
+        "backend.analysis.industry_classification.DeepSeekChatClient",
+        _FakeDeepSeekChatClient,
+    )
 
     engine = create_engine(
         f"sqlite:///{database_path}",
@@ -372,9 +405,12 @@ def test_refresh_builds_research_style_rule_results_and_preserves_manual_rows(tm
         assert " | depth=" in row["mapping_basis"]
 
     assert llm_payload.segment_id == 4
-    assert llm_payload.status == "placeholder"
+    assert llm_payload.status == "success"
     assert llm_payload.current_classification is not None
     assert llm_payload.suggested_classification.classifier_type == "llm_assisted"
+    assert llm_payload.suggested_classification.level_1 == "Communication Services"
+    assert llm_payload.suggested_classification.level_4 == "Interactive Media & Services"
+    assert llm_payload.suggested_classification.mapping_basis
     assert llm_payload.request_context is not None
     assert "digital advertising marketplace" == llm_payload.request_context.segment_name.lower()
     assert llm_payload.request_context.rule_candidates

@@ -4,6 +4,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+import json
+import logging
 import re
 from typing import Any
 
@@ -21,11 +23,17 @@ from backend.schemas.business_segment_classification import (
     BusinessSegmentClassificationRefreshSummary,
     BusinessSegmentClassificationSuggestionRead,
     BusinessSegmentLlmRequestContext,
+    normalize_classification_review_status,
+    normalize_classifier_type,
+    normalize_optional_text,
+    normalize_standard_system,
     BusinessSegmentLlmSuggestionResponse,
 )
+from backend.services.llm.deepseek_client import DeepSeekChatClient
 
 
 STANDARD_SYSTEM = "GICS"
+logger = logging.getLogger(__name__)
 TEXT_SOURCES = ("name", "alias", "description", "company", "peer")
 SOURCE_WEIGHTS = {
     "name": 4,
@@ -1633,7 +1641,10 @@ def classify_business_segment_with_llm(
 ) -> BusinessSegmentLlmSuggestionResponse:
     segment = (
         db.query(BusinessSegment)
-        .options(selectinload(BusinessSegment.company))
+        .options(
+            selectinload(BusinessSegment.company),
+            selectinload(BusinessSegment.classifications),
+        )
         .filter(BusinessSegment.id == segment_id)
         .first()
     )
@@ -1648,53 +1659,405 @@ def classify_business_segment_with_llm(
     )
     evaluation = evaluate_segment_candidates(segment, peer_lookup=peer_lookup)
 
-    current_classification = None
-    current_rows = get_business_segment_classifications_by_segment_id(
-        db,
-        business_segment_id=segment_id,
-    )
-    if current_rows:
-        current_classification = BusinessSegmentClassificationRead.model_validate(
-            current_rows[0]
-        )
+    current_classification = _get_current_classification(db, segment_id=segment_id)
 
     top_rule_keys = [candidate.rule.rule_key for candidate in evaluation.rule_candidates[:3]]
     request_context = BusinessSegmentLlmRequestContext(
+        company_name=segment.company.name if segment.company else None,
+        company_description=segment.company.description if segment.company else None,
         segment_name=segment.segment_name,
         segment_alias=segment.segment_alias,
         description=segment.description,
+        segment_type=segment.segment_type,
+        reporting_period=segment.reporting_period,
         company_text=evaluation.context.company_text or None,
         peer_text=evaluation.context.peer_text or None,
         rule_candidates=top_rule_keys,
     )
-    suggestion = BusinessSegmentClassificationSuggestionRead(
+
+    if not any(
+        [
+            normalize_optional_text(segment.segment_name),
+            normalize_optional_text(segment.segment_alias),
+            normalize_optional_text(segment.description),
+        ]
+    ):
+        raise ValueError(
+            "Business segment context is too incomplete for LLM classification."
+        )
+
+    messages = _build_llm_messages(
+        segment=segment,
+        current_classification=current_classification,
+        evaluation=evaluation,
+    )
+    llm_result = DeepSeekChatClient().create_chat_completion(messages=messages)
+
+    try:
+        suggestion = _build_llm_suggestion_from_content(
+            content=llm_result.content,
+            segment=segment,
+        )
+        status_value = "success"
+        message = "DeepSeek suggestion generated successfully."
+    except ValueError as exc:
+        logger.warning(
+            "DeepSeek returned non-JSON or invalid JSON for segment %s: %s",
+            segment_id,
+            exc,
+        )
+        suggestion = _build_llm_parse_fallback_suggestion(
+            segment=segment,
+            raw_content=llm_result.content,
+        )
+        status_value = "fallback"
+        message = (
+            "DeepSeek returned a non-standard response. A conservative fallback "
+            "suggestion was generated for manual review."
+        )
+
+    return BusinessSegmentLlmSuggestionResponse(
+        segment_id=segment_id,
+        status=status_value,
+        message=message,
+        current_classification=current_classification,
+        suggested_classification=suggestion,
+        request_context=request_context,
+    )
+
+
+def _get_current_classification(
+    db: Session,
+    *,
+    segment_id: int,
+) -> BusinessSegmentClassificationRead | None:
+    current_rows = get_business_segment_classifications_by_segment_id(
+        db,
+        business_segment_id=segment_id,
+    )
+    if not current_rows:
+        return None
+    return BusinessSegmentClassificationRead.model_validate(current_rows[0])
+
+
+def _truncate_text(value: str | None, *, limit: int = 320) -> str | None:
+    normalized = normalize_optional_text(value)
+    if normalized is None:
+        return None
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: limit - 3].rstrip()}..."
+
+
+def _format_ratio(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    numeric = Decimal(value)
+    normalized = numeric * Decimal("100") if numeric <= 1 else numeric
+    return f"{normalized.quantize(Decimal('0.01'))}%"
+
+
+def _build_label_from_levels(
+    classification: BusinessSegmentClassification | BusinessSegmentClassificationRead,
+) -> str | None:
+    levels = [
+        normalize_optional_text(classification.level_1),
+        normalize_optional_text(classification.level_2),
+        normalize_optional_text(classification.level_3),
+        normalize_optional_text(classification.level_4),
+    ]
+    filtered_levels = [value for value in levels if value]
+    return " > ".join(filtered_levels) if filtered_levels else None
+
+
+def _build_peer_segment_payload(
+    segment: BusinessSegment,
+) -> list[dict[str, Any]]:
+    if segment.company is None:
+        return []
+
+    peers: list[dict[str, Any]] = []
+    for peer in segment.company.business_segments:
+        if peer.id == segment.id:
+            continue
+        peers.append(
+            {
+                "segment_name": peer.segment_name,
+                "segment_alias": peer.segment_alias,
+                "segment_type": peer.segment_type,
+                "reporting_period": peer.reporting_period,
+                "industry_labels": [
+                    label
+                    for label in (
+                        _build_label_from_levels(classification)
+                        for classification in peer.classifications
+                    )
+                    if label is not None
+                ][:2],
+            }
+        )
+        if len(peers) >= 6:
+            break
+    return peers
+
+
+def _serialize_classification_for_prompt(
+    classification: BusinessSegmentClassificationRead | None,
+) -> dict[str, Any] | None:
+    if classification is None:
+        return None
+    return {
+        "standard_system": classification.standard_system,
+        "level_1": classification.level_1,
+        "level_2": classification.level_2,
+        "level_3": classification.level_3,
+        "level_4": classification.level_4,
+        "industry_label": classification.industry_label,
+        "is_primary": classification.is_primary,
+        "confidence": (
+            float(classification.confidence)
+            if classification.confidence is not None
+            else None
+        ),
+        "classifier_type": classification.classifier_type,
+        "review_status": classification.review_status,
+        "review_reason": classification.review_reason,
+        "mapping_basis": _truncate_text(classification.mapping_basis, limit=220),
+    }
+
+
+def _build_llm_messages(
+    *,
+    segment: BusinessSegment,
+    current_classification: BusinessSegmentClassificationRead | None,
+    evaluation: RuleEvaluation,
+) -> list[dict[str, str]]:
+    company = segment.company
+    user_payload = {
+        "classification_task": {
+            "standard_system": STANDARD_SYSTEM,
+            "goal": (
+                "Map the target business segment into the current system's industry "
+                "classification hierarchy."
+            ),
+            "conservative_policy": (
+                "If evidence is not strong enough, keep deeper levels null instead "
+                "of forcing a detailed mapping."
+            ),
+        },
+        "company_context": {
+            "company_name": company.name if company else None,
+            "company_description": _truncate_text(
+                company.description if company else None,
+                limit=320,
+            ),
+            "incorporation_country": company.incorporation_country if company else None,
+            "listing_country": company.listing_country if company else None,
+            "headquarters": company.headquarters if company else None,
+        },
+        "business_segment": {
+            "segment_id": segment.id,
+            "segment_name": segment.segment_name,
+            "segment_alias": segment.segment_alias,
+            "description": _truncate_text(segment.description, limit=480),
+            "segment_type": segment.segment_type,
+            "reporting_period": segment.reporting_period,
+            "revenue_ratio": _format_ratio(segment.revenue_ratio),
+            "profit_ratio": _format_ratio(segment.profit_ratio),
+            "currency": segment.currency,
+            "source": segment.source,
+        },
+        "current_rule_result": _serialize_classification_for_prompt(
+            current_classification
+        ),
+        "rule_reference": {
+            "top_rule_candidates": [
+                candidate.rule.rule_key
+                for candidate in evaluation.rule_candidates[:3]
+            ],
+            "company_text": _truncate_text(evaluation.context.company_text, limit=220),
+            "peer_text": _truncate_text(evaluation.context.peer_text, limit=220),
+        },
+        "peer_segments": _build_peer_segment_payload(segment),
+        "required_output_schema": {
+            "standard_system": "GICS",
+            "level_1": "string or null",
+            "level_2": "string or null",
+            "level_3": "string or null",
+            "level_4": "string or null",
+            "is_primary": segment.segment_type == "primary",
+            "confidence": "number between 0 and 1",
+            "mapping_basis": "short concrete human-readable explanation",
+            "review_status": (
+                "one of confirmed, pending, needs_llm_review, "
+                "needs_manual_review, conflicted, unmapped"
+            ),
+            "classifier_type": "llm_assisted",
+            "review_reason": "short snake_case string",
+        },
+    }
+
+    system_message = (
+        "You are assisting an industry analysis system. Your task is to map one "
+        "business segment to the industry's hierarchical classification used by "
+        "this system, defaulting to GICS. Be conservative: if the evidence is "
+        "weak or ambiguous, do not over-specify deeper levels. Use current "
+        "rule-based output only as a reference, not as mandatory truth. Return "
+        "only one JSON object and no extra commentary. mapping_basis must be "
+        "brief, concrete, and understandable by a human reviewer."
+    )
+
+    return [
+        {"role": "system", "content": system_message},
+        {
+            "role": "user",
+            "content": json.dumps(
+                user_payload,
+                ensure_ascii=False,
+                indent=2,
+            ),
+        },
+    ]
+
+
+def _extract_json_object(content: str) -> dict[str, Any]:
+    normalized = content.strip()
+    if normalized.startswith("```"):
+        normalized = re.sub(r"^```(?:json)?\s*", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s*```$", "", normalized)
+
+    candidates = [normalized]
+    start_index = normalized.find("{")
+    end_index = normalized.rfind("}")
+    if start_index != -1 and end_index != -1 and end_index > start_index:
+        candidates.append(normalized[start_index : end_index + 1])
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        raise ValueError("DeepSeek response JSON root must be an object.")
+
+    raise ValueError("DeepSeek response did not contain valid JSON.") from last_error
+
+
+def _normalize_confidence(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        normalized = Decimal(str(value).strip())
+    except Exception as exc:
+        raise ValueError("Model confidence is not a valid number.") from exc
+    if normalized > 1 and normalized <= 100:
+        normalized = normalized / Decimal("100")
+    if normalized < 0 or normalized > 1:
+        raise ValueError("Model confidence must be between 0 and 1.")
+    return normalized.quantize(Decimal("0.0001"))
+
+
+def _normalize_levels(
+    payload: dict[str, Any],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    levels = [
+        normalize_optional_text(payload.get("level_1")),
+        normalize_optional_text(payload.get("level_2")),
+        normalize_optional_text(payload.get("level_3")),
+        normalize_optional_text(payload.get("level_4")),
+    ]
+    first_gap_seen = False
+    for index, level in enumerate(levels):
+        if level is None:
+            first_gap_seen = True
+            continue
+        if first_gap_seen:
+            for clear_index in range(index, len(levels)):
+                levels[clear_index] = None
+            break
+    return tuple(levels)  # type: ignore[return-value]
+
+
+def _normalize_review_status_for_llm(
+    value: Any,
+    *,
+    has_any_level: bool,
+) -> str:
+    normalized = None
+    if isinstance(value, str) and value.strip():
+        normalized = normalize_classification_review_status(value)
+    if normalized is not None:
+        return normalized
+    return "needs_manual_review" if has_any_level else "unmapped"
+
+
+def _build_llm_suggestion_from_content(
+    *,
+    content: str,
+    segment: BusinessSegment,
+) -> BusinessSegmentClassificationSuggestionRead:
+    payload = _extract_json_object(content)
+    levels = _normalize_levels(payload)
+    has_any_level = any(levels)
+    mapping_basis = normalize_optional_text(payload.get("mapping_basis"))
+    review_reason = normalize_optional_text(payload.get("review_reason")) or (
+        "llm_suggested" if has_any_level else "llm_inconclusive"
+    )
+    review_status = _normalize_review_status_for_llm(
+        payload.get("review_status"),
+        has_any_level=has_any_level,
+    )
+    classifier_type = normalize_classifier_type(payload.get("classifier_type"))
+    if classifier_type is None:
+        classifier_type = "llm_assisted"
+    standard_system = normalize_standard_system(payload.get("standard_system"))
+
+    return BusinessSegmentClassificationSuggestionRead(
+        standard_system=standard_system,
+        level_1=levels[0],
+        level_2=levels[1],
+        level_3=levels[2],
+        level_4=levels[3],
+        is_primary=bool(payload.get("is_primary", segment.segment_type == "primary")),
+        mapping_basis=(
+            mapping_basis
+            or (
+                "LLM suggested a conservative classification based on the segment "
+                "description and company context."
+                if has_any_level
+                else "LLM could not derive a stable mapping from the available context."
+            )
+        ),
+        review_status=review_status,
+        classifier_type=classifier_type,
+        confidence=_normalize_confidence(payload.get("confidence")),
+        review_reason=review_reason,
+    )
+
+
+def _build_llm_parse_fallback_suggestion(
+    *,
+    segment: BusinessSegment,
+    raw_content: str,
+) -> BusinessSegmentClassificationSuggestionRead:
+    compact_content = _truncate_text(raw_content, limit=160)
+    mapping_basis = "LLM returned a non-JSON response, so the suggestion was downgraded for manual review."
+    if compact_content:
+        mapping_basis = f"{mapping_basis} Response summary: {compact_content}"
+
+    return BusinessSegmentClassificationSuggestionRead(
         standard_system=STANDARD_SYSTEM,
         level_1=None,
         level_2=None,
         level_3=None,
         level_4=None,
         is_primary=segment.segment_type == "primary",
-        mapping_basis=_mapping_basis(
-            decision="needs_manual_review",
-            rules=top_rule_keys,
-            hits={},
-            levels=(None, None, None, None),
-            comment="TODO connect real LLM inference using prepared segment context",
-        ),
+        mapping_basis=mapping_basis,
         review_status="needs_manual_review",
         classifier_type="llm_assisted",
-        confidence=Decimal("0.00"),
-        review_reason="llm_suggested",
-    )
-    return BusinessSegmentLlmSuggestionResponse(
-        segment_id=segment_id,
-        status="placeholder",
-        message=(
-            "LLM classification endpoint shape is ready. Current version packages "
-            "normalized segment context and top rule candidates, but real model "
-            "inference is still TODO."
-        ),
-        current_classification=current_classification,
-        suggested_classification=suggestion,
-        request_context=request_context,
+        confidence=Decimal("0.1000"),
+        review_reason="llm_response_parse_failed",
     )

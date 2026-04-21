@@ -17,6 +17,12 @@ from backend.analysis.industry_classification import (
     classify_business_segment_with_llm,
     refresh_business_segment_classifications,
 )
+from backend.services.llm.deepseek_client import (
+    DeepSeekConfigurationError,
+    DeepSeekEmptyResponseError,
+    DeepSeekInvocationError,
+    DeepSeekTimeoutError,
+)
 from backend.crud.business_segment import (
     create_business_segment,
     delete_business_segment,
@@ -361,13 +367,13 @@ def refresh_business_segment_classifications_endpoint(
 @router.post(
     "/business-segments/{segment_id}/classify-with-llm",
     response_model=BusinessSegmentLlmSuggestionResponse,
-    summary="Prepare a single business segment for LLM-assisted classification",
+    summary="Generate a single business segment LLM classification suggestion",
     description=(
-        "Placeholder endpoint for the future frontend button that will trigger "
-        "single-segment LLM-assisted classification. Current version returns a "
-        "stable mock contract without writing new classification rows."
+        "Run a real DeepSeek-powered single-segment LLM-assisted classification "
+        "suggestion using the OpenAI SDK compatible client without writing new "
+        "formal classification rows."
     ),
-    response_description="Placeholder LLM suggestion payload for future model integration.",
+    response_description="Structured LLM suggestion payload for frontend review.",
     responses=COMMON_INDUSTRY_ERROR_RESPONSES,
 )
 def classify_business_segment_with_llm_endpoint(
@@ -382,6 +388,26 @@ def classify_business_segment_with_llm_endpoint(
     except LookupError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except DeepSeekConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except DeepSeekTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=str(exc),
+        ) from exc
+    except (DeepSeekInvocationError, DeepSeekEmptyResponseError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
 

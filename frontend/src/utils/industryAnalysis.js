@@ -117,6 +117,30 @@ const WORKBENCH_RULES = [
   },
 ]
 
+const RULE_SHORT_SUMMARY_LABELS = {
+  application_software: '已识别软件方向，但层级证据不足',
+  systems_software: '已识别系统软件方向，结果较稳定',
+  transaction_and_payment_processing: '已稳定命中支付处理相关分类',
+  wealth_and_market_infrastructure: '已识别金融数据相关方向',
+  broadline_retail_marketplace: '已匹配零售平台语义，结果较稳定',
+  internet_travel_ota: '已识别在线旅游平台相关分类',
+  interactive_media_and_advertising: '已命中互动媒体与广告相关方向',
+  data_processing_and_outsourced_services: '已识别 IT 服务方向，但层级证据不足',
+  it_consulting_and_integration: '已识别 IT 服务与集成方向',
+  semiconductor_manufacturing: '已稳定命中半导体相关分类',
+  semiconductor_equipment_materials: '已识别半导体设备材料方向',
+  technology_hardware_devices: '已识别科技硬件设备方向',
+  communications_equipment: '已识别通信设备相关方向',
+  automobile_manufacturers: '已识别整车制造方向',
+  automotive_parts_and_equipment: '已识别汽车零部件方向',
+  renewable_power_producers: '已识别新能源发电相关方向',
+  electric_utilities: '已识别电力公用事业方向',
+  battery_and_storage_equipment: '已识别储能设备相关方向',
+  integrated_oil_and_gas: '已识别油气能源相关方向',
+  health_care_technology: '已识别医疗科技方向',
+  health_care_equipment: '已识别医疗设备方向',
+}
+
 const GENERIC_WORKBENCH_PHRASES = [
   'platform services',
   'digital ecosystem',
@@ -146,6 +170,42 @@ function joinIndustryLevels(classification = {}) {
     .filter(Boolean)
     .join(' > ')
 }
+
+const BASIS_DECISION_LABELS = {
+  confirmed: '规则已经形成较稳定结论。',
+  pending: '系统识别到了方向，但先保守停在较粗层级。',
+  needs_llm_review: '当前规则证据不足，建议结合模型补判。',
+  needs_manual_review: '当前结果需要人工进一步确认。',
+  conflicted: '存在多个接近的候选方向，系统暂不强判。',
+  unmapped: '当前规则主干未找到稳定映射。',
+}
+
+const BASIS_COMMENT_LABELS = [
+  {
+    includes: 'text too generic',
+    label: '业务线文本过于泛化，需要补充更具体的业务说明。',
+  },
+  {
+    includes: 'generic boundary phrase needs richer business evidence',
+    label: '名称偏边界化，建议补充主营业务、客户或商业模式信息。',
+  },
+  {
+    includes: 'no stable family rule matched current text context',
+    label: '现有规则没有命中稳定家族，建议补充说明或转人工判断。',
+  },
+  {
+    includes: 'multiple family candidates remained too close',
+    label: '多个候选方向分数接近，系统无法稳定区分。',
+  },
+  {
+    includes: 'leaf withheld for safety',
+    label: '系统为避免误分，暂时不下钻到最细层级。',
+  },
+  {
+    includes: 'workbench manual override',
+    label: '当前结果来自工作台中的人工修订。',
+  },
+]
 
 export function formatFlexiblePercent(value) {
   if (value === null || value === undefined || value === '') {
@@ -216,6 +276,137 @@ export function classificationSummary(segment) {
     return '待建立产业分类'
   }
   return current.industry_label || joinIndustryLevels(current) || '待补充层级'
+}
+
+export function classificationLabelFromLevels(level_1, level_2, level_3, level_4) {
+  return joinIndustryLevels({ level_1, level_2, level_3, level_4 }) || '待补充层级'
+}
+
+export function classificationLabel(classification) {
+  if (!classification) {
+    return '待补充层级'
+  }
+  return classification.industry_label || joinIndustryLevels(classification) || '待补充层级'
+}
+
+function parseMappingBasis(value) {
+  if (!value) {
+    return {}
+  }
+  return value
+    .split('|')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((accumulator, part) => {
+      const index = part.indexOf('=')
+      if (index === -1) {
+        return accumulator
+      }
+      const key = part.slice(0, index).trim()
+      const content = part.slice(index + 1).trim()
+      accumulator[key] = content
+      return accumulator
+    }, {})
+}
+
+export function readableMappingBasis(mappingBasis, reviewReason, reviewStatus) {
+  const parsed = parseMappingBasis(mappingBasis)
+  const fragments = []
+
+  if (BASIS_DECISION_LABELS[parsed.decision || reviewStatus]) {
+    fragments.push(BASIS_DECISION_LABELS[parsed.decision || reviewStatus])
+  }
+  if (parsed.rules && parsed.rules !== 'none_stable') {
+    const normalizedRules = parsed.rules
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => item.replace(/_/g, ' '))
+      .join('、')
+    if (normalizedRules) {
+      fragments.push(`主要命中方向：${normalizedRules}。`)
+    }
+  }
+  if (reviewReason && reviewReasonLabel(reviewReason)) {
+    fragments.push(`当前原因：${reviewReasonLabel(reviewReason)}。`)
+  }
+
+  const comment = String(parsed.comment || '').toLowerCase()
+  const matchedComment = BASIS_COMMENT_LABELS.find((item) => comment.includes(item.includes))
+  if (matchedComment) {
+    fragments.push(matchedComment.label)
+  }
+
+  if (!fragments.length && mappingBasis) {
+    return '已记录规则依据，可展开查看原始 basis。'
+  }
+  return fragments.join(' ') || '当前暂无可读规则依据。'
+}
+
+export function compactRuleExplanation(mappingBasis, reviewReason, reviewStatus) {
+  const parsed = parseMappingBasis(mappingBasis)
+  const firstRule = String(parsed.rules || '')
+    .split(',')
+    .map((item) => item.trim())
+    .find(Boolean)
+
+  if (reviewStatus === 'confirmed') {
+    return RULE_SHORT_SUMMARY_LABELS[firstRule] || '已命中稳定规则，当前结果较稳定'
+  }
+  if (reviewStatus === 'pending') {
+    return RULE_SHORT_SUMMARY_LABELS[firstRule] || '已识别主要方向，暂作保守保留'
+  }
+  if (reviewStatus === 'unmapped' || reviewReason === 'rule_not_matched') {
+    return '未命中稳定规则，建议补充业务说明'
+  }
+  if (reviewStatus === 'conflicted' || reviewReason === 'multi_candidate_conflict') {
+    return '候选方向冲突，建议人工补判'
+  }
+  if (reviewReason === 'insufficient_description') {
+    return '当前信息不足，建议补充业务说明'
+  }
+  if (reviewReason === 'low_confidence') {
+    return RULE_SHORT_SUMMARY_LABELS[firstRule] || '已识别业务方向，但层级证据不足'
+  }
+  if (reviewReason === 'cross_domain_segment') {
+    return '业务边界较宽，建议人工补判'
+  }
+  if (reviewReason === 'emerging_business') {
+    return '当前信息偏新兴，建议进一步补判'
+  }
+
+  return RULE_SHORT_SUMMARY_LABELS[firstRule] || '已记录规则依据，详情可在明细中查看'
+}
+
+export function buildMockLlmClassification(segment) {
+  const current = primaryClassification(segment)
+  const baseLabel = classificationSummary(segment)
+  const nextLevel4 = current?.level_4 || '待模型细化'
+  return {
+    id: `${segment.id || segment.localId}-llm-placeholder`,
+    business_segment_id: segment.id || segment.localId,
+    standard_system: 'GICS',
+    level_1: current?.level_1 || null,
+    level_2: current?.level_2 || null,
+    level_3: current?.level_3 || null,
+    level_4: nextLevel4,
+    industry_label: classificationLabelFromLevels(
+      current?.level_1 || null,
+      current?.level_2 || null,
+      current?.level_3 || null,
+      nextLevel4,
+    ),
+    is_primary: segment?.segment_type === 'primary',
+    mapping_basis: 'TODO: replace mock LLM result with backend llm analysis API',
+    review_status: current ? 'needs_manual_review' : 'needs_llm_review',
+    classifier_type: 'llm_assisted',
+    confidence: current?.confidence ?? 0.55,
+    review_reason: current?.review_reason || 'llm_suggested',
+    readable_mapping_basis: current
+      ? `占位结果：基于当前规则结果“${baseLabel}”生成了一个可供比较的 LLM 建议，后续接入真实接口后替换。`
+      : '占位结果：当前尚无稳定规则结论，后续可由 LLM 结合更多上下文补判。',
+    is_placeholder: true,
+  }
 }
 
 export function deriveIndustryStatusCounts(industryAnalysis = {}) {
@@ -292,6 +483,33 @@ export function pieChartRows(segments = [], metric = 'revenue_ratio', maxItems =
       value: rest.reduce((sum, item) => sum + item.value, 0),
       segmentType: '合并项',
       classificationSummary: `${rest.length} 条长尾业务线合并展示`,
+    },
+  ]
+}
+
+export function profitPieChartRows(segments = [], maxItems = 6) {
+  const rows = pieChartRows(segments, 'profit_ratio', maxItems)
+  const missingCount = segments.filter(
+    (segment) => segment?.profit_ratio === null || segment?.profit_ratio === undefined || segment?.profit_ratio === '',
+  ).length
+  if (!missingCount) {
+    return rows
+  }
+
+  return [
+    ...rows,
+    {
+      id: 'profit-missing-placeholder',
+      name: '未披露利润数据',
+      rawName: '未披露利润数据',
+      value: Math.max(4, missingCount * 2),
+      segmentType: '占位提示',
+      classificationSummary: `${missingCount} 条业务线未填写利润占比，仅用于提示缺失情况。`,
+      itemStyle: {
+        color: '#cfd6df',
+      },
+      note: '利润数据缺失',
+      isPlaceholder: true,
     },
   ]
 }

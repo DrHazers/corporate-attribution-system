@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 
 BusinessSegmentClassificationReviewStatus = Literal[
@@ -245,12 +245,16 @@ class BusinessSegmentClassificationRefreshSummary(BaseModel):
 
 
 class BusinessSegmentLlmRequestContext(BaseModel):
+    company_name: str | None = None
+    company_description: str | None = None
     segment_name: str
     segment_alias: str | None = None
     description: str | None = None
+    segment_type: str | None = None
+    reporting_period: str | None = None
     company_text: str | None = None
     peer_text: str | None = None
-    rule_candidates: list[str] = []
+    rule_candidates: list[str] = Field(default_factory=list)
 
 
 class BusinessSegmentLlmSuggestionResponse(BaseModel):

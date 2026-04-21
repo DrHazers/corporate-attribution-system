@@ -1,6 +1,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { ArrowLeft } from '@element-plus/icons-vue'
 
 import {
   fetchBusinessSegmentClassifications,
@@ -280,7 +281,7 @@ function resetManualDraft(classification) {
   manualDraft.level_2 = classification?.level_2 || ''
   manualDraft.level_3 = classification?.level_3 || ''
   manualDraft.level_4 = classification?.level_4 || ''
-  manualDraft.mapping_basis = classification?.mapping_basis || ''
+  manualDraft.mapping_basis = ''
   manualDraft.final_confirmed = true
 }
 
@@ -328,6 +329,187 @@ function currentClassificationSummary(segment) {
   return classificationSummary(segment)
 }
 
+function llmSuggestionClassification() {
+  return llmSuggestionPayload.value?.suggested_classification || null
+}
+
+function llmSuggestionLabel() {
+  return classificationSummary({
+    classifications: llmSuggestionClassification() ? [llmSuggestionClassification()] : [],
+  })
+}
+
+const BASIS_DECISION_LABELS = {
+  confirmed: '规则结果已确认',
+  pending: '当前结果暂作保守保留',
+  needs_llm_review: '建议引入模型辅助补判',
+  needs_manual_review: '建议人工进一步复核',
+  conflicted: '候选分类仍存在冲突',
+  unmapped: '当前尚未形成稳定映射',
+}
+
+const BASIS_DEPTH_LABELS = {
+  none: '尚未形成稳定层级',
+  level_1: '已定位到一级分类',
+  level_2: '已定位到二级分类',
+  level_3: '已定位到三级分类',
+  level_4: '已定位到四级分类',
+}
+
+const BASIS_RULE_LABELS = {
+  application_software: '应用软件',
+  transaction_and_payment_processing: '支付处理服务',
+  interactive_media_and_advertising: '互动媒体与广告服务',
+  semiconductor_manufacturing: '半导体',
+  technology_hardware_devices: '硬件设备',
+  renewable_power_producers: '可再生能源发电',
+  none_stable: '未形成稳定规则命中',
+  manual_override: '人工修订',
+}
+
+const BASIS_HIT_SCOPE_LABELS = {
+  name: '业务线名称',
+  alias: '业务线别名',
+  description: '业务线说明',
+  company: '公司上下文',
+  peer: '同业参照',
+}
+
+function parseMappingBasis(raw) {
+  if (!raw) {
+    return {}
+  }
+  return raw
+    .split('|')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((accumulator, part) => {
+      const separatorIndex = part.indexOf('=')
+      if (separatorIndex === -1) {
+        return accumulator
+      }
+      const key = part.slice(0, separatorIndex).trim()
+      const value = part.slice(separatorIndex + 1).trim()
+      accumulator[key] = value
+      return accumulator
+    }, {})
+}
+
+function formatBasisRule(rule) {
+  if (!rule) {
+    return ''
+  }
+  return BASIS_RULE_LABELS[rule] || rule.replace(/_/g, ' ')
+}
+
+function summarizeBasisRules(value) {
+  if (!value) {
+    return ''
+  }
+  const rules = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => formatBasisRule(item))
+  return rules.join('、')
+}
+
+function summarizeBasisHits(value) {
+  if (!value) {
+    return ''
+  }
+  const sections = []
+  const matches = value.matchAll(/([a-z_]+)\[([^\]]*)\]/gi)
+  for (const match of matches) {
+    const scope = match[1]
+    const content = match[2]?.trim()
+    if (!content) {
+      continue
+    }
+    sections.push(`${BASIS_HIT_SCOPE_LABELS[scope] || scope}命中：${content}`)
+  }
+  return sections.join('；')
+}
+
+function summarizeBasisComment(value) {
+  if (!value) {
+    return ''
+  }
+  const normalized = value.toLowerCase()
+  if (normalized.includes('text too generic')) {
+    return '文本描述过泛，需补充更具体的业务上下文。'
+  }
+  if (normalized.includes('generic boundary phrase needs richer business evidence')) {
+    return '业务表述偏边界化，需补充更具体的经营证据。'
+  }
+  if (normalized.includes('no stable family rule matched current text context')) {
+    return '当前文本上下文未命中稳定分类规则。'
+  }
+  if (normalized.includes('multiple family candidates remained too close')) {
+    return '多个候选分类过于接近，暂时无法稳定区分。'
+  }
+  if (normalized.includes('leaf withheld for safety')) {
+    return '为稳妥起见，当前暂不下钻到更细层级。'
+  }
+  if (normalized.includes('local manual override draft')) {
+    return '当前为前端本地人工修订草案。'
+  }
+  return value
+}
+
+function mappingBasisSummaryItems(classification) {
+  const parsed = parseMappingBasis(classification?.mapping_basis)
+  const items = []
+  const decision = BASIS_DECISION_LABELS[parsed.decision]
+  const rules = summarizeBasisRules(parsed.rules)
+  const hits = summarizeBasisHits(parsed.hits)
+  const depth = BASIS_DEPTH_LABELS[parsed.depth]
+  const comment = summarizeBasisComment(parsed.comment)
+
+  if (decision) {
+    items.push({ label: '当前处理结论', value: decision })
+  }
+  if (rules) {
+    items.push({ label: '命中规则', value: rules })
+  }
+  if (hits) {
+    items.push({ label: '主要依据', value: hits })
+  }
+  if (depth) {
+    items.push({ label: '定位层级', value: depth })
+  }
+  if (comment) {
+    items.push({ label: '补充说明', value: comment })
+  }
+
+  if (!items.length) {
+    items.push({ label: '映射依据摘要', value: classification?.mapping_basis || '暂无映射依据' })
+  }
+
+  return items
+}
+
+function displayReviewReason(classification) {
+  if (!classification?.review_reason) {
+    return '当前规则结果已进入可展示状态。'
+  }
+  return reviewReasonLabel(classification.review_reason)
+}
+
+function isStatusClassificationSummary(segment) {
+  const current = resolvedClassification(segment)
+  if (!current) {
+    return true
+  }
+  return !Boolean(
+    current.industry_label ||
+    current.level_1 ||
+    current.level_2 ||
+    current.level_3 ||
+    current.level_4,
+  )
+}
+
 function llmButtonType(segment) {
   return llmRecommended(segment) ? 'danger' : 'primary'
 }
@@ -365,8 +547,7 @@ function submitManualDraft() {
         .join(' > '),
       is_primary: selectedSegment.value.segment_type === 'primary',
       mapping_basis:
-        manualDraft.mapping_basis ||
-        'decision=needs_manual_review | rules=manual_override | hits=name[] alias[] description[] company[] peer[] | negatives=[] | depth=level_4 | comment=local manual override draft',
+        manualDraft.mapping_basis || '人工修订（未填写详细依据）',
       review_status: manualDraft.final_confirmed ? 'confirmed' : 'needs_manual_review',
       classifier_type: 'manual',
       confidence: 1,
@@ -580,7 +761,7 @@ watch(
       <div class="section-heading">
         <div>
           <h3>业务线分类主表</h3>
-          <p>把结构信息、分类结果、状态和后续操作集中到一张工作表里，方便正式展示与后续扩展。</p>
+          <p>展示各业务线的占比、分类结果与当前状态，可点击“查看与分析”进入更深入的分析与处理。</p>
         </div>
       </div>
 
@@ -593,18 +774,28 @@ watch(
           border
           empty-text="暂无业务线数据"
         >
-          <el-table-column label="业务线名称" min-width="180">
+          <el-table-column label="业务线名称" min-width="220">
             <template #default="{ row }">
               <div class="industry-table-name">
-                <strong>{{ row.segment_alias || row.segment_name }}</strong>
-                <span>{{ classificationSummary(row) }}</span>
+                <strong
+                  class="industry-table-text industry-table-text--name"
+                  :title="row.segment_alias || row.segment_name"
+                >
+                  {{ row.segment_alias || row.segment_name }}
+                </strong>
               </div>
             </template>
           </el-table-column>
 
-          <el-table-column prop="segment_name" label="原始披露名" min-width="160" show-overflow-tooltip />
+          <el-table-column label="原始披露名" min-width="220">
+            <template #default="{ row }">
+              <div class="industry-table-text" :title="row.segment_name">
+                {{ row.segment_name || '暂无' }}
+              </div>
+            </template>
+          </el-table-column>
 
-          <el-table-column label="业务类型" min-width="104">
+          <el-table-column label="业务类型" width="96">
             <template #default="{ row }">
               <el-tag :type="segmentTypeTagType(row.segment_type)" effect="plain">
                 {{ segmentTypeLabel(row.segment_type) }}
@@ -612,27 +803,48 @@ watch(
             </template>
           </el-table-column>
 
-          <el-table-column label="收入占比" min-width="104">
+          <el-table-column label="收入占比" width="96">
             <template #default="{ row }">
               {{ formatFlexiblePercent(row.revenue_ratio) }}
             </template>
           </el-table-column>
 
-          <el-table-column label="利润占比" min-width="104">
+          <el-table-column label="利润占比" width="96">
             <template #default="{ row }">
               {{ formatFlexiblePercent(row.profit_ratio) }}
             </template>
           </el-table-column>
 
-          <el-table-column prop="reporting_period" label="报告期" min-width="104" />
-
-          <el-table-column label="当前分类摘要" min-width="220" show-overflow-tooltip>
+          <el-table-column label="报告期" width="132">
             <template #default="{ row }">
-              {{ currentClassificationSummary(row) }}
+              <div class="industry-table-text industry-table-text--single" :title="row.reporting_period">
+                {{ row.reporting_period || '暂无' }}
+              </div>
             </template>
           </el-table-column>
 
-          <el-table-column label="Review Status" min-width="120">
+          <el-table-column label="当前分类摘要" min-width="280">
+            <template #default="{ row }">
+              <el-tooltip placement="top-start" effect="light" :show-after="200">
+                <template #content>
+                  <div class="industry-summary-tooltip">
+                    {{ currentClassificationSummary(row) }}
+                  </div>
+                </template>
+                <div
+                  v-if="!isStatusClassificationSummary(row)"
+                  class="industry-table-text industry-table-text--summary"
+                >
+                  {{ currentClassificationSummary(row) }}
+                </div>
+                <span v-else class="industry-table-status">
+                  {{ currentClassificationSummary(row) }}
+                </span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="Review Status" width="132">
             <template #default="{ row }">
               <el-tag
                 :type="reviewStatusTagType(resolvedClassification(row)?.review_status)"
@@ -643,27 +855,17 @@ watch(
             </template>
           </el-table-column>
 
-          <el-table-column label="Confidence" min-width="96">
+          <el-table-column label="Confidence" width="118">
             <template #default="{ row }">
               {{ formatConfidence(resolvedClassification(row)?.confidence) }}
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" min-width="188">
+          <el-table-column label="查看与分析" width="120" align="center">
             <template #default="{ row }">
               <div class="industry-table-actions">
                 <el-button link type="primary" @click="openSegmentDetail(row)">
-                  查看详情
-                </el-button>
-                <el-button link @click="openSegmentDetail(row)">
-                  人工征订
-                </el-button>
-                <el-button
-                  link
-                  :type="llmButtonType(row)"
-                  @click="openSegmentDetail(row, { triggerLlm: true })"
-                >
-                  LLM分析
+                  查看与分析
                 </el-button>
               </div>
             </template>
@@ -693,28 +895,33 @@ watch(
 
     <el-drawer
       v-model="detailDrawerVisible"
-      size="min(720px, 92vw)"
+      size="min(920px, 94vw)"
       :with-header="false"
       class="industry-detail-drawer"
     >
       <div v-if="selectedSegment" class="industry-drawer">
         <div class="industry-drawer__header">
-          <div>
-            <span class="industry-drawer__eyebrow">Segment Intelligence</span>
-            <h3>{{ selectedSegment.segment_alias || selectedSegment.segment_name }}</h3>
+          <div class="industry-drawer__header-copy">
+            <span class="industry-drawer__eyebrow">业务线详情</span>
+            <div class="industry-drawer__title-row">
+              <h3>{{ selectedSegment.segment_alias || selectedSegment.segment_name }}</h3>
+              <div class="industry-drawer__badges">
+                <el-tag :type="segmentTypeTagType(selectedSegment.segment_type)" effect="plain">
+                  {{ segmentTypeLabel(selectedSegment.segment_type) }}
+                </el-tag>
+                <el-tag
+                  :type="reviewStatusTagType(selectedClassification?.review_status)"
+                  effect="dark"
+                >
+                  {{ reviewStatusLabel(selectedClassification?.review_status) }}
+                </el-tag>
+              </div>
+            </div>
             <p>{{ selectedSegment.segment_name }}</p>
           </div>
-          <div class="industry-drawer__badges">
-            <el-tag :type="segmentTypeTagType(selectedSegment.segment_type)" effect="plain">
-              {{ segmentTypeLabel(selectedSegment.segment_type) }}
-            </el-tag>
-            <el-tag
-              :type="reviewStatusTagType(selectedClassification?.review_status)"
-              effect="dark"
-            >
-              {{ reviewStatusLabel(selectedClassification?.review_status) }}
-            </el-tag>
-          </div>
+          <el-tooltip content="返回" placement="left">
+            <el-button circle plain :icon="ArrowLeft" @click="detailDrawerVisible = false" />
+          </el-tooltip>
         </div>
 
         <div class="industry-drawer__meta">
@@ -749,28 +956,61 @@ watch(
             <div class="industry-drawer-card">
               <div class="industry-level-grid">
                 <div>
-                  <span>Level 1</span>
+                  <span>一级分类</span>
                   <strong>{{ selectedClassification?.level_1 || '—' }}</strong>
                 </div>
                 <div>
-                  <span>Level 2</span>
+                  <span>二级分类</span>
                   <strong>{{ selectedClassification?.level_2 || '—' }}</strong>
                 </div>
                 <div>
-                  <span>Level 3</span>
+                  <span>三级分类</span>
                   <strong>{{ selectedClassification?.level_3 || '—' }}</strong>
                 </div>
                 <div>
-                  <span>Level 4</span>
+                  <span>四级分类</span>
                   <strong>{{ selectedClassification?.level_4 || '—' }}</strong>
                 </div>
               </div>
-              <div class="industry-drawer-card__stack">
-                <p><strong>description：</strong>{{ selectedSegment.description || '暂无披露说明' }}</p>
-                <p><strong>classifier_type：</strong>{{ classifierTypeLabel(selectedClassification?.classifier_type) }}</p>
-                <p><strong>confidence：</strong>{{ formatConfidence(selectedClassification?.confidence) }}</p>
-                <p><strong>review_reason：</strong>{{ reviewReasonLabel(selectedClassification?.review_reason) }}</p>
-                <p><strong>mapping_basis：</strong>{{ selectedClassification?.mapping_basis || '暂无' }}</p>
+              <div class="industry-result-grid">
+                <div>
+                  <span>业务线说明</span>
+                  <strong>{{ selectedSegment.description || '暂无披露说明' }}</strong>
+                </div>
+                <div>
+                  <span>结果来源</span>
+                  <strong>{{ classifierTypeLabel(selectedClassification?.classifier_type) }}</strong>
+                </div>
+                <div>
+                  <span>置信度</span>
+                  <strong>{{ formatConfidence(selectedClassification?.confidence) }}</strong>
+                </div>
+                <div>
+                  <span>当前原因</span>
+                  <strong>{{ displayReviewReason(selectedClassification) }}</strong>
+                </div>
+              </div>
+              <div class="industry-basis-card">
+                <div class="industry-basis-card__head">
+                  <div>
+                    <span>映射依据摘要</span>
+                    <p>默认展示中文可读摘要，便于快速判断当前规则结果。</p>
+                  </div>
+                </div>
+                <div class="industry-basis-list">
+                  <div
+                    v-for="item in mappingBasisSummaryItems(selectedClassification)"
+                    :key="item.label"
+                    class="industry-basis-item"
+                  >
+                    <span>{{ item.label }}</span>
+                    <strong>{{ item.value }}</strong>
+                  </div>
+                </div>
+                <details v-if="selectedClassification?.mapping_basis" class="industry-basis-raw">
+                  <summary>展开查看原始规则依据</summary>
+                  <pre>{{ selectedClassification.mapping_basis }}</pre>
+                </details>
               </div>
             </div>
           </section>
@@ -798,12 +1038,12 @@ watch(
                     <el-input v-model="manualDraft.level_4" placeholder="例如 Application Software" />
                   </el-form-item>
                 </div>
-                <el-form-item label="人工 mapping_basis">
+                <el-form-item label="人工修订依据">
                   <el-input
                     v-model="manualDraft.mapping_basis"
                     type="textarea"
                     :rows="4"
-                    placeholder="可填写研究结论、修订依据和最终采用理由"
+                    placeholder="请填写人工调整当前分类结果的依据，例如业务线主营属性、披露描述、研究判断等。"
                   />
                 </el-form-item>
                 <el-form-item>
@@ -853,10 +1093,16 @@ watch(
               <div v-if="llmSuggestionPayload" class="industry-llm-result">
                 <p><strong>状态：</strong>{{ llmSuggestionPayload.status }}</p>
                 <p><strong>消息：</strong>{{ llmSuggestionPayload.message }}</p>
-                <p><strong>建议 classifier_type：</strong>{{ classifierTypeLabel(llmSuggestionPayload.suggested_classification?.classifier_type) }}</p>
-                <p><strong>建议 review_status：</strong>{{ reviewStatusLabel(llmSuggestionPayload.suggested_classification?.review_status) }}</p>
-                <p><strong>建议 mapping_basis：</strong>{{ llmSuggestionPayload.suggested_classification?.mapping_basis || '暂无' }}</p>
-                <p><strong>模型输入上下文：</strong>{{ llmSuggestionPayload.request_context?.company_text || '暂无公司上下文' }}</p>
+                <p><strong>建议分类：</strong>{{ llmSuggestionLabel() }}</p>
+                <p><strong>建议 level_1：</strong>{{ llmSuggestionClassification()?.level_1 || '暂无' }}</p>
+                <p><strong>建议 level_2：</strong>{{ llmSuggestionClassification()?.level_2 || '暂无' }}</p>
+                <p><strong>建议 level_3：</strong>{{ llmSuggestionClassification()?.level_3 || '暂无' }}</p>
+                <p><strong>建议 level_4：</strong>{{ llmSuggestionClassification()?.level_4 || '暂无' }}</p>
+                <p><strong>置信度：</strong>{{ formatConfidence(llmSuggestionClassification()?.confidence) }}</p>
+                <p><strong>结果来源：</strong>{{ classifierTypeLabel(llmSuggestionClassification()?.classifier_type) }}</p>
+                <p><strong>建议 review_status：</strong>{{ reviewStatusLabel(llmSuggestionClassification()?.review_status) }}</p>
+                <p><strong>建议 mapping_basis：</strong>{{ llmSuggestionClassification()?.mapping_basis || '暂无' }}</p>
+                <p><strong>模型输入上下文：</strong>{{ llmSuggestionPayload.request_context?.company_text || llmSuggestionPayload.request_context?.company_description || '暂无公司上下文' }}</p>
               </div>
               <el-empty
                 v-else
@@ -878,7 +1124,7 @@ watch(
         <div class="industry-review-desk__intro">
           <h3>当前需要人工优先处理的业务线</h3>
           <p>
-            这里先承担第一层人工征订入口的角色，帮助研究人员快速筛选待处理业务线。正式写回链路后，可直接在这里接人工确认与发布动作。
+            这里集中展示当前待处理业务线，可点击“查看详情”进入详情界面，再在详情界面中统一进行人工征订、模型辅助分析与后续确认。
           </p>
         </div>
         <el-table :data="flaggedSegments" stripe border empty-text="当前没有待处理业务线">
@@ -895,13 +1141,10 @@ watch(
               {{ reviewReasonLabel(resolvedClassification(row)?.review_reason) }}
             </template>
           </el-table-column>
-          <el-table-column label="操作" min-width="180">
+          <el-table-column label="详情" min-width="120">
             <template #default="{ row }">
               <el-button link type="primary" @click="reviewDeskVisible = false; openSegmentDetail(row)">
-                打开人工征订
-              </el-button>
-              <el-button link :type="llmButtonType(row)" @click="reviewDeskVisible = false; openSegmentDetail(row, { triggerLlm: true })">
-                LLM分析
+                查看详情
               </el-button>
             </template>
           </el-table-column>
@@ -1355,7 +1598,7 @@ watch(
 
 .industry-table-name {
   display: grid;
-  gap: 6px;
+  gap: 0;
   min-width: 0;
 }
 
@@ -1363,41 +1606,94 @@ watch(
   color: var(--brand-ink);
   font-size: 14px;
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 1.55;
 }
 
-.industry-table-name span {
+.industry-table-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-primary);
+  line-height: 1.6;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.industry-table-text--name {
+  color: var(--brand-ink);
+}
+
+.industry-table-text--single {
+  -webkit-line-clamp: 1;
+}
+
+.industry-table-text--summary {
+  font-size: 12.5px;
   color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.industry-table-status {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid rgba(120, 136, 160, 0.22);
+  border-radius: 999px;
+  background: rgba(120, 136, 160, 0.08);
+  color: var(--text-tertiary);
   font-size: 12px;
   line-height: 1.45;
+  white-space: nowrap;
+}
+
+.industry-summary-tooltip {
+  max-width: 360px;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.55;
 }
 
 .industry-table-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 12px;
+  justify-content: center;
 }
 
 .industry-table-shell {
   width: 100%;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
 }
 
 .industry-table-shell :deep(.el-table) {
   width: 100%;
-  min-width: 1280px;
 }
 
 .industry-table-shell :deep(.el-table th) {
   font-size: 12px;
 }
 
+.industry-table-shell :deep(.el-table td) {
+  vertical-align: top;
+}
+
 .industry-table-shell :deep(.el-table td),
 .industry-table-shell :deep(.el-table .cell) {
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.6;
+}
+
+.industry-table-shell :deep(.el-table th > .cell),
+.industry-table-shell :deep(.el-table td > .cell) {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.industry-table-shell :deep(.el-table th > .cell) {
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .industry-drawer {
@@ -1411,6 +1707,18 @@ watch(
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+
+.industry-drawer__header-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.industry-drawer__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .industry-drawer__header h3 {
@@ -1427,6 +1735,12 @@ watch(
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.55;
+}
+
+.industry-drawer__eyebrow {
+  color: var(--text-secondary);
+  font-size: 12px;
+  letter-spacing: 0.08em;
 }
 
 .industry-drawer__badges {
@@ -1496,9 +1810,39 @@ watch(
   min-width: 0;
 }
 
+.industry-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
 .industry-drawer-card__stack {
   display: grid;
   gap: 10px;
+}
+
+.industry-result-grid > div {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(249, 251, 254, 0.82);
+}
+
+.industry-result-grid span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.industry-result-grid strong {
+  color: var(--brand-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
 }
 
 .industry-drawer-card__stack p,
@@ -1508,6 +1852,78 @@ watch(
   font-size: 13px;
   line-height: 1.65;
   overflow-wrap: anywhere;
+}
+
+.industry-basis-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(77, 99, 124, 0.12);
+  background: linear-gradient(180deg, rgba(247, 250, 255, 0.92), rgba(255, 255, 255, 0.96));
+}
+
+.industry-basis-card__head span {
+  color: var(--brand-ink);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.industry-basis-card__head p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.industry-basis-list {
+  display: grid;
+  gap: 10px;
+}
+
+.industry-basis-item {
+  display: grid;
+  gap: 5px;
+}
+
+.industry-basis-item span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.industry-basis-item strong {
+  color: #33465b;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.industry-basis-raw {
+  padding-top: 4px;
+  border-top: 1px dashed rgba(77, 99, 124, 0.18);
+}
+
+.industry-basis-raw summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.industry-basis-raw pre {
+  margin: 10px 0 0;
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: 12px;
+  background: rgba(18, 28, 45, 0.04);
+  color: #40546a;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .industry-manual-form__actions,
@@ -1570,13 +1986,14 @@ watch(
   .industry-summary-row,
   .industry-status-strip__items,
   .industry-level-grid,
+  .industry-result-grid,
   .industry-manual-form__grid,
   .industry-drawer__meta {
     grid-template-columns: 1fr;
   }
 
   .industry-table-shell :deep(.el-table) {
-    min-width: 1080px;
+    min-width: 960px;
   }
 }
 </style>

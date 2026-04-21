@@ -48,6 +48,7 @@ const detailDrawerVisible = ref(false)
 const reviewDeskVisible = ref(false)
 const detailLoading = ref(false)
 const llmLoading = ref(false)
+const llmErrorMessage = ref('')
 const selectedSegmentId = ref(null)
 const selectedSegmentSnapshot = ref(null)
 const detailClassifications = ref([])
@@ -290,6 +291,7 @@ async function openSegmentDetail(segment, options = {}) {
   selectedSegmentSnapshot.value = segment
   detailDrawerVisible.value = true
   llmSuggestionPayload.value = null
+  llmErrorMessage.value = ''
   detailLoading.value = true
 
   try {
@@ -312,6 +314,8 @@ async function triggerLlmAnalysis(segment = selectedSegment.value) {
   if (!segment?.id) {
     return
   }
+  llmErrorMessage.value = ''
+  llmSuggestionPayload.value = null
   llmLoading.value = true
   try {
     llmSuggestionPayload.value = await requestBusinessSegmentLlmAnalysis(segment.id)
@@ -337,6 +341,48 @@ function llmSuggestionLabel() {
   return classificationSummary({
     classifications: llmSuggestionClassification() ? [llmSuggestionClassification()] : [],
   })
+}
+
+function llmClassifierTypeLabel(value) {
+  if (value === 'llm_assisted') {
+    return '模型辅助结果'
+  }
+  return classifierTypeLabel(value)
+}
+
+function llmReviewReasonLabel(value) {
+  const localLabels = {
+    llm_inconclusive: '模型未形成稳定判断',
+    llm_response_parse_failed: '模型返回解析失败',
+    clear_gics_alignment: '分类方向较为明确',
+    segment_fits_gics_structure: '已匹配当前 GICS 分类结构',
+    segment_clearly_fits_level_2: '已明确匹配到二级分类',
+  }
+  return localLabels[value] || reviewReasonLabel(value)
+}
+
+function formatLlmLevel(value) {
+  return value || '未细分'
+}
+
+function llmDisplayMessage() {
+  if (llmErrorMessage.value) {
+    return llmErrorMessage.value
+  }
+  return llmSuggestionPayload.value?.message || '尚未生成模型建议。'
+}
+
+function llmContextSummary() {
+  const requestContext = llmSuggestionPayload.value?.request_context
+  if (!requestContext) {
+    return '暂无上下文摘要'
+  }
+  return (
+    requestContext.company_description ||
+    requestContext.company_text ||
+    requestContext.peer_text ||
+    '暂无上下文摘要'
+  )
 }
 
 const BASIS_DECISION_LABELS = {
@@ -575,6 +621,7 @@ watch(
   (visible) => {
     if (!visible) {
       llmSuggestionPayload.value = null
+      llmErrorMessage.value = ''
     }
   },
 )
@@ -1090,7 +1137,76 @@ watch(
                 </el-button>
               </div>
 
-              <div v-if="llmSuggestionPayload" class="industry-llm-result">
+              <div v-if="llmLoading" class="industry-llm-loading">
+                <strong>模型分析中...</strong>
+                <p>正在向 DeepSeek 请求当前业务线的分类建议，请稍等片刻。</p>
+              </div>
+              <el-alert
+                v-else-if="llmErrorMessage"
+                type="error"
+                :closable="false"
+                show-icon
+                :title="llmErrorMessage"
+              />
+              <div v-else-if="llmSuggestionPayload" class="industry-llm-result">
+                <div class="industry-llm-summary">
+                  <div>
+                    <span>建议分类</span>
+                    <strong>{{ llmSuggestionLabel() }}</strong>
+                  </div>
+                  <div>
+                    <span>结果来源</span>
+                    <strong>{{ llmClassifierTypeLabel(llmSuggestionClassification()?.classifier_type) }}</strong>
+                  </div>
+                  <div>
+                    <span>建议状态</span>
+                    <strong>{{ reviewStatusLabel(llmSuggestionClassification()?.review_status) }}</strong>
+                  </div>
+                  <div>
+                    <span>置信度</span>
+                    <strong>{{ formatConfidence(llmSuggestionClassification()?.confidence) }}</strong>
+                  </div>
+                </div>
+
+                <div class="industry-llm-levels">
+                  <div>
+                    <span>一级分类</span>
+                    <strong>{{ formatLlmLevel(llmSuggestionClassification()?.level_1) }}</strong>
+                  </div>
+                  <div>
+                    <span>二级分类</span>
+                    <strong>{{ formatLlmLevel(llmSuggestionClassification()?.level_2) }}</strong>
+                  </div>
+                  <div>
+                    <span>三级分类</span>
+                    <strong>{{ formatLlmLevel(llmSuggestionClassification()?.level_3) }}</strong>
+                  </div>
+                  <div>
+                    <span>四级分类</span>
+                    <strong>{{ formatLlmLevel(llmSuggestionClassification()?.level_4) }}</strong>
+                  </div>
+                </div>
+
+                <div class="industry-llm-notes">
+                  <div>
+                    <span>当前原因</span>
+                    <strong>{{ llmReviewReasonLabel(llmSuggestionClassification()?.review_reason) }}</strong>
+                  </div>
+                  <div>
+                    <span>调用状态</span>
+                    <strong>{{ llmDisplayMessage() }}</strong>
+                  </div>
+                </div>
+
+                <div class="industry-llm-basis">
+                  <span>映射依据</span>
+                  <p>{{ llmSuggestionClassification()?.mapping_basis || '暂无映射依据' }}</p>
+                </div>
+
+                <div class="industry-llm-context">
+                  <span>模型参考上下文</span>
+                  <p>{{ llmContextSummary() }}</p>
+                </div>
                 <p><strong>状态：</strong>{{ llmSuggestionPayload.status }}</p>
                 <p><strong>消息：</strong>{{ llmSuggestionPayload.message }}</p>
                 <p><strong>建议分类：</strong>{{ llmSuggestionLabel() }}</p>
@@ -1938,6 +2054,36 @@ watch(
   margin-top: 6px;
 }
 
+.industry-llm-loading,
+.industry-llm-basis,
+.industry-llm-context {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(248, 251, 255, 0.86);
+}
+
+.industry-llm-loading strong,
+.industry-llm-basis span,
+.industry-llm-context span {
+  color: var(--brand-ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.industry-llm-loading p,
+.industry-llm-basis p,
+.industry-llm-context p {
+  margin: 0;
+  color: #33465b;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
 .industry-llm-result {
   display: grid;
   gap: 10px;
@@ -1945,6 +2091,47 @@ watch(
   border-radius: 14px;
   border: 1px solid rgba(31, 59, 87, 0.08);
   background: rgba(247, 250, 255, 0.9);
+}
+
+.industry-llm-result > p {
+  display: none;
+}
+
+.industry-llm-summary,
+.industry-llm-levels,
+.industry-llm-notes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.industry-llm-summary > div,
+.industry-llm-levels > div,
+.industry-llm-notes > div {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.industry-llm-summary span,
+.industry-llm-levels span,
+.industry-llm-notes span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.industry-llm-summary strong,
+.industry-llm-levels strong,
+.industry-llm-notes strong {
+  color: var(--brand-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
 }
 
 .industry-review-desk {
@@ -1987,6 +2174,9 @@ watch(
   .industry-status-strip__items,
   .industry-level-grid,
   .industry-result-grid,
+  .industry-llm-summary,
+  .industry-llm-levels,
+  .industry-llm-notes,
   .industry-manual-form__grid,
   .industry-drawer__meta {
     grid-template-columns: 1fr;

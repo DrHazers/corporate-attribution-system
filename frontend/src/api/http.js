@@ -25,7 +25,7 @@ export function normalizeApiError(error) {
 
 const http = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 20000,
+  timeout: 45000,
 })
 
 http.interceptors.response.use(

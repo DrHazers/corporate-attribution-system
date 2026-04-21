@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_APPLICATION_DATABASE_NAME = "ultimate_controller_enhanced_dataset_working.db"
+DEFAULT_APPLICATION_DATABASE_NAME = "ultimate_controller_enhanced_dataset_industry_working.db"
 DEFAULT_DATABASE_NAME_ENV_VAR = "CORP_DEFAULT_DATABASE_NAME"
 DEFAULT_DATABASE_PATH_ENV_VAR = "CORP_DEFAULT_DATABASE_PATH"
 

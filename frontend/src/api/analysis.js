@@ -16,6 +16,18 @@ export function requestBusinessSegmentLlmAnalysis(segmentId) {
   return http.post(`/business-segments/${segmentId}/classify-with-llm`)
 }
 
+export function confirmBusinessSegmentLlmClassification(segmentId, payload) {
+  return http.post(`/business-segments/${segmentId}/confirm-llm-classification`, payload)
+}
+
+export function runIndustryWorkbenchRuleAnalysis(payload) {
+  return http.post('/industry-workbench/rule-analysis', payload)
+}
+
+export function runIndustryWorkbenchLlmAnalysis(payload) {
+  return http.post('/industry-workbench/classify-with-llm', payload)
+}
+
 export function fetchCompanyControlChain(companyId) {
   return http.get(`/companies/${companyId}/control-chain`)
 }

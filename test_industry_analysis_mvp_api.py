@@ -16,6 +16,8 @@ from backend.analysis.industry_analysis import analyze_industry_structure_change
 from backend.database import Base, ensure_sqlite_schema
 from backend.main import app
 from backend.models.annotation_log import AnnotationLog
+from backend.models.business_segment import BusinessSegment
+from backend.models.business_segment_classification import BusinessSegmentClassification
 from backend.models.shareholder import ShareholderEntity
 
 
@@ -46,7 +48,7 @@ def industry_client(tmp_path, monkeypatch):
         finally:
             db.close()
 
-    monkeypatch.setattr(main_module, "init_db", lambda: None)
+    monkeypatch.setattr(main_module.database_module, "init_db", lambda: None)
     app.dependency_overrides[company_api.get_db] = override_get_db
     app.dependency_overrides[control_relationship_api.get_db] = override_get_db
     app.dependency_overrides[country_attribution_api.get_db] = override_get_db
@@ -135,6 +137,32 @@ def create_classification(
     )
     assert response.status_code == 201
     return response.json()
+
+
+class _FakeWorkbenchDeepSeekChatClient:
+    def create_chat_completion(self, *, messages):
+        assert len(messages) == 2
+        return type(
+            "FakeDeepSeekResult",
+            (),
+            {
+                "content": json.dumps(
+                    {
+                        "standard_system": "GICS",
+                        "level_1": "Information Technology",
+                        "level_2": "Software & Services",
+                        "level_3": "Software",
+                        "level_4": "Application Software",
+                        "is_primary": True,
+                        "mapping_basis": "LLM matched the segment to enterprise application software.",
+                        "review_status": "needs_manual_review",
+                        "classifier_type": "llm_assisted",
+                        "confidence": 0.81,
+                        "review_reason": "llm_suggested",
+                    }
+                )
+            },
+        )()
 
 
 def test_business_segments_crud_flow(industry_client):
@@ -1176,3 +1204,271 @@ def test_annotation_log_query_endpoints_return_filtered_results(industry_client)
     )
     assert other_classification_logs_response.status_code == 200
     assert other_classification_logs_response.json()["total_count"] == 1
+
+
+def test_industry_workbench_rule_analysis_uses_temporary_input_only(industry_client):
+    client, session_factory = industry_client
+
+    with session_factory() as db:
+        assert db.query(BusinessSegment).count() == 0
+        assert db.query(BusinessSegmentClassification).count() == 0
+        assert db.query(AnnotationLog).count() == 0
+
+    response = client.post(
+        "/industry-workbench/rule-analysis",
+        json={
+            "company_name": "Workbench Test Group",
+            "company_description": "Cloud software and digital services provider.",
+            "segments": [
+                {
+                    "local_id": "segment-cloud",
+                    "segment_name": "Cloud SaaS Platform",
+                    "segment_alias": "Cloud Platform",
+                    "description": "Provides enterprise SaaS and workflow software.",
+                    "revenue_ratio": "65.0000",
+                    "profit_ratio": "58.0000",
+                    "reporting_period": "2025A",
+                    "segment_type": "primary",
+                },
+                {
+                    "local_id": "segment-device",
+                    "segment_name": "Smart Devices",
+                    "description": "Develops connected hardware devices for consumers.",
+                    "revenue_ratio": "20.0000",
+                    "reporting_period": "2025A",
+                    "segment_type": "secondary",
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["company_name"] == "Workbench Test Group"
+    assert payload["business_segment_count"] == 2
+    assert len(payload["segments"]) == 2
+    assert payload["segments"][0]["id"] == "segment-cloud"
+    assert payload["segments"][0]["source"] == "temporary-workbench"
+    assert payload["segments"][0]["classifications"][0]["classifier_type"] == "rule_based"
+    assert payload["segments"][0]["classifications"][0]["review_status"] in {
+        "confirmed",
+        "pending",
+        "needs_llm_review",
+        "needs_manual_review",
+        "conflicted",
+        "unmapped",
+    }
+
+    with session_factory() as db:
+        assert db.query(BusinessSegment).count() == 0
+        assert db.query(BusinessSegmentClassification).count() == 0
+        assert db.query(AnnotationLog).count() == 0
+
+
+def test_industry_workbench_llm_analysis_returns_structured_suggestion_without_writing_db(
+    industry_client,
+    monkeypatch,
+):
+    client, session_factory = industry_client
+    monkeypatch.setattr(
+        "backend.analysis.industry_workbench.DeepSeekChatClient",
+        _FakeWorkbenchDeepSeekChatClient,
+    )
+
+    response = client.post(
+        "/industry-workbench/classify-with-llm",
+        json={
+            "company_name": "Workbench LLM Group",
+            "company_description": "Enterprise software vendor.",
+            "segments": [
+                {
+                    "local_id": "segment-app",
+                    "segment_name": "Workflow Software",
+                    "segment_alias": "Enterprise Apps",
+                    "description": "Provides cloud workflow, ERP and CRM software.",
+                    "revenue_ratio": "72.0000",
+                    "profit_ratio": "63.0000",
+                    "reporting_period": "2025A",
+                    "segment_type": "primary",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["company_name"] == "Workbench LLM Group"
+    assert payload["rule_analysis"]["business_segment_count"] == 1
+    assert len(payload["llm_results"]) == 1
+    llm_result = payload["llm_results"][0]
+    assert llm_result["segment_id"] == "segment-app"
+    assert llm_result["status"] == "success"
+    assert llm_result["suggested_classification"]["classifier_type"] == "llm_assisted"
+    assert llm_result["suggested_classification"]["review_status"] == "needs_manual_review"
+    assert (
+        llm_result["suggested_classification"]["industry_label"]
+        == "Information Technology > Software & Services > Software > Application Software"
+    )
+    assert llm_result["request_context"]["segment_name"] == "Workflow Software"
+
+    with session_factory() as db:
+        assert db.query(BusinessSegment).count() == 0
+        assert db.query(BusinessSegmentClassification).count() == 0
+        assert db.query(AnnotationLog).count() == 0
+
+
+def test_industry_workbench_endpoints_validate_temporary_payload(industry_client):
+    client, _ = industry_client
+
+    missing_company_response = client.post(
+        "/industry-workbench/rule-analysis",
+        json={
+            "company_name": "   ",
+            "segments": [
+                {
+                    "segment_name": "Cloud",
+                    "segment_type": "primary",
+                }
+            ],
+        },
+    )
+    assert missing_company_response.status_code == 400
+    assert "company_name" in missing_company_response.json()["detail"]
+
+    missing_segments_response = client.post(
+        "/industry-workbench/classify-with-llm",
+        json={
+            "company_name": "Workbench Empty",
+            "segments": [],
+        },
+    )
+    assert missing_segments_response.status_code == 400
+    assert "segments" in missing_segments_response.json()["detail"]
+
+
+def test_confirm_llm_classification_endpoint_writes_formal_result_and_survives_refresh(
+    industry_client,
+):
+    client, session_factory = industry_client
+    company = create_company(client, stock_code="LLM001")
+    segment = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Digital Advertising Marketplace",
+        segment_type="primary",
+        revenue_ratio="52.0000",
+    )
+    classification = create_classification(
+        client,
+        segment["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Application Software",
+        level_4="Application Software",
+        is_primary=True,
+        review_status="confirmed",
+        mapping_basis="Mapped from rule engine.",
+    )
+
+    confirm_response = client.post(
+        f"/business-segments/{segment['id']}/confirm-llm-classification?operator=pytest",
+        json={
+            "suggested_classification": {
+                "standard_system": "GICS",
+                "level_1": "Communication Services",
+                "level_2": "Media & Entertainment",
+                "level_3": "Interactive Media & Services",
+                "level_4": "Interactive Media & Services",
+                "is_primary": True,
+                "mapping_basis": "LLM matched the segment to interactive media and advertising.",
+                "review_status": "needs_manual_review",
+                "classifier_type": "llm_assisted",
+                "confidence": "0.8800",
+                "review_reason": "segment_fits_gics_structure",
+            },
+            "reason": "adopt llm suggestion",
+        },
+    )
+    assert confirm_response.status_code == 200
+    confirm_payload = confirm_response.json()
+    assert confirm_payload["segment_id"] == segment["id"]
+    assert confirm_payload["annotation_action"] == "confirm_llm"
+    assert confirm_payload["previous_classification"]["id"] == classification["id"]
+    assert confirm_payload["confirmed_classification"]["classifier_type"] == "llm_assisted"
+    assert confirm_payload["confirmed_classification"]["review_status"] == "confirmed"
+    assert confirm_payload["confirmed_classification"]["review_reason"] == "llm_suggested"
+
+    classifications_response = client.get(
+        f"/business-segments/{segment['id']}/classifications"
+    )
+    assert classifications_response.status_code == 200
+    classifications_payload = classifications_response.json()
+    assert len(classifications_payload) == 1
+    assert classifications_payload[0]["classifier_type"] == "llm_assisted"
+    assert classifications_payload[0]["review_status"] == "confirmed"
+    assert (
+        classifications_payload[0]["industry_label"]
+        == "Communication Services > Media & Entertainment > Interactive Media & Services > Interactive Media & Services"
+    )
+
+    industry_analysis_response = client.get(
+        f"/companies/{company['id']}/industry-analysis"
+    )
+    assert industry_analysis_response.status_code == 200
+    industry_payload = industry_analysis_response.json()
+    assert industry_payload["primary_industries"] == [
+        "Communication Services > Media & Entertainment > Interactive Media & Services > Interactive Media & Services"
+    ]
+    assert industry_payload["segments"][0]["classifications"][0]["classifier_type"] == (
+        "llm_assisted"
+    )
+
+    refresh_response = client.post("/industry-analysis/classifications/refresh")
+    assert refresh_response.status_code == 200
+    refresh_payload = refresh_response.json()
+    assert refresh_payload["skipped_protected_count"] == 1
+    assert refresh_payload["skipped_llm_assisted_count"] == 1
+
+    classifications_after_refresh_response = client.get(
+        f"/business-segments/{segment['id']}/classifications"
+    )
+    assert classifications_after_refresh_response.status_code == 200
+    classifications_after_refresh = classifications_after_refresh_response.json()
+    assert len(classifications_after_refresh) == 1
+    assert classifications_after_refresh[0]["classifier_type"] == "llm_assisted"
+    assert classifications_after_refresh[0]["review_status"] == "confirmed"
+
+    with session_factory() as db:
+        confirm_logs = (
+            db.query(AnnotationLog)
+            .filter(AnnotationLog.action_type == "confirm_llm")
+            .order_by(AnnotationLog.id.asc())
+            .all()
+        )
+
+        assert len(confirm_logs) == 2
+        assert {log.target_type for log in confirm_logs} == {
+            "business_segment",
+            "business_segment_classification",
+        }
+        assert all(log.reason == "adopt llm suggestion" for log in confirm_logs)
+        assert all(log.created_at is not None for log in confirm_logs)
+
+        business_log = next(
+            log for log in confirm_logs if log.target_type == "business_segment"
+        )
+        classification_log = next(
+            log
+            for log in confirm_logs
+            if log.target_type == "business_segment_classification"
+        )
+
+        business_old_value = json.loads(business_log.old_value)
+        business_new_value = json.loads(business_log.new_value)
+        classification_new_value = json.loads(classification_log.new_value)
+
+        assert business_log.target_id == segment["id"]
+        assert business_old_value["classifier_type"] in {None, "rule_based"}
+        assert business_new_value["classifier_type"] == "llm_assisted"
+        assert business_new_value["review_status"] == "confirmed"
+        assert classification_new_value["review_reason"] == "llm_suggested"

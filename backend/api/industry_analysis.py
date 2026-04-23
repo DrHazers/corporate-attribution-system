@@ -15,7 +15,12 @@ from backend.analysis.industry_analysis import (
 )
 from backend.analysis.industry_classification import (
     classify_business_segment_with_llm,
+    confirm_business_segment_llm_classification,
     refresh_business_segment_classifications,
+)
+from backend.analysis.industry_workbench import (
+    classify_industry_workbench_with_llm,
+    run_industry_workbench_rule_analysis,
 )
 from backend.services.llm.deepseek_client import (
     DeepSeekConfigurationError,
@@ -45,6 +50,8 @@ from backend.schemas.business_segment import (
     BusinessSegmentUpdate,
 )
 from backend.schemas.business_segment_classification import (
+    BusinessSegmentLlmConfirmationRequest,
+    BusinessSegmentLlmConfirmationResponse,
     BusinessSegmentClassificationCreate,
     BusinessSegmentClassificationRefreshSummary,
     BusinessSegmentLlmSuggestionResponse,
@@ -60,6 +67,11 @@ from backend.schemas.industry_analysis import (
     IndustryAnalysisPeriodsResponse,
     IndustryAnalysisQualityResponse,
     IndustryAnalysisRead,
+)
+from backend.schemas.industry_workbench import (
+    IndustryWorkbenchAnalysisRequest,
+    IndustryWorkbenchLlmAnalysisResponse,
+    IndustryWorkbenchRuleAnalysisResponse,
 )
 
 
@@ -390,6 +402,110 @@ def classify_business_segment_with_llm_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+    except DeepSeekConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except DeepSeekTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=str(exc),
+        ) from exc
+    except (DeepSeekInvocationError, DeepSeekEmptyResponseError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/business-segments/{segment_id}/confirm-llm-classification",
+    response_model=BusinessSegmentLlmConfirmationResponse,
+    summary="Confirm an LLM suggestion as the formal business segment classification",
+    description=(
+        "Adopt the current frontend-reviewed LLM suggestion, write it back into "
+        "business_segment_classifications as the formal current result, and "
+        "persist annotation logs for the before/after change."
+    ),
+    response_description="Confirmed formal classification payload after LLM adoption.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def confirm_business_segment_llm_classification_endpoint(
+    segment_id: int,
+    confirmation_in: BusinessSegmentLlmConfirmationRequest,
+    operator: str | None = Query(default="api"),
+    db: Session = Depends(get_db),
+):
+    try:
+        return confirm_business_segment_llm_classification(
+            db,
+            segment_id=segment_id,
+            suggested_classification=confirmation_in.suggested_classification,
+            reason=confirmation_in.reason,
+            operator=operator,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/industry-workbench/rule-analysis",
+    response_model=IndustryWorkbenchRuleAnalysisResponse,
+    summary="Run temporary industry workbench rule analysis",
+    description=(
+        "Analyze the current temporary company and segment input from the industry "
+        "workbench without writing any business_segments or "
+        "business_segment_classifications rows into the formal database."
+    ),
+    response_description="Temporary rule-analysis result for workbench display only.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def run_industry_workbench_rule_analysis_endpoint(
+    request_in: IndustryWorkbenchAnalysisRequest,
+):
+    try:
+        return run_industry_workbench_rule_analysis(request_in)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/industry-workbench/classify-with-llm",
+    response_model=IndustryWorkbenchLlmAnalysisResponse,
+    summary="Run temporary industry workbench LLM analysis",
+    description=(
+        "Run DeepSeek-backed temporary analysis for the current workbench input "
+        "without writing any formal business segment records or classification rows."
+    ),
+    response_description="Temporary workbench rule and LLM analysis payload.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def classify_industry_workbench_with_llm_endpoint(
+    request_in: IndustryWorkbenchAnalysisRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return classify_industry_workbench_with_llm(
+            db,
+            request=request_in,
+        )
     except DeepSeekConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

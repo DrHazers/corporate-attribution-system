@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session, selectinload
 
+from backend.crud.annotation_log import create_annotation_log, serialize_model_snapshot
 from backend.crud.business_segment_classification import (
     get_business_segment_classifications_by_segment_id,
 )
@@ -19,6 +20,7 @@ from backend.models.business_segment import BusinessSegment
 from backend.models.business_segment_classification import BusinessSegmentClassification
 from backend.models.company import Company
 from backend.schemas.business_segment_classification import (
+    BusinessSegmentLlmConfirmationResponse,
     BusinessSegmentClassificationRead,
     BusinessSegmentClassificationRefreshSummary,
     BusinessSegmentClassificationSuggestionRead,
@@ -1723,6 +1725,136 @@ def classify_business_segment_with_llm(
         current_classification=current_classification,
         suggested_classification=suggestion,
         request_context=request_context,
+    )
+
+
+def _select_confirmation_target_row(
+    rows: list[BusinessSegmentClassification],
+) -> BusinessSegmentClassification | None:
+    if not rows:
+        return None
+    return sorted(
+        rows,
+        key=lambda row: (
+            not row.is_primary,
+            row.classifier_type != "llm_assisted",
+            row.classifier_type != "rule_based",
+            row.id,
+        ),
+    )[0]
+
+
+def _serialize_classification_snapshot(
+    classification: BusinessSegmentClassification | BusinessSegmentClassificationRead | None,
+) -> str | None:
+    if classification is None:
+        return None
+    if isinstance(classification, BusinessSegmentClassification):
+        return serialize_model_snapshot(classification)
+    return json.dumps(
+        classification.model_dump(),
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
+def confirm_business_segment_llm_classification(
+    db: Session,
+    *,
+    segment_id: int,
+    suggested_classification: BusinessSegmentClassificationSuggestionRead,
+    reason: str | None = None,
+    operator: str | None = "api",
+) -> BusinessSegmentLlmConfirmationResponse:
+    segment = (
+        db.query(BusinessSegment)
+        .options(selectinload(BusinessSegment.classifications))
+        .filter(BusinessSegment.id == segment_id)
+        .first()
+    )
+    if segment is None:
+        raise LookupError("Business segment not found.")
+
+    current_rows = get_business_segment_classifications_by_segment_id(
+        db,
+        business_segment_id=segment_id,
+    )
+    previous_current = _get_current_classification(db, segment_id=segment_id)
+    previous_current_snapshot = _serialize_classification_snapshot(previous_current)
+    target_row = _select_confirmation_target_row(current_rows)
+    removed_classification_ids = [
+        row.id for row in current_rows if target_row is None or row.id != target_row.id
+    ]
+    annotation_reason = normalize_optional_text(reason) or "llm_suggested"
+    previous_target_snapshot = serialize_model_snapshot(target_row)
+
+    if target_row is None:
+        target_row = BusinessSegmentClassification(business_segment_id=segment_id)
+        db.add(target_row)
+
+    target_row.standard_system = suggested_classification.standard_system
+    target_row.level_1 = suggested_classification.level_1
+    target_row.level_2 = suggested_classification.level_2
+    target_row.level_3 = suggested_classification.level_3
+    target_row.level_4 = suggested_classification.level_4
+    target_row.is_primary = suggested_classification.is_primary
+    target_row.mapping_basis = suggested_classification.mapping_basis
+    target_row.review_status = "confirmed"
+    target_row.classifier_type = "llm_assisted"
+    target_row.confidence = suggested_classification.confidence
+    target_row.review_reason = "llm_suggested"
+    db.flush()
+
+    for row in current_rows:
+        if row.id == target_row.id:
+            continue
+        create_annotation_log(
+            db,
+            target_type="business_segment_classification",
+            target_id=row.id,
+            action_type="delete",
+            old_value=serialize_model_snapshot(row),
+            new_value=None,
+            reason=annotation_reason,
+            operator=operator,
+        )
+        db.delete(row)
+
+    new_target_snapshot = serialize_model_snapshot(target_row)
+    create_annotation_log(
+        db,
+        target_type="business_segment_classification",
+        target_id=target_row.id,
+        action_type="confirm_llm",
+        old_value=previous_target_snapshot,
+        new_value=new_target_snapshot,
+        reason=annotation_reason,
+        operator=operator,
+    )
+    create_annotation_log(
+        db,
+        target_type="business_segment",
+        target_id=segment_id,
+        action_type="confirm_llm",
+        old_value=previous_current_snapshot,
+        new_value=new_target_snapshot,
+        reason=annotation_reason,
+        operator=operator,
+    )
+    db.commit()
+    db.refresh(target_row)
+
+    return BusinessSegmentLlmConfirmationResponse(
+        segment_id=segment_id,
+        status="confirmed",
+        message="LLM suggestion has been adopted as the formal classification result.",
+        previous_classification=previous_current,
+        confirmed_classification=BusinessSegmentClassificationRead.model_validate(
+            target_row
+        ),
+        removed_classification_ids=removed_classification_ids,
+        annotation_action="confirm_llm",
     )
 
 

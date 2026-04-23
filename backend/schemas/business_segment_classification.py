@@ -264,3 +264,18 @@ class BusinessSegmentLlmSuggestionResponse(BaseModel):
     current_classification: BusinessSegmentClassificationRead | None = None
     suggested_classification: BusinessSegmentClassificationSuggestionRead
     request_context: BusinessSegmentLlmRequestContext | None = None
+
+
+class BusinessSegmentLlmConfirmationRequest(BaseModel):
+    suggested_classification: BusinessSegmentClassificationSuggestionRead
+    reason: str | None = None
+
+
+class BusinessSegmentLlmConfirmationResponse(BaseModel):
+    segment_id: int
+    status: str
+    message: str
+    previous_classification: BusinessSegmentClassificationRead | None = None
+    confirmed_classification: BusinessSegmentClassificationRead
+    removed_classification_ids: list[int] = Field(default_factory=list)
+    annotation_action: str = "confirm_llm"

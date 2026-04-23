@@ -195,6 +195,23 @@ async function loadCompanyData(companyId) {
   }
 }
 
+async function refreshIndustryAnalysisData(companyId = company.value?.id || resolvedCompanyId.value) {
+  if (!companyId || !summaryData.value) {
+    return
+  }
+
+  try {
+    const nextIndustryAnalysis = await fetchCompanyIndustryAnalysis(companyId)
+    summaryData.value = {
+      ...summaryData.value,
+      industry_analysis: nextIndustryAnalysis,
+    }
+  } catch (error) {
+    ElMessage.warning(error.message || '产业分析结果刷新失败。')
+    throw error
+  }
+}
+
 async function handleSearch() {
   try {
     const normalizedCompanyId = normalizeCompanyId(companyIdInput.value)
@@ -1161,6 +1178,7 @@ async function handleRestoreAutomaticResult() {
                 :company-id="company?.id || resolvedCompanyId"
                 :industry-analysis="industryAnalysis"
                 :loading="loading"
+                @refresh-industry-analysis="refreshIndustryAnalysisData"
               />
             </div>
           </section>

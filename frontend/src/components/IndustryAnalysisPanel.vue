@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
 
 import {
+  confirmBusinessSegmentLlmClassification,
   fetchBusinessSegmentClassifications,
   requestBusinessSegmentLlmAnalysis,
 } from '@/api/analysis'
@@ -43,11 +44,13 @@ const props = defineProps({
     default: false,
   },
 })
+const emit = defineEmits(['refresh-industry-analysis'])
 
 const detailDrawerVisible = ref(false)
 const reviewDeskVisible = ref(false)
 const detailLoading = ref(false)
 const llmLoading = ref(false)
+const llmConfirming = ref(false)
 const llmErrorMessage = ref('')
 const selectedSegmentId = ref(null)
 const selectedSegmentSnapshot = ref(null)
@@ -273,6 +276,32 @@ const effectiveClassifications = computed(() => {
 })
 const selectedClassification = computed(() => effectiveClassifications.value[0] || null)
 
+function normalizeComparableValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+  return String(value).trim()
+}
+
+function sameClassificationShape(left, right) {
+  if (!left || !right) {
+    return false
+  }
+  return [
+    'standard_system',
+    'level_1',
+    'level_2',
+    'level_3',
+    'level_4',
+    'mapping_basis',
+    'classifier_type',
+    'review_status',
+    'review_reason',
+  ].every((field) => normalizeComparableValue(left[field]) === normalizeComparableValue(right[field])) &&
+    Boolean(left.is_primary) === Boolean(right.is_primary) &&
+    normalizeComparableValue(left.confidence) === normalizeComparableValue(right.confidence)
+}
+
 function resolvedClassification(segment) {
   return manualOverrides.value[segment.id] || primaryClassification(segment)
 }
@@ -329,6 +358,59 @@ async function triggerLlmAnalysis(segment = selectedSegment.value) {
   }
 }
 
+function applyConfirmedClassificationLocally(classification) {
+  if (!selectedSegment.value?.id || !classification) {
+    return
+  }
+
+  const confirmedClassification = cloneClassification(classification)
+  detailClassifications.value = [confirmedClassification]
+
+  const activeSegment = selectedSegment.value || selectedSegmentSnapshot.value
+  if (!activeSegment) {
+    return
+  }
+
+  selectedSegmentSnapshot.value = {
+    ...activeSegment,
+    classifications: [confirmedClassification],
+    classification_labels: [confirmedClassification.industry_label].filter(Boolean),
+    confidence: confirmedClassification.confidence,
+  }
+}
+
+async function confirmLlmSuggestion() {
+  if (!selectedSegment.value?.id || !llmSuggestionClassification()) {
+    return
+  }
+
+  llmConfirming.value = true
+  try {
+    const response = await confirmBusinessSegmentLlmClassification(
+      selectedSegment.value.id,
+      {
+        suggested_classification: llmSuggestionClassification(),
+      },
+    )
+    applyConfirmedClassificationLocally(response.confirmed_classification)
+    llmSuggestionPayload.value = {
+      ...llmSuggestionPayload.value,
+      status: response.status,
+      message: response.message,
+      current_classification: response.confirmed_classification,
+    }
+    const nextOverrides = { ...manualOverrides.value }
+    delete nextOverrides[selectedSegment.value.id]
+    manualOverrides.value = nextOverrides
+    emit('refresh-industry-analysis')
+    ElMessage.success('模型建议已写回正式结果。')
+  } catch (error) {
+    ElMessage.warning(error.message || '模型建议写回失败。')
+  } finally {
+    llmConfirming.value = false
+  }
+}
+
 function currentClassificationSummary(segment) {
   return classificationSummary(segment)
 }
@@ -342,6 +424,24 @@ function llmSuggestionLabel() {
     classifications: llmSuggestionClassification() ? [llmSuggestionClassification()] : [],
   })
 }
+
+const llmSuggestionAdopted = computed(() => {
+  const suggestion = llmSuggestionClassification()
+  const current = selectedClassification.value
+  if (!suggestion || !current) {
+    return false
+  }
+
+  return sameClassificationShape(
+    {
+      ...suggestion,
+      classifier_type: 'llm_assisted',
+      review_status: 'confirmed',
+      review_reason: 'llm_suggested',
+    },
+    current,
+  )
+})
 
 function llmClassifierTypeLabel(value) {
   if (value === 'llm_assisted') {
@@ -1206,6 +1306,23 @@ watch(
                 <div class="industry-llm-context">
                   <span>模型参考上下文</span>
                   <p>{{ llmContextSummary() }}</p>
+                </div>
+                <el-alert
+                  v-if="llmSuggestionAdopted"
+                  type="success"
+                  :closable="false"
+                  show-icon
+                  title="该模型建议已采用并写回正式结果。"
+                />
+                <div class="industry-llm-actions">
+                  <el-button
+                    type="primary"
+                    :loading="llmConfirming"
+                    :disabled="llmSuggestionAdopted"
+                    @click="confirmLlmSuggestion"
+                  >
+                    采用该建议
+                  </el-button>
                 </div>
                 <p><strong>状态：</strong>{{ llmSuggestionPayload.status }}</p>
                 <p><strong>消息：</strong>{{ llmSuggestionPayload.message }}</p>
@@ -2095,6 +2212,11 @@ watch(
 
 .industry-llm-result > p {
   display: none;
+}
+
+.industry-llm-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .industry-llm-summary,

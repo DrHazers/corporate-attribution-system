@@ -279,3 +279,57 @@ class BusinessSegmentLlmConfirmationResponse(BaseModel):
     confirmed_classification: BusinessSegmentClassificationRead
     removed_classification_ids: list[int] = Field(default_factory=list)
     annotation_action: str = "confirm_llm"
+
+
+class BusinessSegmentManualClassificationRequest(BaseModel):
+    standard_system: str = "GICS"
+    level_1: str | None = None
+    level_2: str | None = None
+    level_3: str | None = None
+    level_4: str | None = None
+    is_primary: bool | None = None
+    mapping_basis: str | None = None
+    review_status: BusinessSegmentClassificationReviewStatus | None = "confirmed"
+    confidence: Decimal | None = Decimal("1.0")
+    mark_as_final: bool = True
+
+    @field_validator("standard_system", mode="before")
+    @classmethod
+    def normalize_standard_system_value(cls, value: str | None) -> str:
+        return normalize_standard_system(value)
+
+    @field_validator(
+        "level_1",
+        "level_2",
+        "level_3",
+        "level_4",
+        "mapping_basis",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_text_fields(cls, value: str | None) -> str | None:
+        return normalize_optional_text(value)
+
+    @field_validator("review_status", mode="before")
+    @classmethod
+    def normalize_review_status_value(cls, value: str | None) -> str | None:
+        return normalize_classification_review_status(value) or "confirmed"
+
+    @field_validator("confidence")
+    @classmethod
+    def validate_manual_confidence(cls, value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return Decimal("1.0")
+        if value < Decimal("0") or value > Decimal("1"):
+            raise ValueError("confidence must be between 0 and 1.")
+        return value
+
+
+class BusinessSegmentManualClassificationResponse(BaseModel):
+    segment_id: int
+    status: str
+    message: str
+    previous_classification: BusinessSegmentClassificationRead | None = None
+    confirmed_classification: BusinessSegmentClassificationRead
+    removed_classification_ids: list[int] = Field(default_factory=list)
+    annotation_action: str = "manual_override"

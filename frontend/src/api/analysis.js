@@ -20,6 +20,10 @@ export function confirmBusinessSegmentLlmClassification(segmentId, payload) {
   return http.post(`/business-segments/${segmentId}/confirm-llm-classification`, payload)
 }
 
+export function submitBusinessSegmentManualClassification(segmentId, payload) {
+  return http.post(`/business-segments/${segmentId}/manual-classification`, payload)
+}
+
 export function runIndustryWorkbenchRuleAnalysis(payload) {
   return http.post('/industry-workbench/rule-analysis', payload)
 }

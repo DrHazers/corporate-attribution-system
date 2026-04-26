@@ -10,8 +10,12 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.analysis.industry_classification import (
     classify_business_segment_with_llm,
+    confirm_business_segment_manual_classification,
     confirm_business_segment_llm_classification,
     refresh_business_segment_classifications,
+)
+from backend.schemas.business_segment_classification import (
+    BusinessSegmentManualClassificationRequest,
 )
 from backend.database import ensure_sqlite_schema
 
@@ -536,3 +540,116 @@ def test_confirm_llm_classification_replaces_current_result_and_stays_protected_
     assert all(row["reason"] == "adopt llm suggestion" for row in confirm_logs)
     assert any('"classifier_type": "rule_based"' in (row["old_value"] or "") for row in confirm_logs)
     assert all('"classifier_type": "llm_assisted"' in (row["new_value"] or "") for row in confirm_logs)
+
+
+def test_confirm_manual_classification_writes_back_and_stays_protected_on_refresh(
+    tmp_path: Path,
+):
+    database_path = tmp_path / "industry_manual_confirm.db"
+    _build_database(database_path)
+
+    engine = create_engine(
+        f"sqlite:///{database_path}",
+        connect_args={"check_same_thread": False},
+    )
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    try:
+        with session_factory() as session:
+            refresh_business_segment_classifications(session, segment_ids=[1])
+            confirmation = confirm_business_segment_manual_classification(
+                session,
+                segment_id=1,
+                manual_classification=BusinessSegmentManualClassificationRequest(
+                    standard_system="GICS",
+                    level_1="Information Technology",
+                    level_2="Software & Services",
+                    level_3="Software",
+                    level_4="Application Software",
+                    is_primary=True,
+                    mapping_basis="人工核对业务线披露后，确认主营属性属于企业应用软件。",
+                    confidence=1,
+                    mark_as_final=True,
+                ),
+                operator="pytest",
+            )
+            refresh_summary = refresh_business_segment_classifications(
+                session,
+                segment_ids=[1],
+            )
+
+        connection = sqlite3.connect(database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            segment_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT
+                        id,
+                        business_segment_id,
+                        standard_system,
+                        level_1,
+                        level_2,
+                        level_3,
+                        level_4,
+                        is_primary,
+                        mapping_basis,
+                        review_status,
+                        classifier_type,
+                        confidence,
+                        review_reason
+                    FROM business_segment_classifications
+                    WHERE business_segment_id = 1
+                    ORDER BY id
+                    """
+                ).fetchall()
+            ]
+            manual_logs = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT
+                        target_type,
+                        target_id,
+                        action_type,
+                        old_value,
+                        new_value,
+                        reason
+                    FROM annotation_logs
+                    WHERE action_type = 'manual_override'
+                    ORDER BY id
+                    """
+                ).fetchall()
+            ]
+        finally:
+            connection.close()
+    finally:
+        engine.dispose()
+
+    assert confirmation.status == "confirmed"
+    assert confirmation.confirmed_classification.classifier_type == "manual"
+    assert confirmation.confirmed_classification.review_status == "confirmed"
+    assert confirmation.confirmed_classification.review_reason == "manual_confirmed"
+    assert confirmation.confirmed_classification.confidence == 1
+
+    assert len(segment_rows) == 1
+    assert segment_rows[0]["classifier_type"] == "manual"
+    assert segment_rows[0]["review_status"] == "confirmed"
+    assert segment_rows[0]["review_reason"] == "manual_confirmed"
+    assert segment_rows[0]["mapping_basis"] == "人工核对业务线披露后，确认主营属性属于企业应用软件。"
+    assert float(segment_rows[0]["confidence"]) == 1.0
+
+    assert refresh_summary.total_segments == 1
+    assert refresh_summary.classification_rows == 1
+    assert refresh_summary.skipped_protected_count == 1
+    assert refresh_summary.skipped_manual_count == 1
+
+    assert len(manual_logs) == 2
+    assert {row["target_type"] for row in manual_logs} == {
+        "business_segment",
+        "business_segment_classification",
+    }
+    assert all(row["reason"] == "人工核对业务线披露后，确认主营属性属于企业应用软件。" for row in manual_logs)
+    assert any('"classifier_type": "rule_based"' in (row["old_value"] or "") for row in manual_logs)
+    assert all('"classifier_type": "manual"' in (row["new_value"] or "") for row in manual_logs)

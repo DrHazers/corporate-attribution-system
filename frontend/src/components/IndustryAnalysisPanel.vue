@@ -7,6 +7,7 @@ import {
   confirmBusinessSegmentLlmClassification,
   fetchBusinessSegmentClassifications,
   requestBusinessSegmentLlmAnalysis,
+  submitBusinessSegmentManualClassification,
 } from '@/api/analysis'
 import IndustryStructurePieChart from '@/components/IndustryStructurePieChart.vue'
 import {
@@ -47,10 +48,10 @@ const props = defineProps({
 const emit = defineEmits(['refresh-industry-analysis'])
 
 const detailDrawerVisible = ref(false)
-const reviewDeskVisible = ref(false)
 const detailLoading = ref(false)
 const llmLoading = ref(false)
 const llmConfirming = ref(false)
+const manualSaving = ref(false)
 const llmErrorMessage = ref('')
 const selectedSegmentId = ref(null)
 const selectedSegmentSnapshot = ref(null)
@@ -379,6 +380,15 @@ function applyConfirmedClassificationLocally(classification) {
   }
 }
 
+async function refreshSelectedSegmentClassifications(segmentId = selectedSegment.value?.id) {
+  if (!segmentId) {
+    return []
+  }
+  const classifications = await fetchBusinessSegmentClassifications(segmentId)
+  detailClassifications.value = classifications
+  return classifications
+}
+
 async function confirmLlmSuggestion() {
   if (!selectedSegment.value?.id || !llmSuggestionClassification()) {
     return
@@ -660,52 +670,51 @@ function llmButtonType(segment) {
   return llmRecommended(segment) ? 'danger' : 'primary'
 }
 
-function openReviewDesk() {
-  reviewDeskVisible.value = true
-}
-
-function submitManualDraft() {
+async function submitManualClassification() {
   if (!selectedSegment.value?.id) {
     return
   }
   if (!manualDraft.level_1 && !manualDraft.level_2 && !manualDraft.level_3 && !manualDraft.level_4) {
-    ElMessage.warning('请至少填写一个产业层级后再暂存人工征订。')
+    ElMessage.warning('请至少填写一个产业层级后再应用人工征订。')
+    return
+  }
+  if (!manualDraft.mapping_basis?.trim()) {
+    ElMessage.warning('请填写人工修订依据后再应用人工征订。')
     return
   }
 
-  manualOverrides.value = {
-    ...manualOverrides.value,
-    [selectedSegment.value.id]: {
-      id: `manual-${selectedSegment.value.id}`,
-      business_segment_id: selectedSegment.value.id,
+  manualSaving.value = true
+  try {
+    const response = await submitBusinessSegmentManualClassification(selectedSegment.value.id, {
       standard_system: 'GICS',
       level_1: manualDraft.level_1 || null,
       level_2: manualDraft.level_2 || null,
       level_3: manualDraft.level_3 || null,
       level_4: manualDraft.level_4 || null,
-      industry_label: [
-        manualDraft.level_1,
-        manualDraft.level_2,
-        manualDraft.level_3,
-        manualDraft.level_4,
-      ]
-        .filter(Boolean)
-        .join(' > '),
       is_primary: selectedSegment.value.segment_type === 'primary',
-      mapping_basis:
-        manualDraft.mapping_basis || '人工修订（未填写详细依据）',
-      review_status: manualDraft.final_confirmed ? 'confirmed' : 'needs_manual_review',
-      classifier_type: 'manual',
+      mapping_basis: manualDraft.mapping_basis,
+      review_status: 'confirmed',
       confidence: 1,
-      review_reason: 'manual_override',
-    },
+      mark_as_final: manualDraft.final_confirmed,
+    })
+
+    applyConfirmedClassificationLocally(response.confirmed_classification)
+    await refreshSelectedSegmentClassifications(selectedSegment.value.id)
+    const nextOverrides = { ...manualOverrides.value }
+    delete nextOverrides[selectedSegment.value.id]
+    manualOverrides.value = nextOverrides
+    resetManualDraft(response.confirmed_classification)
+    emit('refresh-industry-analysis')
+    ElMessage.success('人工征订结果已写回。')
+  } catch (error) {
+    ElMessage.warning(error.message || '人工征订写回失败。')
+  } finally {
+    manualSaving.value = false
   }
-  detailClassifications.value = [manualOverrides.value[selectedSegment.value.id]]
-  ElMessage.success('已在前端暂存人工征订草案，当前仅用于展示预演，尚未写回正式数据库。')
 }
 
-function clearManualDraft() {
-  if (!selectedSegment.value?.id || !manualOverrides.value[selectedSegment.value.id]) {
+function resetManualDraftInput() {
+  if (!selectedSegment.value?.id) {
     return
   }
   const nextOverrides = { ...manualOverrides.value }
@@ -713,7 +722,7 @@ function clearManualDraft() {
   manualOverrides.value = nextOverrides
   detailClassifications.value = selectedSegmentSnapshot.value?.classifications || []
   resetManualDraft(primaryClassification(selectedSegmentSnapshot.value))
-  ElMessage.info('已移除当前业务线的前端本地人工征订草案。')
+  ElMessage.info('已重置当前人工征订输入。')
 }
 
 watch(
@@ -741,8 +750,6 @@ watch(
       <div class="industry-hero__actions">
         <el-button type="primary">
           进入产业分析工作台
-        </el-button>
-        <el-button v-if="false" plain @click="openReviewDesk">
           人工征订入口
         </el-button>
       </div>
@@ -843,30 +850,28 @@ watch(
         <div class="section-heading">
           <div>
             <h3>人工征订与研究工作面</h3>
-            <p>产业分析与控制分析保持一致：自动结果先给出，人工可优先修订，模型入口随后补充。</p>
+            <p>系统根据业务线分类状态筛选出需要优先复核的样本，便于结合规则结果、模型建议与人工判断进行修订与确认。</p>
           </div>
         </div>
 
         <div class="industry-review-card__priority">
-          <span>人工结果优先于自动结果</span>
-          <p>当前阶段支持在前端本地预演人工修订，不会直接改写正式数据库。后续接通写回接口后，这一块可平滑升级为正式征订流程。</p>
+          <span>人工复核结果可作为最终分类</span>
+          <p>当研究人员对分类结果进行确认或修订后，系统将优先采用人工复核结果作为当前业务线的分类结论。</p>
         </div>
 
         <div class="industry-review-card__queue">
           <div>
             <strong>{{ flaggedSegments.length }}</strong>
-            <span>条业务线已进入当前待处理队列</span>
+            <span>条业务线需要优先复核</span>
           </div>
-          <el-button plain @click="openReviewDesk">
-            打开人工征订台
-          </el-button>
         </div>
+
 
         <div v-if="flaggedSegments.length" class="industry-review-card__list-wrap">
           <div class="industry-review-card__list-head">
             <div>
               <h4>待处理业务线队列</h4>
-              <p>以下对象会进入人工征订台优先处理；当前列表仅用于浏览与载入，不作为第二组主入口。</p>
+              <p>以下业务线需要优先复核，可点击“查看”进入详情页，结合规则结果、模型建议与人工判断完成修订。</p>
             </div>
           </div>
 
@@ -1096,8 +1101,8 @@ watch(
           <section class="industry-drawer-section">
             <div class="section-heading">
               <div>
-                <h3>当前规则结果</h3>
-                <p>正式 refresh 的当前主 classification 结果。</p>
+                <h3>当前正式结果</h3>
+                <p>这里展示当前业务线在正式数据库中的分类结果、结果来源与映射依据，人工征订写回后会立即反映在这里。</p>
               </div>
             </div>
             <div class="industry-drawer-card">
@@ -1141,7 +1146,7 @@ watch(
                 <div class="industry-basis-card__head">
                   <div>
                     <span>映射依据摘要</span>
-                    <p>默认展示中文可读摘要，便于快速判断当前规则结果。</p>
+                    <p>默认展示当前分类结果的摘要依据，便于核对规则结果或人工修订是否一致。</p>
                   </div>
                 </div>
                 <div class="industry-basis-list">
@@ -1155,7 +1160,7 @@ watch(
                   </div>
                 </div>
                 <details v-if="selectedClassification?.mapping_basis" class="industry-basis-raw">
-                  <summary>展开查看原始规则依据</summary>
+                  <summary>展开查看原始映射依据</summary>
                   <pre>{{ selectedClassification.mapping_basis }}</pre>
                 </details>
               </div>
@@ -1166,22 +1171,22 @@ watch(
             <div class="section-heading">
               <div>
                 <h3>人工征订 / 人工修订</h3>
-                <p>当前先提供前端本地预演区，交互结构按“人工结果优先”设计，后续可直接接正式写回接口。</p>
+                <p>这里直接面向正式公司业务线结果。人工征订提交后会写回正式数据库，并成为当前业务线的正式分类结果。</p>
               </div>
             </div>
             <div class="industry-drawer-card industry-drawer-card--manual">
               <el-form label-position="top" class="industry-manual-form">
                 <div class="industry-manual-form__grid">
-                  <el-form-item label="Level 1">
+                  <el-form-item label="一级分类">
                     <el-input v-model="manualDraft.level_1" placeholder="例如 Information Technology" />
                   </el-form-item>
-                  <el-form-item label="Level 2">
+                  <el-form-item label="二级分类">
                     <el-input v-model="manualDraft.level_2" placeholder="例如 Software & Services" />
                   </el-form-item>
-                  <el-form-item label="Level 3">
+                  <el-form-item label="三级分类">
                     <el-input v-model="manualDraft.level_3" placeholder="例如 Software" />
                   </el-form-item>
-                  <el-form-item label="Level 4">
+                  <el-form-item label="四级分类">
                     <el-input v-model="manualDraft.level_4" placeholder="例如 Application Software" />
                   </el-form-item>
                 </div>
@@ -1200,11 +1205,11 @@ watch(
                 </el-form-item>
               </el-form>
               <div class="industry-manual-form__actions">
-                <el-button type="primary" @click="submitManualDraft">
-                  暂存人工征订（本地预演）
+                <el-button type="primary" :loading="manualSaving" @click="submitManualClassification">
+                  应用人工征订
                 </el-button>
-                <el-button plain @click="clearManualDraft">
-                  清空本地征订
+                <el-button plain @click="resetManualDraftInput">
+                  重置人工输入
                 </el-button>
               </div>
             </div>
@@ -1214,7 +1219,7 @@ watch(
             <div class="section-heading">
               <div>
                 <h3>模型辅助分析</h3>
-                <p>按钮与展示位已预留。当前会调用后端占位接口，返回标准化的建议结构，不写正式库。</p>
+                <p>可结合模型建议补充判断依据，并在人工复核后完成当前业务线分类结果的确认。</p>
               </div>
             </div>
             <div class="industry-drawer-card">
@@ -1334,7 +1339,7 @@ watch(
                 <p><strong>置信度：</strong>{{ formatConfidence(llmSuggestionClassification()?.confidence) }}</p>
                 <p><strong>结果来源：</strong>{{ classifierTypeLabel(llmSuggestionClassification()?.classifier_type) }}</p>
                 <p><strong>建议 review_status：</strong>{{ reviewStatusLabel(llmSuggestionClassification()?.review_status) }}</p>
-                <p><strong>建议 mapping_basis：</strong>{{ llmSuggestionClassification()?.mapping_basis || '暂无' }}</p>
+                <p><strong>建议映射依据：</strong>{{ llmSuggestionClassification()?.mapping_basis || '暂无' }}</p>
                 <p><strong>模型输入上下文：</strong>{{ llmSuggestionPayload.request_context?.company_text || llmSuggestionPayload.request_context?.company_description || '暂无公司上下文' }}</p>
               </div>
               <el-empty
@@ -1347,43 +1352,6 @@ watch(
         </template>
       </div>
     </el-drawer>
-
-    <el-dialog
-      v-model="reviewDeskVisible"
-      title="产业分析人工征订台"
-      width="860px"
-    >
-      <div class="industry-review-desk">
-        <div class="industry-review-desk__intro">
-          <h3>当前需要人工优先处理的业务线</h3>
-          <p>
-            这里集中展示当前待处理业务线，可点击“查看详情”进入详情界面，再在详情界面中统一进行人工征订、模型辅助分析与后续确认。
-          </p>
-        </div>
-        <el-table :data="flaggedSegments" stripe border empty-text="当前没有待处理业务线">
-          <el-table-column prop="segment_name" label="业务线" min-width="220" />
-          <el-table-column label="当前状态" min-width="140">
-            <template #default="{ row }">
-              <el-tag :type="reviewStatusTagType(resolvedClassification(row)?.review_status)" effect="plain">
-                {{ reviewStatusLabel(resolvedClassification(row)?.review_status) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="原因" min-width="160">
-            <template #default="{ row }">
-              {{ reviewReasonLabel(resolvedClassification(row)?.review_reason) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="详情" min-width="120">
-            <template #default="{ row }">
-              <el-button link type="primary" @click="reviewDeskVisible = false; openSegmentDetail(row)">
-                查看详情
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </el-dialog>
   </div>
 </template>
 
@@ -1448,19 +1416,9 @@ watch(
 }
 
 .industry-drawer-section h3,
-.industry-review-desk__intro h3 {
-  margin: 0;
-  color: var(--brand-ink);
-  font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.4;
-}
-
 .industry-hero__copy p,
 .industry-status-strip__head p,
 .industry-drawer-section p,
-.industry-review-desk__intro p,
 .industry-review-card__priority p {
   margin: 0;
   color: var(--text-secondary);
@@ -2256,15 +2214,6 @@ watch(
   overflow-wrap: anywhere;
 }
 
-.industry-review-desk {
-  display: grid;
-  gap: 18px;
-  min-width: 0;
-}
-
-.industry-review-desk__intro h3 {
-  margin: 0 0 6px;
-}
 
 @media (max-width: 1200px) {
   .industry-summary-row--primary,

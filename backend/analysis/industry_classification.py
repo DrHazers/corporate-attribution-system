@@ -20,6 +20,8 @@ from backend.models.business_segment import BusinessSegment
 from backend.models.business_segment_classification import BusinessSegmentClassification
 from backend.models.company import Company
 from backend.schemas.business_segment_classification import (
+    BusinessSegmentManualClassificationRequest,
+    BusinessSegmentManualClassificationResponse,
     BusinessSegmentLlmConfirmationResponse,
     BusinessSegmentClassificationRead,
     BusinessSegmentClassificationRefreshSummary,
@@ -1759,6 +1761,36 @@ def _serialize_classification_snapshot(
     )
 
 
+def _serialize_classification_summary(
+    classification: BusinessSegmentClassification | BusinessSegmentClassificationRead | None,
+) -> str | None:
+    if classification is None:
+        return None
+    payload = {
+        "business_segment_id": classification.business_segment_id,
+        "standard_system": classification.standard_system,
+        "level_1": classification.level_1,
+        "level_2": classification.level_2,
+        "level_3": classification.level_3,
+        "level_4": classification.level_4,
+        "industry_label": _build_label_from_levels(classification),
+        "is_primary": classification.is_primary,
+        "classifier_type": classification.classifier_type,
+        "review_status": classification.review_status,
+        "review_reason": classification.review_reason,
+        "confidence": classification.confidence,
+        "mapping_basis": classification.mapping_basis,
+    }
+    if hasattr(classification, "id"):
+        payload["classification_id"] = getattr(classification, "id")
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
 def confirm_business_segment_llm_classification(
     db: Session,
     *,
@@ -1855,6 +1887,131 @@ def confirm_business_segment_llm_classification(
         ),
         removed_classification_ids=removed_classification_ids,
         annotation_action="confirm_llm",
+    )
+
+
+def confirm_business_segment_manual_classification(
+    db: Session,
+    *,
+    segment_id: int,
+    manual_classification: BusinessSegmentManualClassificationRequest,
+    operator: str | None = "api",
+) -> BusinessSegmentManualClassificationResponse:
+    segment = (
+        db.query(BusinessSegment)
+        .options(selectinload(BusinessSegment.classifications))
+        .filter(BusinessSegment.id == segment_id)
+        .first()
+    )
+    if segment is None:
+        raise LookupError("Business segment not found.")
+
+    levels = [
+        manual_classification.level_1,
+        manual_classification.level_2,
+        manual_classification.level_3,
+        manual_classification.level_4,
+    ]
+    if not any(levels):
+        raise ValueError("At least one classification level must be provided.")
+
+    annotation_reason = normalize_optional_text(manual_classification.mapping_basis)
+    if annotation_reason is None:
+        raise ValueError("Manual classification reason is required.")
+
+    current_rows = get_business_segment_classifications_by_segment_id(
+        db,
+        business_segment_id=segment_id,
+    )
+    previous_current = _get_current_classification(db, segment_id=segment_id)
+    previous_current_summary = _serialize_classification_summary(previous_current)
+
+    target_row = next(
+        (row for row in current_rows if row.classifier_type == "manual"),
+        None,
+    )
+    if target_row is None:
+        target_row = _select_confirmation_target_row(current_rows)
+
+    removed_classification_ids = [
+        row.id for row in current_rows if target_row is None or row.id != target_row.id
+    ]
+    previous_target_summary = _serialize_classification_summary(target_row)
+
+    if target_row is None:
+        target_row = BusinessSegmentClassification(business_segment_id=segment_id)
+        db.add(target_row)
+
+    target_row.standard_system = manual_classification.standard_system
+    target_row.level_1 = manual_classification.level_1
+    target_row.level_2 = manual_classification.level_2
+    target_row.level_3 = manual_classification.level_3
+    target_row.level_4 = manual_classification.level_4
+    target_row.is_primary = (
+        manual_classification.is_primary
+        if manual_classification.is_primary is not None
+        else segment.segment_type == "primary"
+    )
+    target_row.mapping_basis = annotation_reason
+    target_row.review_status = "confirmed"
+    target_row.classifier_type = "manual"
+    target_row.confidence = manual_classification.confidence or Decimal("1.0")
+    target_row.review_reason = (
+        "manual_confirmed"
+        if manual_classification.mark_as_final
+        else "manual_override"
+    )
+    db.flush()
+
+    for row in current_rows:
+        if row.id == target_row.id:
+            continue
+        create_annotation_log(
+            db,
+            target_type="business_segment_classification",
+            target_id=row.id,
+            action_type="delete",
+            old_value=_serialize_classification_summary(row),
+            new_value=None,
+            reason=annotation_reason,
+            operator=operator,
+        )
+        db.delete(row)
+
+    new_target_summary = _serialize_classification_summary(target_row)
+    create_annotation_log(
+        db,
+        target_type="business_segment_classification",
+        target_id=target_row.id,
+        action_type="manual_override",
+        old_value=previous_target_summary or previous_current_summary,
+        new_value=new_target_summary,
+        reason=annotation_reason,
+        operator=operator,
+    )
+    create_annotation_log(
+        db,
+        target_type="business_segment",
+        target_id=segment_id,
+        action_type="manual_override",
+        old_value=previous_current_summary,
+        new_value=new_target_summary,
+        reason=annotation_reason,
+        operator=operator,
+    )
+    db.commit()
+    db.refresh(target_row)
+
+    return BusinessSegmentManualClassificationResponse(
+        segment_id=segment_id,
+        status="confirmed",
+        message="Manual classification has been written back as the formal current result.",
+        previous_classification=previous_current,
+        confirmed_classification=BusinessSegmentClassificationRead.model_validate(
+            target_row
+        ),
+        removed_classification_ids=removed_classification_ids,
+        annotation_action="manual_override",
     )
 
 

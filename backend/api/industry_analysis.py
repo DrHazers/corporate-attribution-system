@@ -15,6 +15,7 @@ from backend.analysis.industry_analysis import (
 )
 from backend.analysis.industry_classification import (
     classify_business_segment_with_llm,
+    confirm_business_segment_manual_classification,
     confirm_business_segment_llm_classification,
     refresh_business_segment_classifications,
 )
@@ -52,6 +53,8 @@ from backend.schemas.business_segment import (
 from backend.schemas.business_segment_classification import (
     BusinessSegmentLlmConfirmationRequest,
     BusinessSegmentLlmConfirmationResponse,
+    BusinessSegmentManualClassificationRequest,
+    BusinessSegmentManualClassificationResponse,
     BusinessSegmentClassificationCreate,
     BusinessSegmentClassificationRefreshSummary,
     BusinessSegmentLlmSuggestionResponse,
@@ -448,6 +451,43 @@ def confirm_business_segment_llm_classification_endpoint(
             segment_id=segment_id,
             suggested_classification=confirmation_in.suggested_classification,
             reason=confirmation_in.reason,
+            operator=operator,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/business-segments/{segment_id}/manual-classification",
+    response_model=BusinessSegmentManualClassificationResponse,
+    summary="Write back a manual business segment classification",
+    description=(
+        "Adopt a human-reviewed classification in the formal "
+        "business_segment_classifications table, keep the current formal result "
+        "unique for the segment, and persist before/after annotation logs."
+    ),
+    response_description="Confirmed formal classification payload after manual writeback.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def confirm_business_segment_manual_classification_endpoint(
+    segment_id: int,
+    classification_in: BusinessSegmentManualClassificationRequest,
+    operator: str | None = Query(default="api"),
+    db: Session = Depends(get_db),
+):
+    try:
+        return confirm_business_segment_manual_classification(
+            db,
+            segment_id=segment_id,
+            manual_classification=classification_in,
             operator=operator,
         )
     except LookupError as exc:

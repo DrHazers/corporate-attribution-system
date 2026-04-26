@@ -33,6 +33,17 @@ class CompanyRead(BaseModel):
     description: str | None = None
 
 
+class CompanySearchRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    stock_code: str
+    incorporation_country: str
+    listing_country: str
+    headquarters: str
+
+
 class RelationshipGraphTargetCompanyRead(BaseModel):
     id: int = Field(description="Company primary key.")
     name: str = Field(description="Company display name.")

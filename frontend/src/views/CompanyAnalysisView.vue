@@ -11,7 +11,7 @@ import {
   restoreAutomaticControlResult,
   submitManualControlOverride,
 } from '@/api/analysis'
-import { fetchCompanyRelationshipGraph } from '@/api/company'
+import { fetchCompanyRelationshipGraph, searchCompanies } from '@/api/company'
 import CompanyOverviewCard from '@/components/CompanyOverviewCard.vue'
 import ControlRelationsTable from '@/components/ControlRelationsTable.vue'
 import ControlStructureDiagram from '@/components/ControlStructureDiagram.vue'
@@ -32,6 +32,10 @@ const route = useRoute()
 const router = useRouter()
 
 const companyIdInput = ref('')
+const companySearchResults = ref([])
+const companySearchLoading = ref(false)
+const companySearchAttempted = ref(false)
+const companySearchEmptyMessage = ref('')
 const loading = ref(false)
 const hasSearched = ref(false)
 const pageError = ref('')
@@ -94,12 +98,20 @@ const sectionErrors = reactive({
 function normalizeCompanyId(value) {
   const normalized = String(value ?? '').trim()
   if (!normalized) {
-    throw new Error('请输入 company_id 后再查询。')
+    throw new Error('请选择需要展示的企业。')
   }
   if (!/^\d+$/.test(normalized)) {
-    throw new Error('company_id 需为正整数。')
+    throw new Error('企业 ID 格式无效。')
   }
   return normalized
+}
+
+function isSlashIdQuery(value) {
+  return /^\/\d+$/.test(String(value ?? '').trim())
+}
+
+function normalizeSearchQuery(value) {
+  return String(value ?? '').trim()
 }
 
 function buildEmptyGraphState(companyId, message = '后续接入控制链图展示') {
@@ -173,6 +185,9 @@ async function loadCompanyData(companyId) {
 
     summaryData.value = summary
     resolvedCompanyId.value = companyId
+    if (!companyIdInput.value || isSlashIdQuery(companyIdInput.value) || /^\d+$/.test(companyIdInput.value.trim())) {
+      companyIdInput.value = summary?.company?.name || companyIdInput.value
+    }
 
     try {
       relationshipGraph.value = await runTimedStep(
@@ -212,29 +227,58 @@ async function refreshIndustryAnalysisData(companyId = company.value?.id || reso
   }
 }
 
-async function handleSearch() {
-  try {
-    const normalizedCompanyId = normalizeCompanyId(companyIdInput.value)
-    if (route.query.companyId === normalizedCompanyId) {
-      await loadCompanyData(normalizedCompanyId)
-      return
-    }
-    await router.replace({
-      name: 'company-analysis',
-      query: { companyId: normalizedCompanyId },
-    })
-  } catch (error) {
-    pageError.value = error.message
-    hasSearched.value = true
-    ElMessage.warning(error.message)
+async function handleSearch(rawQuery = companyIdInput.value) {
+  const query = normalizeSearchQuery(rawQuery)
+  if (!query) {
+    companySearchResults.value = []
+    companySearchAttempted.value = true
+    companySearchEmptyMessage.value = '请输入公司名称、股票代码，或使用 /ID 精确查询。'
+    ElMessage.warning(companySearchEmptyMessage.value)
+    return
   }
+
+  companySearchLoading.value = true
+  companySearchAttempted.value = true
+  companySearchEmptyMessage.value = ''
+  try {
+    const results = await searchCompanies(query, { limit: 10 })
+    companySearchResults.value = results
+    if (!results.length) {
+      companySearchEmptyMessage.value = isSlashIdQuery(query)
+        ? '未找到该 ID 对应的企业。'
+        : '未找到匹配企业，请尝试更换关键词。'
+    }
+  } catch (error) {
+    companySearchResults.value = []
+    companySearchEmptyMessage.value = error.message || '企业搜索失败，请稍后重试。'
+    ElMessage.warning(error.message)
+  } finally {
+    companySearchLoading.value = false
+  }
+}
+
+async function handleSelectCompany(companyOption) {
+  const normalizedCompanyId = normalizeCompanyId(companyOption?.id)
+  companyIdInput.value = companyOption?.name || `/${normalizedCompanyId}`
+  companySearchResults.value = []
+  companySearchAttempted.value = false
+  companySearchEmptyMessage.value = ''
+
+  if (route.query.companyId === normalizedCompanyId) {
+    await loadCompanyData(normalizedCompanyId)
+    return
+  }
+
+  await router.replace({
+    name: 'company-analysis',
+    query: { companyId: normalizedCompanyId },
+  })
 }
 
 watch(
   () => route.query.companyId,
   async (companyIdFromRoute) => {
     const rawValue = typeof companyIdFromRoute === 'string' ? companyIdFromRoute : ''
-    companyIdInput.value = rawValue
 
     if (!rawValue) {
       hasSearched.value = false
@@ -244,7 +288,7 @@ watch(
 
     if (!/^\d+$/.test(rawValue.trim())) {
       hasSearched.value = true
-      pageError.value = 'company_id 需为正整数。'
+      pageError.value = '企业 ID 格式无效。'
       return
     }
 
@@ -276,10 +320,10 @@ const controlRelationships = computed(
 )
 const currentSummaryNote = computed(() => {
   if (!company.value) {
-    return '请输入 company_id 后查询企业综合分析结果。'
+    return '请选择企业后查看综合分析结果。'
   }
 
-  return `当前展示企业：${company.value.name}（company_id: ${company.value.id}）`
+  return `当前展示：${company.value.name}（ID：${company.value.id}）`
 })
 
 function openIndustryWorkbench() {
@@ -709,14 +753,23 @@ async function handleRestoreAutomaticResult() {
 <template>
   <div class="page-shell">
     <header class="page-header">
-      <div class="page-kicker">毕业设计演示页 · 企业综合分析</div>
-      <h1 class="page-title">企业综合分析展示页</h1>
+      <div class="page-kicker">研究型企业分析系统</div>
+      <h1 class="page-title">全球上市公司实际国别归属及主要业务线征订系统</h1>
       <p class="page-subtitle">
-        基于现有后端接口，串联展示公司总览、控股结构分析与产业分析，并将人工征订入口收束到控股结构模块内部。
+        面向全球上市公司研究场景，系统综合企业基础信息、控制链结构、实际控制国别与主要业务线分类结果，支持对企业归属判断和产业结构标签进行复核、修订与追踪。
       </p>
     </header>
 
-    <SearchBar v-model="companyIdInput" :loading="loading" @search="handleSearch" />
+    <SearchBar
+      v-model="companyIdInput"
+      :loading="loading"
+      :searching="companySearchLoading"
+      :results="companySearchResults"
+      :has-searched="companySearchAttempted"
+      :empty-message="companySearchEmptyMessage"
+      @search="handleSearch"
+      @select-company="handleSelectCompany"
+    />
 
     <el-alert
       v-if="pageError"
@@ -728,10 +781,10 @@ async function handleRestoreAutomaticResult() {
     />
 
     <el-card v-if="!hasSearched && !loading" class="helper-empty" shadow="never">
-      <el-empty description="请输入 company_id 后查询企业综合分析结果" :image-size="96">
+      <el-empty description="请输入公司名称、股票代码，或使用 /ID 精确查询" :image-size="96">
         <template #description>
           <div class="table-text table-text--muted">
-            可直接使用上方推荐演示 ID，例如 128、240、717。
+            可直接使用上方推荐演示 ID，例如 /128、/240、/9717。
           </div>
         </template>
       </el-empty>
@@ -1197,7 +1250,7 @@ async function handleRestoreAutomaticResult() {
       <el-empty description="未获取到企业分析结果" :image-size="96">
         <template #description>
           <div class="table-text table-text--muted">
-            请检查 company_id 是否有效，以及后端服务是否已经启动。
+            请检查所选企业是否有效，以及后端服务是否已经启动。
           </div>
         </template>
       </el-empty>

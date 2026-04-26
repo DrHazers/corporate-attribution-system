@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
@@ -28,6 +28,7 @@ from backend.crud.company import (
     get_companies,
     get_company_by_id,
     get_company_by_stock_code,
+    search_companies,
     update_company,
 )
 from backend.crud.shareholder import get_entity_by_company_id
@@ -37,6 +38,7 @@ from backend.schemas.company import (
     CompanyCreate,
     CompanyRead,
     CompanyRelationshipGraphRead,
+    CompanySearchRead,
     CompanyUpdate,
 )
 from backend.schemas.manual_control_override import (
@@ -146,6 +148,19 @@ def create_company_endpoint(
 @router.get("", response_model=list[CompanyRead])
 def list_companies(db: Session = Depends(get_db)):
     return get_companies(db)
+
+
+@router.get("/search", response_model=list[CompanySearchRead])
+def search_company_endpoint(
+    query: str = Query(default=""),
+    limit: int = Query(default=10, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    return search_companies(
+        db,
+        query=query,
+        limit=limit,
+    )
 
 
 @router.get("/{company_id}", response_model=CompanyRead)

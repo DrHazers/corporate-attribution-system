@@ -233,6 +233,93 @@ class CompanyApiTestCase(unittest.TestCase):
         self.assertEqual(status_code, 400)
         self.assertIn("path.company_id", response_data["detail"])
 
+    def test_company_search_supports_name_stock_code_and_slash_id(self):
+        companies = [
+            {
+                "name": "Alibaba Group Holding Limited",
+                "stock_code": "BABA",
+                "incorporation_country": "Cayman Islands",
+                "listing_country": "US",
+                "headquarters": "Hangzhou",
+                "description": "电商与云服务",
+            },
+            {
+                "name": "Tencent Holdings Limited",
+                "stock_code": "0700.HK",
+                "incorporation_country": "Cayman Islands",
+                "listing_country": "Hong Kong",
+                "headquarters": "Shenzhen",
+                "description": "互联网综合服务",
+            },
+            {
+                "name": "Liberty Telecom Group Inc.",
+                "stock_code": "LTG-128",
+                "incorporation_country": "United States",
+                "listing_country": "United States",
+                "headquarters": "Denver",
+                "description": "通信业务",
+            },
+        ]
+
+        created = []
+        for payload in companies:
+            status_code, created_company = self.request_json("POST", "/companies", payload)
+            self.assertEqual(status_code, 201)
+            created.append(created_company)
+
+        alibaba_id = created[0]["id"]
+
+        status_code, search_by_name = self.request_json(
+            "GET",
+            "/companies/search?query=Alibaba",
+        )
+        self.assertEqual(status_code, 200)
+        self.assertTrue(any(item["name"] == "Alibaba Group Holding Limited" for item in search_by_name))
+
+        status_code, search_by_partial_name = self.request_json(
+            "GET",
+            "/companies/search?query=Telecom",
+        )
+        self.assertEqual(status_code, 200)
+        self.assertTrue(any(item["name"] == "Liberty Telecom Group Inc." for item in search_by_partial_name))
+
+        status_code, search_by_stock_code = self.request_json(
+            "GET",
+            "/companies/search?query=BABA",
+        )
+        self.assertEqual(status_code, 200)
+        self.assertGreaterEqual(len(search_by_stock_code), 1)
+        self.assertEqual(search_by_stock_code[0]["stock_code"], "BABA")
+
+        status_code, search_by_exact_id = self.request_json(
+            "GET",
+            f"/companies/search?query=/{alibaba_id}",
+        )
+        self.assertEqual(status_code, 200)
+        self.assertEqual(len(search_by_exact_id), 1)
+        self.assertEqual(search_by_exact_id[0]["id"], alibaba_id)
+
+        status_code, missing_exact_id = self.request_json(
+            "GET",
+            "/companies/search?query=/999999",
+        )
+        self.assertEqual(status_code, 200)
+        self.assertEqual(missing_exact_id, [])
+
+        status_code, empty_query = self.request_json(
+            "GET",
+            "/companies/search?query=",
+        )
+        self.assertEqual(status_code, 200)
+        self.assertEqual(empty_query, [])
+
+        status_code, pure_numeric_query = self.request_json(
+            "GET",
+            f"/companies/search?query={alibaba_id}",
+        )
+        self.assertEqual(status_code, 200)
+        self.assertFalse(any(item["id"] == alibaba_id for item in pure_numeric_query))
+
 
 if __name__ == "__main__":
     unittest.main()

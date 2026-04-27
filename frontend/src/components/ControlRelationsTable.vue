@@ -1109,13 +1109,13 @@ function roleNote(row) {
     }
     return isManualConfirmedResult.value
       ? '当前生效结论为人工确认后的自动分析结果。'
-      : '当前生效结论由人工征订写回数据库，非算法自动识别。'
+      : '当前生效结论由人工征订确定。'
   }
   if (isManualCountryOnlyRow(row)) {
     return '控制主体沿用当前结论，实际控制国别经人工征订调整。'
   }
   if (isAutomaticSupersededRow(row)) {
-    return '自动分析结果保留为参考信息，不再作为当前生效主记录。'
+    return '自动分析结果保留为参考信息。'
   }
   if (isOwnershipPatternRow(row)) {
     return '结构信号主体：保留研究价值，但不参与实际控制人主结论。'
@@ -1336,7 +1336,7 @@ function recognitionExplanation(row) {
         details.push(
           row._autoReferenceIsSamePath
             ? '自动分析路径与当前生效路径一致。'
-            : '自动分析路径作为参考补充，不再拆分为第二行。',
+            : '自动分析路径作为参考补充。',
         )
       }
       return {

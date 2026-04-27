@@ -114,7 +114,7 @@ function normalizeSearchQuery(value) {
   return String(value ?? '').trim()
 }
 
-function buildEmptyGraphState(companyId, message = '后续接入控制链图展示') {
+function buildEmptyGraphState(companyId, message = '暂无控制结构图数据。') {
   return {
     company_id: companyId ? Number(companyId) : null,
     message,
@@ -722,7 +722,7 @@ async function handleSubmitManualOverride() {
   manualSaving.value = true
   try {
     await submitManualControlOverride(resolvedCompanyId.value, payload)
-    await refreshAfterManualChange('人工征订结果已写回数据库并设为当前生效。')
+    await refreshAfterManualChange('人工征订结果已设为当前生效。')
   } catch (error) {
     ElMessage.error(error.message)
   } finally {
@@ -753,7 +753,6 @@ async function handleRestoreAutomaticResult() {
 <template>
   <div class="page-shell">
     <header class="page-header">
-      <div class="page-kicker">研究型企业分析系统</div>
       <h1 class="page-title">全球上市公司实际国别归属及主要业务线征订系统</h1>
       <p class="page-subtitle">
         面向全球上市公司研究场景，系统综合企业基础信息、控制链结构、实际控制国别与主要业务线分类结果，支持对企业归属判断和产业结构标签进行复核、修订与追踪。
@@ -813,7 +812,7 @@ async function handleRestoreAutomaticResult() {
               <div class="analysis-module__header">
                 <div>
                   <h2>控股结构分析</h2>
-                  <p>当前版本固定为“控制摘要、控制结构图、控制结论明细表、人工征订操作区”四段式结构。</p>
+                  <p>展示企业控制主体、控制路径与国别归属判断结果。</p>
                 </div>
               </div>
 
@@ -844,8 +843,8 @@ async function handleRestoreAutomaticResult() {
               <section class="manual-entry-card">
                 <div class="manual-entry-card__head">
                   <div>
-                    <h3>人工征订结果层</h3>
-                    <p>当前只保留为纯操作区，用于征订控制主体、控制国别与控制路径，不再承担自动分析解释职责。</p>
+                    <h3>人工征订与确认</h3>
+                    <p>用于补充或调整控制主体、控制国别与控制路径。</p>
                   </div>
                   <div class="manual-entry-card__actions">
                     <span
@@ -1025,7 +1024,7 @@ async function handleRestoreAutomaticResult() {
                           <div class="manual-path-builder__head">
                             <div>
                               <h3>控制路径构建</h3>
-                              <p>起点必须是已绑定或即将新建入库的正式主体，终点固定为当前目标公司。</p>
+                              <p>设置控制路径时，起点为控制主体，终点为当前目标公司。</p>
                             </div>
                             <el-button
                               size="small"
@@ -1218,7 +1217,7 @@ async function handleRestoreAutomaticResult() {
             <div class="analysis-module__header analysis-module__header--actionable">
               <div>
                 <h2>产业分析</h2>
-                <p>聚合展示当前公司的正式 refresh 结果，并衔接后续工作台分析。</p>
+                <p>展示企业业务线结构、行业分类结果与待复核样本。</p>
               </div>
               <el-button type="primary" @click="openIndustryWorkbench">
                 进入产业分析工作台

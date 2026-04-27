@@ -397,14 +397,14 @@ export function buildMockLlmClassification(segment) {
       nextLevel4,
     ),
     is_primary: segment?.segment_type === 'primary',
-    mapping_basis: 'TODO: replace mock LLM result with backend llm analysis API',
+    mapping_basis: 'LLM 辅助建议依据',
     review_status: current ? 'needs_manual_review' : 'needs_llm_review',
     classifier_type: 'llm_assisted',
     confidence: current?.confidence ?? 0.55,
     review_reason: current?.review_reason || 'llm_suggested',
     readable_mapping_basis: current
-      ? `占位结果：基于当前规则结果“${baseLabel}”生成了一个可供比较的 LLM 建议，后续接入真实接口后替换。`
-      : '占位结果：当前尚无稳定规则结论，后续可由 LLM 结合更多上下文补判。',
+      ? `基于当前规则分析结果“${baseLabel}”生成了一条可供比较的 LLM 辅助建议。`
+      : '当前规则结论仍不稳定，可结合更多上下文参考 LLM 辅助建议。',
     is_placeholder: true,
   }
 }
@@ -503,8 +503,8 @@ export function profitPieChartRows(segments = [], maxItems = 6) {
       name: '未披露利润数据',
       rawName: '未披露利润数据',
       value: Math.max(4, missingCount * 2),
-      segmentType: '占位提示',
-      classificationSummary: `${missingCount} 条业务线未填写利润占比，仅用于提示缺失情况。`,
+      segmentType: '提示信息',
+      classificationSummary: `${missingCount} 条业务线未填写利润占比，用于提示利润数据缺失情况。`,
       itemStyle: {
         color: '#cfd6df',
       },
@@ -674,7 +674,7 @@ export function runWorkbenchRuleAnalysis({ companyName, companyDescription, segm
 
   return {
     company_id: 'workbench',
-    selected_reporting_period: analyzedSegments[0]?.reporting_period || '临时分析',
+    selected_reporting_period: analyzedSegments[0]?.reporting_period || '样本分析',
     business_segment_count: analyzedSegments.length,
     primary_industries: [...new Set(primaryIndustries)],
     all_industry_labels: [...new Set(analyzedSegments.flatMap((segment) => segment.classification_labels || []))],

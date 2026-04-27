@@ -109,7 +109,7 @@ const presentedSegments = computed(() =>
     const currentClassification =
       selectedSource === 'llm' && llmClassification ? llmClassification : ruleClassification
     const currentSourceLabel =
-      selectedSource === 'llm' ? '模型辅助建议' : '当前规则结果'
+      selectedSource === 'llm' ? '模型辅助建议' : '规则分析结果'
     const currentStatusLabel = reviewStatusLabel(currentClassification?.review_status)
 
     return {
@@ -174,7 +174,7 @@ function resetWorkbenchInput() {
 
 function clearWorkbenchInput() {
   resetWorkbenchInput()
-  ElMessage.info('已清空当前输入和临时分析结果。')
+  ElMessage.info('已清空当前输入和分析结果。')
 }
 
 function addWorkbenchSegment() {
@@ -225,7 +225,7 @@ function loadFromCurrentResult() {
   selectedResultSource.value = {}
   detailDrawerVisible.value = false
   selectedWorkbenchSegmentId.value = null
-  ElMessage.success('已将当前正式业务线复制到工作台，可继续做临时分析。')
+  ElMessage.success('已载入当前企业业务线，可继续分析。')
 }
 
 function buildWorkbenchPayload() {
@@ -300,7 +300,7 @@ async function runRuleAnalysis() {
     initializeSegmentState(response.segments || [])
     detailDrawerVisible.value = false
     selectedWorkbenchSegmentId.value = null
-    ElMessage.success('已完成临时规则分析，结果仅保留在工作台中。')
+    ElMessage.success('已完成规则分析。')
   } catch (error) {
     ElMessage.warning(error.message || '规则分析失败，请稍后重试。')
   } finally {
@@ -325,7 +325,7 @@ async function triggerWorkbenchLlm() {
       (response.llm_results || []).map((item) => [item.segment_id, item]),
     )
     initializeSegmentState(response.rule_analysis?.segments || [])
-    ElMessage.success('已完成临时模型分析，结果仅保留在工作台中。')
+    ElMessage.success('已完成模型分析。')
   } catch (error) {
     ElMessage.warning(error.message || '模型分析失败，请稍后重试。')
   } finally {
@@ -416,9 +416,8 @@ watch(
         <span class="workbench-shell__eyebrow">Industry Workbench</span>
         <div class="workbench-shell__title-row">
           <h2>产业分析工作台</h2>
-          <el-tag effect="plain" type="info">临时试算</el-tag>
         </div>
-        <p>规则分析与模型分析都仅基于当前工作台输入运行，默认不会写入正式产业结果表。</p>
+        <p>用于录入业务线样本，并对规则分析结果与模型建议进行对比。</p>
       </div>
       <el-tooltip content="返回" placement="left">
         <el-button circle plain :icon="ArrowLeft" @click="emit('close')" />
@@ -430,7 +429,7 @@ watch(
       :closable="false"
       show-icon
       class="workbench-alert"
-      title="当前阶段工作台输入、规则结果和模型建议都只保留在工作台内展示，不默认写入正式 business_segments / business_segment_classifications。"
+      title="工作台分析结果用于比较与复核，不影响当前企业分析页面。"
     />
 
     <div class="workbench-shell__body">
@@ -467,7 +466,7 @@ watch(
           <div class="workbench-segment-head">
             <div class="workbench-segment-head__copy">
               <h3>业务线输入列表</h3>
-              <p>工作台会把这些临时输入作为统一分析对象，同时用于规则分析和模型分析。</p>
+              <p>在这里整理业务线样本，并发起规则分析或模型分析。</p>
             </div>
             <div class="workbench-segment-head__actions">
               <el-button plain type="primary" @click="addWorkbenchSegment">新增业务线</el-button>
@@ -565,7 +564,7 @@ watch(
             >
               LLM分析
             </el-button>
-            <el-button disabled>导入正式库（预留）</el-button>
+            <el-button disabled>导入正式结果</el-button>
           </div>
         </div>
       </section>
@@ -574,7 +573,7 @@ watch(
         <div class="section-heading">
           <div>
             <h3>结果区</h3>
-            <p>规则结果与模型建议共用统一展示结构；当前展示来源只在工作台本地生效。</p>
+            <p>对比展示规则分析结果、模型建议与当前选定结果。</p>
           </div>
         </div>
 
@@ -582,7 +581,7 @@ watch(
           <div class="workbench-results-flow">
             <div class="workbench-metrics-grid">
               <article class="workbench-metric-card">
-                <span>临时业务线数量</span>
+                <span>业务线数量</span>
                 <strong>{{ analysisSegments.length }}</strong>
               </article>
               <article class="workbench-metric-card">
@@ -632,7 +631,6 @@ watch(
             <div class="workbench-result-section">
               <div class="workbench-result-section__head">
                 <h4>分析结果表</h4>
-                <el-tag effect="plain" type="info">仅工作台内有效</el-tag>
               </div>
 
               <div class="workbench-table-shell">
@@ -656,7 +654,7 @@ watch(
                       {{ formatFlexiblePercent(row.revenue_ratio) }}
                     </template>
                   </el-table-column>
-                  <el-table-column label="当前规则结果" min-width="220">
+                  <el-table-column label="规则分析结果" min-width="220">
                     <template #default="{ row }">
                       <div class="workbench-result-block">
                         <strong>{{ classificationLabel(row.ruleClassification) }}</strong>
@@ -679,7 +677,7 @@ watch(
                       <span v-else class="workbench-empty-inline">尚未执行模型分析</span>
                     </template>
                   </el-table-column>
-                  <el-table-column label="当前展示来源" width="148">
+                  <el-table-column label="结果来源" width="148">
                     <template #default="{ row }">
                       <el-radio-group
                         size="small"
@@ -693,7 +691,7 @@ watch(
                       </el-radio-group>
                     </template>
                   </el-table-column>
-                  <el-table-column label="当前工作台结果" min-width="240">
+                  <el-table-column label="当前分析结果" min-width="240">
                     <template #default="{ row }">
                       <div class="workbench-result-block">
                         <strong>{{ classificationLabel(row.currentClassification) }}</strong>
@@ -772,12 +770,12 @@ watch(
         <section class="workbench-detail__section">
           <div class="detail-section__header">
             <div>
-              <h3>当前结果 / 当前规则结果</h3>
-              <p>这里展示当前工作台中的基准结果，也就是本次临时分析的规则结果。</p>
+              <h3>规则分析结果</h3>
+              <p>这里展示当前业务线的规则分析结果，可作为后续比较的基准。</p>
             </div>
             <div class="workbench-inline-tags">
               <el-tag effect="plain" type="info">
-                当前规则结果
+                规则分析结果
               </el-tag>
               <el-tag
                 :type="reviewStatusTagType(selectedSegmentPresentation.ruleClassification?.review_status)"
@@ -815,7 +813,7 @@ watch(
             </article>
             <article class="detail-card">
               <span>结果来源</span>
-              <strong>当前规则结果</strong>
+              <strong>规则分析结果</strong>
             </article>
             <article class="detail-card detail-card--wide">
               <span>规则依据</span>
@@ -836,7 +834,7 @@ watch(
           <div class="detail-section__header">
             <div>
               <h3>模型辅助建议</h3>
-              <p>这一段保持和当前结果同构，方便直接比较当前规则结果与模型建议之间的差异。</p>
+              <p>这里展示模型辅助建议，便于与规则分析结果进行比较。</p>
             </div>
             <div v-if="selectedSegmentPresentation.llmClassification" class="workbench-inline-tags">
               <el-tag :type="llmStatusTagType(selectedSegmentPresentation.llmResult?.status)" effect="plain">

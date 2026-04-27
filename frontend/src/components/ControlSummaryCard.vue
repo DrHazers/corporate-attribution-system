@@ -431,7 +431,7 @@ const hasControlData = computed(() => controlRelationshipCount.value > 0)
 const controlRelationshipNote = computed(() =>
   hasControlData.value
     ? '当前用于控制识别与路径解释的关系记录。'
-    : '当前接口未返回控制关系记录。',
+    : '当前暂无可展示的控制关系记录。',
 )
 const recognitionStatusCode = computed(
   () =>
@@ -477,7 +477,7 @@ const promotionReasonExplanation = computed(() =>
   promotionReason.value
     ? reasonLabel(promotionReason.value, PROMOTION_REASON_LABELS)
     : lookThroughApplied.value
-      ? '本次已应用穿透，但接口未返回单独的上卷原因。'
+      ? '本次已应用穿透，未单独展示上卷原因。'
       : hasActualController.value
         ? '本次未触发上卷判定，当前结论无需继续上卷。'
         : '未应用上卷提升，当前停留在候选主体或保守归属层级。',
@@ -711,7 +711,7 @@ const attributionBasisSubtext = computed(
       }
       return parts.join('；')
     }
-    return countryInferenceReasonExplanation.value || '当前接口未返回单独归属依据，页面根据控制分析结果展示。'
+    return countryInferenceReasonExplanation.value || '当前未单独展示归属依据，页面根据控制分析结果生成摘要。'
   },
 )
 
@@ -741,7 +741,7 @@ const evidenceSubtext = computed(
   () =>
     manualEffective.value
       ? manualOverride.value?.evidence || props.countryAttribution?.manual_evidence || '本次人工征订未填写单独依据。'
-      : evidenceSummary.value || '当前接口未返回可摘要化证据。',
+      : evidenceSummary.value || '当前暂无可摘要展示的证据。',
 )
 
 const dataStatusLine = computed(() =>
@@ -790,7 +790,7 @@ const explanationItems = computed(() => [
               {{ manualSourceLabel || '人工征订' }}
             </span>
           </div>
-          <p>收口后的摘要区只保留控制主体、归属方式与判定依据，不再内嵌控制结构图。</p>
+          <p>展示控制主体、归属方式与判定依据。</p>
         </div>
       </div>
     </template>

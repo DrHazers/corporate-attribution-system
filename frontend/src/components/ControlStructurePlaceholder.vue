@@ -12,14 +12,13 @@ defineProps({
     <header class="control-structure-placeholder__header">
       <div>
         <h3>{{ title }}</h3>
-        <p>新版控制结构图将以硬分层、强主链的方式展示控制结论。</p>
+        <p>展示企业控制结构与关键控制路径。</p>
       </div>
-      <el-tag effect="plain" type="info">rebuilding</el-tag>
     </header>
 
     <div class="control-structure-placeholder__stage">
-      <div class="control-structure-placeholder__mark">控制链图重构中</div>
-      <p>后续将切换为更清晰直接的控制结构示意图</p>
+      <div class="control-structure-placeholder__mark">控制结构图</div>
+      <p>当前暂无可展示的控制结构数据。</p>
     </div>
   </section>
 </template>

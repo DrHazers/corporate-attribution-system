@@ -1,226 +1,235 @@
 # Corporate Attribution System
 
-## 演示数据库约定
+面向本科毕业设计与研究演示的企业综合分析系统，聚焦两条主线：
 
-前后端联调、截图和最终演示请统一使用：
+- 企业控制关系识别与实际控制国别归属判定
+- 企业业务结构整理、GICS 产业分类与人工征订留痕
 
-```powershell
-$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db'
-.\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
-```
-
-> Default application database: `ultimate_controller_enhanced_dataset_working.db`
->
-> To switch to a future working copy without editing code, set `CORP_DEFAULT_DATABASE_PATH`
-> or `CORP_DEFAULT_DATABASE_NAME`.
-
-说明：
-- 不设置 `DATABASE_URL` 时，后端会按 `backend/database.py` 的默认配置连接项目根目录下的 `ultimate_controller_enhanced_dataset_working.db`。
-- 前端演示与日常联调推荐固定连接 `ultimate_controller_enhanced_dataset_working.db`。如果后续切换到同结构的新工作库，优先通过 `CORP_DEFAULT_DATABASE_PATH` 或 `CORP_DEFAULT_DATABASE_NAME` 调整，而不是在多处代码里手改库名。
-- HTML 验证图、前端 API、手工数据库查询应尽量使用同一份数据库，避免出现“图里有结果、前端接口看不到”或记录 ID 不一致的排查噪音。
-- 这里仅是运行环境约定，不改变 unified control inference、refresh 主链路或任何表结构。
+当前 README 已按 `docs/thesis_support/` 下最新 4 份支撑文档统一更新，若历史文档与代码不一致，以当前代码实现为准。
 
 ## 项目定位
-这是一个面向产业研究的企业控制链、国别归属与产业分析系统。
 
-当前项目的后端重点已经不是普通 CRUD，而是围绕以下主线组织：
+本项目更适合定位为“企业国别归属与业务结构征订系统”，服务于：
 
-- 基于企业控制网络进行控制链分析
-- 输出实际控制人与国别归属结果
-- 将分析结果写回数据库，供图展示和后续产业分析模块复用
-- 为答辩展示提供稳定、一致、可解释的分析闭环
+- 企业实际控制人识别
+- 企业实际控制国别判定
+- 企业业务线结构整理
+- 产业分类修订、确认与留痕
 
-当前默认分析主链路已经统一为 `unified control inference`，旧版 legacy 股权路径仍保留，但不再是默认运行方式。
+它是研究型分析系统，不是面向真实互联网环境的大规模全自动生产平台。
 
-## 当前已实现能力
+## 核心能力
 
-### 1. 基础数据与主体建模
-- 企业基础信息管理：`companies`
-- 主体建模：`shareholder_entities`
-- 原始关系建模：`shareholder_structures`
-- 控制分析结果存储：`control_relationships`
-- 国别归属结果存储：`country_attributions`
+### 1. 控制链与国别归属
 
-### 2. 控制分析能力
-- 多层控制链分析
-- 实际控制人识别
-- 国别归属推断
-- 控制分析结果写回数据库
-- 支持股权边与语义控制边混合判断
-- 支持 `agreement`、`board_control`、`voting_right`、`nominee`、`vie` 等关系类型参与 unified 分析
+- 以 `shareholder_entities` 和 `shareholder_structures` 为核心建模企业控制网络
+- 默认采用 `unified control inference` 作为主算法
+- 支持 `equity`、`agreement`、`board_control`、`voting_right`、`nominee`、`vie` 等关系类型
+- 支持 direct controller、actual controller、leading candidate、一定程度的 ultimate controller 上推
+- 支持 joint control 识别，以及 `fallback_incorporation` 注册地兜底
+- 自动结果写回 `control_relationships`、`country_attributions`
 
-### 3. 展示与演示支撑
-- 控制链结果读取接口
-- 国别归属读取接口
-- 控制链图展示支撑
-- 基于 `NetworkX + PyVis` 生成 HTML 图的后端能力
-- 批量演示数据与图构建脚本
+### 2. 业务结构与产业分析
 
-### 4. 当前默认算法事实
-- 默认主链路：`backend/analysis/control_inference.py`
-- 默认分析入口仍以 `company_id` 为核心
-- `shareholder_structures` 是核心原始事实来源
-- `control_relationships` / `country_attributions` 是分析结果表，不是底层事实来源
-- 当前开发数据库仍为 SQLite
+- 以 `business_segments` 维护企业业务线事实
+- 以 `business_segment_classifications` 保存业务线到 `GICS` 的分类结果
+- 已实现规则型分类刷新，不是机器学习训练型分类器
+- 支持 `primary`、`secondary`、`emerging`、`other` 四类业务线
+- 支持 LLM 辅助建议、人工确认、分类质量检查与历史期间变化分析
 
-## 当前核心数据模型
+### 3. 人工征订与留痕
 
-### 原始事实层
-- `companies`：研究对象公司主表
-- `shareholder_entities`：控制网络中的主体节点
-- `shareholder_structures`：主体之间的原始关系边，是控制分析的基础输入
+- 控制结果人工覆盖与恢复：`manual_control_overrides`
+- 业务线与分类结果操作留痕：`annotation_logs`
+- 系统同时保留自动结果层 `auto` 和当前有效结果层 `current`
 
-### 结果层
-- `control_relationships`：控制链分析结果
-- `country_attributions`：国别归属分析结果
+## 当前总体架构
 
-可以把当前系统理解为：
+### 后端
 
-1. 先维护公司、主体和原始关系
-2. 再基于 `company_id` 定位目标实体
-3. 用 unified 引擎完成控制分析
-4. 将结果写回结果表
-5. 最后由接口与图展示模块读取这些结果
+- Python 3
+- FastAPI
+- SQLAlchemy 2.x
+- Pydantic 2.x
+- Uvicorn
 
-## 当前系统运行方式
+### 前端
 
-### 默认分析闭环
-当前最稳定、最适合展示和答辩的运行方式是：
+- Vue 3
+- Vue Router
+- Vite
+- Axios
+- Element Plus
+- ECharts
 
-1. 输入 `company_id`
-2. 调用 refresh 入口触发重算
-3. unified 引擎基于 `shareholder_structures` 计算控制链、实际控制人与国别归属
-4. 写回 `control_relationships` / `country_attributions`
-5. 读接口和图展示模块读取预计算结果
+### 数据与分析
 
-### refresh 与读取的区别
-- `refresh` 入口会真正重算并写回结果
-- 普通 GET 读取接口默认只是读库，不会自动重算
-- 图展示层默认依赖预计算结果，而不是在展示时临时重跑算法
+- SQLite 为默认运行数据库
+- 依赖层支持 PostgreSQL URL，但当前默认运行主路径仍以 SQLite 为主
+- Pandas、NetworkX 用于数据处理与图分析
+- Pytest 用于测试验证
 
-### 当前主要分析入口
-当前仓库真正稳定支持的分析入口是 `company_id`。
+## 数据库分层
 
-如果上层未来要做“公司名搜索”，也应先完成：
+当前数据库设计可以概括为 4 层加运行审计层：
 
-1. 公司查询
-2. 名称到 `company_id` 的映射
-3. 再进入当前分析主链路
+- 基础事实层：`companies`、`shareholder_entities`、`shareholder_structures`、`relationship_sources`、`business_segments`
+- 算法结果层：`control_relationships`、`country_attributions`
+- 产业分析结果层：`business_segment_classifications`
+- 人工征订 / 留痕层：`manual_control_overrides`、`annotation_logs`
+- 运行审计层：`control_inference_runs`、`control_inference_audit_log`
 
-不应绕开 `company_id` 直接另起一套分析逻辑。
+这套设计强调：
+
+- 原始事实与分析结果分离
+- 自动结果与人工修订分离
+- 控制分析与产业分析共享同一公司分析主入口
+
+## 关键分析链路
+
+### 控制分析主链
+
+1. 以 `company_id` 作为稳定分析入口
+2. `refresh_company_control_analysis()` 触发单公司刷新
+3. `build_control_context()` 构造控制图上下文
+4. `infer_controllers()` 识别 direct / actual / leading / country attribution
+5. 自动结果写回 `control_relationships`、`country_attributions`
+6. 前端默认更多读取 `current` 结果层，而不是仅看自动结果
+
+### 产业分析主链
+
+1. 读取 `business_segments`
+2. 关联 `business_segment_classifications`
+3. 按默认报告期聚合业务结构
+4. 生成主行业标签、完整性标记、质量警告和变化分析
+5. 通过公司总览接口统一返回
 
 ## 关键接口
 
-只列当前最关键、最稳定的接口：
+### 控制分析
 
-### 重算入口
 - `POST /companies/{company_id}/analysis/refresh`
-
-### 读取控制链结果
 - `GET /analysis/control-chain/{company_id}`
 - `GET /companies/{company_id}/control-chain`
-
-### 读取国别归属结果
 - `GET /analysis/country-attribution/{company_id}`
 - `GET /companies/{company_id}/country-attribution`
-
-### 图展示相关读取
 - `GET /companies/{company_id}/relationship-graph`
-- 后端图构建模块：`backend/visualization/control_graph.py`
+
+### 公司总览与产业分析
+
+- `GET /companies/{company_id}/analysis/summary`
+- `GET /companies/{company_id}/industry-analysis`
+- `GET /companies/{company_id}/industry-analysis/periods`
+- `GET /companies/{company_id}/industry-analysis/quality`
+- `GET /companies/{company_id}/industry-analysis/change`
+- `POST /industry-analysis/classifications/refresh`
 
 说明：
 
-- `GET ...?refresh=true` 可以兼容触发重算
-- 常规展示建议仍以显式 refresh 后再读取结果为主
+- 普通读取接口默认是读库，不会自动重算
+- 需要实时刷新时，请显式调用 refresh 接口或使用 `?refresh=true`
+
+## 默认数据库约定
+
+当前代码默认应用数据库为：
+
+- `ultimate_controller_enhanced_dataset_industry_working.db`
+
+对应默认配置位于：
+
+- `backend/database_config.py`
+
+如不手动设置 `DATABASE_URL`，后端会优先连接该默认工作库。若后续切换到同结构的新工作库，优先使用以下环境变量，而不是到处手改文件名：
+
+- `CORP_DEFAULT_DATABASE_PATH`
+- `CORP_DEFAULT_DATABASE_NAME`
+
+推荐启动方式：
+
+```powershell
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_industry_working.db'
+.\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
+```
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 安装后端依赖
+
 ```powershell
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ### 2. 启动后端
+
 ```powershell
-$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_working.db'
+$env:DATABASE_URL='sqlite:///d:/graduation_project/corp_attribution_system/ultimate_controller_enhanced_dataset_industry_working.db'
 .\venv\Scripts\python.exe -m uvicorn backend.main:app --reload
 ```
 
-### 3. 运行测试
+### 3. 启动前端
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+### 4. 运行测试
+
 ```powershell
 .\venv\Scripts\python.exe -m pytest
 ```
 
-### 4. 常用脚本
-- `scripts/import_raw_dataset.py`：导入原始数据
-- `scripts/build_demo_analysis_db.py`：构建演示分析数据库
-- `scripts/build_demo_visualizations.py`：批量生成演示图
+### 5. 常用脚本
 
-## 项目结构
+- `scripts/import_raw_dataset.py`：导入原始控制关系数据
+- `scripts/import_industry_analysis_csvs.py`：导入产业分析相关 CSV
+- `scripts/run_industry_classification_refresh.py`：刷新业务线分类
+- `scripts/run_large_control_validation.py`：批量控制分析验证
+- `scripts/build_demo_visualizations.py`：生成 HTML 控制图
+
+## 主要目录
 
 ```text
 .
 ├─ backend/
-│  ├─ analysis/           # 控制分析、控制链读取、国别归属分析
-│  ├─ api/                # FastAPI 路由
-│  ├─ crud/               # 基础数据库查询与写入
-│  ├─ models/             # SQLAlchemy ORM 模型
-│  ├─ schemas/            # Pydantic schema
-│  ├─ tasks/              # 批量重算、离线任务
-│  ├─ visualization/      # 控制链图展示支撑
-│  ├─ database.py         # 数据库初始化与会话管理
-│  ├─ shareholder_relations.py
-│  └─ main.py             # FastAPI 应用入口
-├─ docs/                  # 项目说明、算法规则、协作规则
-├─ scripts/               # 数据导入、演示构建脚本
-├─ tests/                 # 测试与演示输出
-├─ data/                  # 项目数据与样例数据
-├─ company.db             # 当前开发期 SQLite 数据库
-├─ PRD.md
+│  ├─ analysis/         # 控制分析、国别归属、产业分析聚合
+│  ├─ api/              # FastAPI 路由
+│  ├─ crud/             # 数据库读写
+│  ├─ models/           # SQLAlchemy ORM 模型
+│  ├─ schemas/          # Pydantic schema
+│  ├─ tasks/            # 批量重算任务
+│  ├─ visualization/    # 控制图可视化支撑
+│  ├─ database.py
+│  ├─ database_config.py
+│  └─ main.py
+├─ frontend/            # Vue 3 前端
+├─ docs/                # 项目文档与 thesis_support 支撑材料
+├─ scripts/             # 导入、刷新、验证、演示脚本
+├─ tests/               # 测试与验证输出
 └─ README.md
 ```
 
-## 当前开发进度
+## 当前边界
 
-当前项目已经完成从“早期数据管理后端”向“控制分析结果驱动的研究系统”收口，当前状态可以概括为：
+以下内容当前不宜描述为“已完整实现”：
 
-- unified control inference 已成为默认主链路
-- refresh、批量重算、图展示相关读取的默认参数已统一
-- 图层过滤规则已经与分析口径核对
-- 默认运行时更强调结果一致、展示一致、答辩可解释
-
-这意味着项目当前更适合进入下一阶段：
-
-1. 公司查询与分析入口整理
-2. 股权链路图展示优化
-3. 产业分析模块接入与整合
-4. 最终展示闭环打通
-
-## 当前项目边界
-
-当前阶段明确暂不重点做：
-
-- PostgreSQL 正式迁移
-- 复杂前端工程化
-- 全自动复杂金融结构识别的进一步扩展
-- 大模型深度接入主控制判别主链路
-- 再次大规模重构核心控制算法
-
-这些内容不是永久不做，而是不是当前最优先的毕设推进方向。
-
-## 当前阶段的协作原则
-
-如果要继续开发，优先遵循以下事实：
-
-- 先保证分析结果一致，再增加功能
-- 先围绕 `company_id -> refresh -> 结果读取 -> 图展示` 做闭环
-- 不要把 `control_relationships` 当作底层事实来源
-- 不要绕开 unified 默认主链路另起一套分析逻辑
-- 新增展示或产业分析能力时，优先复用当前预计算结果
+- 全球实时数据抓取
+- 从年报全文自动抽取正式业务线并自动入库
+- 机器学习训练型行业分类模型
+- 图数据库主架构
+- 所有读取接口实时重算
+- 对所有 nominee / trust / hidden beneficial owner 场景的完全自动识别
+- 以上市地或总部地作为后端正式国别兜底规则
+- Industry Workbench 作为正式入库生产流
 
 ## 相关文档
-- `docs/ultimate_controller_algorithm_explained.md`：主版本 ultimate controller 算法解释
-- `docs/ultimate_controller_main_release_summary.md`：主版本冻结与验证总结
-- `docs/current_control_inference_summary.md`：当前控制推断实现口径
-- `docs/dev_run_guide.md`：开发联调与演示运行说明
-- `docs/codex_rules.md`：当前阶段的开发协作约束
+
+本 README 主要对齐以下 4 份最新支撑文档：
+
+- `docs/thesis_support/current_project_overview_for_thesis.md`
+- `docs/thesis_support/current_control_algorithm_overview.md`
+- `docs/thesis_support/current_industry_analysis_rules.md`
+- `docs/thesis_support/current_database_structure_overview.md`
+
+如需更细的论文口径、字段说明或实现边界，请优先阅读这些文件。

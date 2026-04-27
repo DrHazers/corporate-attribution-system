@@ -72,7 +72,7 @@ const overviewItems = computed(() => [
       <div class="section-heading">
         <div>
           <h2>公司总览</h2>
-          <p>聚合展示公司基础信息、当前控制结论与产业分析摘要，作为全局阅读入口。</p>
+          <p>展示企业基础信息、控制结论与产业结构摘要。</p>
         </div>
       </div>
     </template>

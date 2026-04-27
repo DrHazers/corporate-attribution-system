@@ -163,8 +163,8 @@ const pendingAnalysisSummary = computed(() => {
     total,
     leadText: total ? `存在 ${total} 条待进一步分析业务线` : '当前无需进一步分析',
     description: total
-      ? `${counts.confirmed} 条已可直接展示，后续人工征订与模型辅助统一进入工作台处理。`
-      : '当前业务线已进入正式展示状态，后续增量分析统一进入工作台。',
+      ? `${counts.confirmed} 条业务线已形成分类结果，可优先查看待复核样本。`
+      : '当前业务线已形成可展示的分类结果。',
     tags,
     emphasis: total > 0,
   }
@@ -199,7 +199,7 @@ const topSummaryMetrics = computed(() => [
     key: 'company-info',
     label: '当前公司',
     value: props.company?.name || `公司 ID ${props.companyId || '未提供'}`,
-    description: props.company?.id ? `当前分析对象 company_id: ${props.company.id}` : '当前分析对象信息待补充',
+    description: props.company?.id ? `当前分析对象 ID：${props.company.id}` : '当前分析对象信息待补充',
     tags: companyInfoTags.value,
     emphasis: true,
   },
@@ -207,14 +207,14 @@ const topSummaryMetrics = computed(() => [
     key: 'segment-count',
     label: '业务线总数',
     value: String(props.industryAnalysis?.business_segment_count ?? displaySegments.value.length),
-    description: '纳入本次正式 refresh',
+    description: '纳入当前报告期分析',
     emphasis: false,
   },
   {
     key: 'primary-summary',
     label: '主营分类摘要',
     value: primaryIndustrySummary.value,
-    description: '当前页展示正式 refresh 的主链路分类结果',
+    description: '展示当前业务线的主要行业分类',
     tags: primaryIndustryTags.value,
     emphasis: true,
   },
@@ -413,9 +413,9 @@ async function confirmLlmSuggestion() {
     delete nextOverrides[selectedSegment.value.id]
     manualOverrides.value = nextOverrides
     emit('refresh-industry-analysis')
-    ElMessage.success('模型建议已写回正式结果。')
+    ElMessage.success('模型建议已应用。')
   } catch (error) {
-    ElMessage.warning(error.message || '模型建议写回失败。')
+    ElMessage.warning(error.message || '模型建议应用失败。')
   } finally {
     llmConfirming.value = false
   }
@@ -608,7 +608,7 @@ function summarizeBasisComment(value) {
     return '为稳妥起见，当前暂不下钻到更细层级。'
   }
   if (normalized.includes('local manual override draft')) {
-    return '当前为前端本地人工修订草案。'
+    return '当前为人工修订草案。'
   }
   return value
 }
@@ -705,9 +705,9 @@ async function submitManualClassification() {
     manualOverrides.value = nextOverrides
     resetManualDraft(response.confirmed_classification)
     emit('refresh-industry-analysis')
-    ElMessage.success('人工征订结果已写回。')
+    ElMessage.success('人工征订结果已更新。')
   } catch (error) {
-    ElMessage.warning(error.message || '人工征订写回失败。')
+    ElMessage.warning(error.message || '人工征订更新失败。')
   } finally {
     manualSaving.value = false
   }
@@ -743,9 +743,9 @@ watch(
         <span class="industry-hero__eyebrow">Industry Intelligence Layer</span>
         <h3>产业分析结果层</h3>
         <p v-if="false">
-          把正式 refresh 结果、人工征订入口和后续模型辅助位收束到同一工作面。当前默认展示正式落库结果，人工与模型交互先以前端预演方式保留。
+          展示业务线分类结果，并提供人工复核与模型建议入口。
         </p>
-        <p>当前展示规则 refresh 的正式结果，人工征订与模型辅助分析统一进入工作台处理。</p>
+        <p>展示业务线分类结果，并提供人工复核与模型建议入口。</p>
       </div>
       <div class="industry-hero__actions">
         <el-button type="primary">
@@ -819,7 +819,7 @@ watch(
         <div class="section-heading">
           <div>
             <h3>业务结构图</h3>
-            <p>先看收入占比结构，再看利润占比结构。两张图沿用同一套展示语言，减少横向拥挤和标签互相挤压。</p>
+            <p>展示企业业务线的收入占比与利润占比结构。</p>
           </div>
         </div>
         <div class="industry-chart-pair">
@@ -849,14 +849,14 @@ watch(
       <article class="industry-review-card surface-card">
         <div class="section-heading">
           <div>
-            <h3>人工征订与研究工作面</h3>
-            <p>系统根据业务线分类状态筛选出需要优先复核的样本，便于结合规则结果、模型建议与人工判断进行修订与确认。</p>
+            <h3>人工复核与修订</h3>
+            <p>集中展示需要优先复核的业务线，便于结合规则结果、模型建议与人工判断完成修订。</p>
           </div>
         </div>
 
         <div class="industry-review-card__priority">
-          <span>人工复核结果可作为最终分类</span>
-          <p>当研究人员对分类结果进行确认或修订后，系统将优先采用人工复核结果作为当前业务线的分类结论。</p>
+          <span>人工复核结果优先生效</span>
+          <p>确认或修订后的分类结果会作为当前业务线的有效分类结论。</p>
         </div>
 
         <div class="industry-review-card__queue">
@@ -871,7 +871,7 @@ watch(
           <div class="industry-review-card__list-head">
             <div>
               <h4>待处理业务线队列</h4>
-              <p>以下业务线需要优先复核，可点击“查看”进入详情页，结合规则结果、模型建议与人工判断完成修订。</p>
+              <p>以下业务线建议优先复核，可点击“查看”进入详情页进一步判断。</p>
             </div>
           </div>
 
@@ -1102,7 +1102,7 @@ watch(
             <div class="section-heading">
               <div>
                 <h3>当前正式结果</h3>
-                <p>这里展示当前业务线在正式数据库中的分类结果、结果来源与映射依据，人工征订写回后会立即反映在这里。</p>
+                <p>这里展示当前业务线的分类结果、结果来源与映射依据。</p>
               </div>
             </div>
             <div class="industry-drawer-card">
@@ -1146,7 +1146,7 @@ watch(
                 <div class="industry-basis-card__head">
                   <div>
                     <span>映射依据摘要</span>
-                    <p>默认展示当前分类结果的摘要依据，便于核对规则结果或人工修订是否一致。</p>
+                    <p>展示当前分类结果的摘要依据，便于核对分类结论。</p>
                   </div>
                 </div>
                 <div class="industry-basis-list">
@@ -1171,7 +1171,7 @@ watch(
             <div class="section-heading">
               <div>
                 <h3>人工征订 / 人工修订</h3>
-                <p>这里直接面向正式公司业务线结果。人工征订提交后会写回正式数据库，并成为当前业务线的正式分类结果。</p>
+                <p>可在这里提交人工修订，更新当前业务线的分类结果。</p>
               </div>
             </div>
             <div class="industry-drawer-card industry-drawer-card--manual">
@@ -1317,7 +1317,7 @@ watch(
                   type="success"
                   :closable="false"
                   show-icon
-                  title="该模型建议已采用并写回正式结果。"
+                  title="该模型建议已采用。"
                 />
                 <div class="industry-llm-actions">
                   <el-button
@@ -1344,7 +1344,7 @@ watch(
               </div>
               <el-empty
                 v-else
-                description="尚未生成模型分析结果，后续可通过模型辅助补判。"
+                description="尚未生成模型分析结果，可使用模型辅助补充判断。"
                 :image-size="72"
               />
             </div>

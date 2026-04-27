@@ -51,20 +51,8 @@ a {
   margin-bottom: 22px;
 }
 
-.page-kicker {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(139, 106, 61, 0.18);
-  background: rgba(255, 252, 247, 0.86);
-  color: var(--accent-gold);
-  font-size: 13px;
-}
-
 .page-title {
-  margin: 14px 0 10px;
+  margin: 0 0 10px;
   font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
   font-size: clamp(28px, 3vw, 40px);
   font-weight: 700;

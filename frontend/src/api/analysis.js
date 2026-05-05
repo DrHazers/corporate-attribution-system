@@ -12,6 +12,10 @@ export function fetchBusinessSegmentClassifications(segmentId) {
   return http.get(`/business-segments/${segmentId}/classifications`)
 }
 
+export function fetchBusinessSegmentHistory(companyId, segmentId) {
+  return http.get(`/companies/${companyId}/industry-analysis/segments/${segmentId}/history`)
+}
+
 export function requestBusinessSegmentLlmAnalysis(segmentId) {
   return http.post(`/business-segments/${segmentId}/classify-with-llm`)
 }

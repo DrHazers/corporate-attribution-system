@@ -780,6 +780,208 @@ def test_industry_analysis_endpoint_supports_reporting_period_and_history(indust
     ]
 
 
+def test_business_segment_history_endpoint_matches_same_segment_name_by_period(
+    industry_client,
+):
+    client, _ = industry_client
+    company = create_company(client, stock_code="HIS001")
+
+    segment_2023 = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Cloud Platform",
+        segment_type="secondary",
+        revenue_ratio="35.0000",
+        profit_ratio="28.0000",
+        reporting_period="2023A",
+        is_current=False,
+    )
+    segment_2024 = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Cloud Platform",
+        segment_type="primary",
+        revenue_ratio="48.0000",
+        profit_ratio="42.0000",
+        reporting_period="2024A",
+        is_current=False,
+    )
+    segment_2025 = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Cloud Platform",
+        segment_type="primary",
+        revenue_ratio="57.0000",
+        profit_ratio="51.0000",
+        reporting_period="2025A",
+    )
+    unrelated_segment = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Smart Devices",
+        segment_type="secondary",
+        revenue_ratio="20.0000",
+        reporting_period="2025A",
+    )
+
+    create_classification(
+        client,
+        segment_2023["id"],
+        level_1="Information Technology",
+        level_2="Technology Hardware",
+        is_primary=True,
+    )
+    create_classification(
+        client,
+        segment_2024["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Cloud Services",
+        is_primary=True,
+    )
+    create_classification(
+        client,
+        segment_2025["id"],
+        level_1="Information Technology",
+        level_2="Software",
+        level_3="Cloud Services",
+        is_primary=True,
+    )
+    create_classification(
+        client,
+        unrelated_segment["id"],
+        level_1="Consumer Discretionary",
+        level_2="Consumer Electronics",
+    )
+
+    response = client.get(
+        (
+            f"/companies/{company['id']}/industry-analysis/segments/"
+            f"{segment_2025['id']}/history"
+        )
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["company_id"] == company["id"]
+    assert payload["business_segment_id"] == segment_2025["id"]
+    assert payload["segment_name"] == "Cloud Platform"
+    assert payload["available_reporting_periods"] == ["2025A", "2024A", "2023A"]
+    assert [item["business_segment_id"] for item in payload["items"]] == [
+        segment_2023["id"],
+        segment_2024["id"],
+        segment_2025["id"],
+    ]
+    assert [item["reporting_period"] for item in payload["items"]] == [
+        "2023A",
+        "2024A",
+        "2025A",
+    ]
+    assert payload["items"][1]["classification"]["industry_label"] == (
+        "Information Technology > Software > Cloud Services"
+    )
+    assert payload["trend_summary"] == {
+        "history_count": 3,
+        "latest_reporting_period": "2025A",
+        "revenue_change": 22.0,
+        "profit_change": 23.0,
+        "classification_changed": True,
+    }
+
+
+def test_same_named_segment_uses_period_specific_classification(industry_client):
+    client, _ = industry_client
+    company = create_company(client, stock_code="PERCLS001")
+
+    segment_2024 = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Machinery and equipment",
+        segment_type="secondary",
+        revenue_ratio="18.0000",
+        profit_ratio="12.0000",
+        reporting_period="2024A",
+        is_current=False,
+    )
+    segment_2025 = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Machinery and equipment",
+        segment_type="primary",
+        revenue_ratio="42.0000",
+        profit_ratio="38.0000",
+        reporting_period="2025A",
+    )
+
+    create_classification(
+        client,
+        segment_2024["id"],
+        level_1=None,
+        level_2=None,
+        level_3=None,
+        level_4=None,
+        is_primary=False,
+        review_status="unmapped",
+        mapping_basis="No stable period-specific rule matched 2024A.",
+    )
+    create_classification(
+        client,
+        segment_2025["id"],
+        level_1="Industrials",
+        level_2="Capital Goods",
+        level_3="Machinery",
+        level_4="Industrial Machinery & Supplies & Components",
+        is_primary=True,
+        review_status="confirmed",
+        mapping_basis="2025A disclosure matched machinery rules.",
+    )
+
+    response_2024 = client.get(
+        f"/companies/{company['id']}/industry-analysis?reporting_period=2024A"
+    )
+    assert response_2024.status_code == 200
+    payload_2024 = response_2024.json()
+    segment_payload_2024 = payload_2024["segments"][0]
+
+    assert payload_2024["selected_reporting_period"] == "2024A"
+    assert segment_payload_2024["id"] == segment_2024["id"]
+    assert segment_payload_2024["reporting_period"] == "2024A"
+    assert segment_payload_2024["classifications"][0]["business_segment_id"] == segment_2024["id"]
+    assert segment_payload_2024["classifications"][0]["industry_label"] is None
+    assert segment_payload_2024["classifications"][0]["review_status"] == "unmapped"
+
+    response_2025 = client.get(
+        f"/companies/{company['id']}/industry-analysis?reporting_period=2025A"
+    )
+    assert response_2025.status_code == 200
+    payload_2025 = response_2025.json()
+    segment_payload_2025 = payload_2025["segments"][0]
+
+    assert payload_2025["selected_reporting_period"] == "2025A"
+    assert segment_payload_2025["id"] == segment_2025["id"]
+    assert segment_payload_2025["reporting_period"] == "2025A"
+    assert segment_payload_2025["classifications"][0]["business_segment_id"] == segment_2025["id"]
+    assert segment_payload_2025["classifications"][0]["industry_label"] == (
+        "Industrials > Capital Goods > Machinery > Industrial Machinery & Supplies & Components"
+    )
+    assert segment_payload_2025["classifications"][0]["review_status"] == "confirmed"
+
+    history_response = client.get(
+        (
+            f"/companies/{company['id']}/industry-analysis/segments/"
+            f"{segment_2025['id']}/history"
+        )
+    )
+    assert history_response.status_code == 200
+    history_payload = history_response.json()
+    assert [item["business_segment_id"] for item in history_payload["items"]] == [
+        segment_2024["id"],
+        segment_2025["id"],
+    ]
+    assert history_payload["items"][0]["classification"]["review_status"] == "unmapped"
+    assert history_payload["items"][1]["classification"]["review_status"] == "confirmed"
+
+
 def test_industry_structure_change_analysis_detects_period_changes(industry_client):
     client, session_factory = industry_client
     company = create_company(client, stock_code="CHG001")

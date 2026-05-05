@@ -252,13 +252,30 @@ async function loadCompanyData(companyId) {
   }
 }
 
-async function refreshIndustryAnalysisData(companyId = company.value?.id || resolvedCompanyId.value) {
+async function refreshIndustryAnalysisData(optionsOrCompanyId = null) {
+  const options =
+    optionsOrCompanyId && typeof optionsOrCompanyId === 'object'
+      ? optionsOrCompanyId
+      : {}
+  const companyId =
+    options.companyId ||
+    (optionsOrCompanyId && typeof optionsOrCompanyId !== 'object' ? optionsOrCompanyId : null) ||
+    company.value?.id ||
+    resolvedCompanyId.value
   if (!companyId || !summaryData.value) {
     return
   }
 
   try {
-    const nextIndustryAnalysis = await fetchCompanyIndustryAnalysis(companyId)
+    const reportingPeriod =
+      options.reportingPeriod ?? summaryData.value?.industry_analysis?.selected_reporting_period
+    const params = {
+      include_history: options.includeHistory ?? true,
+    }
+    if (reportingPeriod) {
+      params.reporting_period = reportingPeriod
+    }
+    const nextIndustryAnalysis = await fetchCompanyIndustryAnalysis(companyId, params)
     summaryData.value = {
       ...summaryData.value,
       industry_analysis: nextIndustryAnalysis,

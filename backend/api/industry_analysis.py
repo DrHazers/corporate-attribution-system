@@ -7,6 +7,7 @@ from backend.analysis.industry_analysis import (
     analyze_industry_structure_change,
     build_business_segment_detail,
     get_business_segment_annotation_logs,
+    get_business_segment_history,
     get_business_segment_classification_annotation_logs,
     get_company_analysis_summary,
     get_company_industry_analysis,
@@ -65,6 +66,7 @@ from backend.schemas.common import ApiErrorResponse
 from backend.schemas.industry_analysis import (
     AnnotationLogListResponse,
     BusinessSegmentDetailRead,
+    BusinessSegmentHistoryResponse,
     CompanyAnalysisSummaryRead,
     IndustryAnalysisChangeResult,
     IndustryAnalysisPeriodsResponse,
@@ -604,6 +606,37 @@ def get_company_industry_analysis_endpoint(
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/companies/{company_id}/industry-analysis/segments/{segment_id}/history",
+    response_model=BusinessSegmentHistoryResponse,
+    summary="Get business segment reporting-period history",
+    description=(
+        "Return the reporting-period history for one business segment. The first "
+        "version matches records by company_id plus exact segment_name and does "
+        "not write to the database."
+    ),
+    response_description="Business segment history items and compact trend summary.",
+    responses=COMMON_INDUSTRY_ERROR_RESPONSES,
+)
+def get_business_segment_history_endpoint(
+    company_id: int,
+    segment_id: int,
+    db: Session = Depends(get_db),
+):
+    get_company_or_404(db, company_id)
+    try:
+        return get_business_segment_history(
+            db,
+            company_id=company_id,
+            segment_id=segment_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
 

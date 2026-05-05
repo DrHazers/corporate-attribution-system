@@ -6,10 +6,12 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 import {
   confirmBusinessSegmentLlmClassification,
   fetchBusinessSegmentClassifications,
+  fetchBusinessSegmentHistory,
   requestBusinessSegmentLlmAnalysis,
   submitBusinessSegmentManualClassification,
 } from '@/api/analysis'
 import IndustryStructurePieChart from '@/components/IndustryStructurePieChart.vue'
+import SegmentHistoryTrendChart from '@/components/SegmentHistoryTrendChart.vue'
 import {
   classificationSummary,
   classifierTypeLabel,
@@ -26,6 +28,13 @@ import {
   segmentTypeLabel,
   segmentTypeTagType,
 } from '@/utils/industryAnalysis'
+import {
+  buildIndustryAnalysisPeriodRefreshPayload,
+  findHistoryItemForReportingPeriod,
+  reportingPeriodDisplayText,
+  resolveSelectedReportingPeriod,
+  shouldRefreshOuterIndustryAnalysis,
+} from '@/utils/reportingPeriod'
 
 const props = defineProps({
   company: {
@@ -49,12 +58,17 @@ const emit = defineEmits(['refresh-industry-analysis'])
 
 const detailDrawerVisible = ref(false)
 const detailLoading = ref(false)
+const detailHistoryLoading = ref(false)
 const llmLoading = ref(false)
 const llmConfirming = ref(false)
 const manualSaving = ref(false)
 const llmErrorMessage = ref('')
 const selectedSegmentId = ref(null)
 const selectedSegmentSnapshot = ref(null)
+const drawerReportingPeriod = ref('')
+const segmentHistory = ref(null)
+const drawerFallbackMessage = ref('')
+const summaryPeriodSelectRef = ref(null)
 const detailClassifications = ref([])
 const llmSuggestionPayload = ref(null)
 const manualOverrides = ref({})
@@ -80,8 +94,19 @@ const primaryIndustrySummary = computed(
   () => props.industryAnalysis?.primary_industries?.[0] || '待进一步归纳',
 )
 const reportPeriod = computed(
-  () => props.industryAnalysis?.selected_reporting_period || '暂无',
+  () => reportingPeriodDisplayText(props.industryAnalysis),
 )
+const selectedReportingPeriod = computed(
+  () => resolveSelectedReportingPeriod(props.industryAnalysis),
+)
+const availableReportingPeriods = computed(() => props.industryAnalysis?.available_reporting_periods || [])
+const canSelectReportingPeriod = computed(() => availableReportingPeriods.value.length > 1)
+const drawerAvailableReportingPeriods = computed(
+  () => segmentHistory.value?.available_reporting_periods || availableReportingPeriods.value,
+)
+const canSelectDrawerReportingPeriod = computed(() => drawerAvailableReportingPeriods.value.length > 1)
+const segmentHistoryItems = computed(() => segmentHistory.value?.items || [])
+const hasSegmentTrend = computed(() => segmentHistoryItems.value.length >= 2)
 const qualityWarnings = computed(() => props.industryAnalysis?.quality_warnings || [])
 const allIndustryLabels = computed(() => props.industryAnalysis?.all_industry_labels || [])
 const flaggedSegments = computed(() =>
@@ -319,24 +344,28 @@ function resetManualDraft(classification) {
 async function openSegmentDetail(segment, options = {}) {
   selectedSegmentId.value = segment.id
   selectedSegmentSnapshot.value = segment
+  drawerReportingPeriod.value = selectedReportingPeriod.value || segment.reporting_period || ''
+  segmentHistory.value = null
+  drawerFallbackMessage.value = ''
   detailDrawerVisible.value = true
   llmSuggestionPayload.value = null
   llmErrorMessage.value = ''
   detailLoading.value = true
 
   try {
-    const classifications = await fetchBusinessSegmentClassifications(segment.id)
+    await loadSegmentHistory(segment, drawerReportingPeriod.value)
+    const classifications = await fetchBusinessSegmentClassifications(selectedSegment.value?.id || segment.id)
     detailClassifications.value = classifications
   } catch (error) {
-    detailClassifications.value = segment.classifications || []
+    detailClassifications.value = selectedSegment.value?.classifications || segment.classifications || []
     ElMessage.warning(error.message || '业务线分类详情刷新失败，已回退使用当前页数据。')
   } finally {
     detailLoading.value = false
   }
 
-  resetManualDraft(resolvedClassification(segment))
+  resetManualDraft(resolvedClassification(selectedSegment.value || segment))
   if (options.triggerLlm) {
-    await triggerLlmAnalysis(segment)
+    await triggerLlmAnalysis(selectedSegment.value || segment)
   }
 }
 
@@ -700,11 +729,17 @@ async function submitManualClassification() {
 
     applyConfirmedClassificationLocally(response.confirmed_classification)
     await refreshSelectedSegmentClassifications(selectedSegment.value.id)
+    await loadSegmentHistory(selectedSegment.value, selectedSegment.value.reporting_period)
     const nextOverrides = { ...manualOverrides.value }
     delete nextOverrides[selectedSegment.value.id]
     manualOverrides.value = nextOverrides
     resetManualDraft(response.confirmed_classification)
-    emit('refresh-industry-analysis')
+    if (shouldRefreshOuterIndustryAnalysis(selectedSegment.value.reporting_period, selectedReportingPeriod.value)) {
+      emit('refresh-industry-analysis', {
+        reportingPeriod: selectedReportingPeriod.value,
+        includeHistory: true,
+      })
+    }
     ElMessage.success('人工征订结果已更新。')
   } catch (error) {
     ElMessage.warning(error.message || '人工征订更新失败。')
@@ -723,6 +758,121 @@ function resetManualDraftInput() {
   detailClassifications.value = selectedSegmentSnapshot.value?.classifications || []
   resetManualDraft(primaryClassification(selectedSegmentSnapshot.value))
   ElMessage.info('已重置当前人工征订输入。')
+}
+
+function handleReportPeriodChange(period) {
+  const payload = buildIndustryAnalysisPeriodRefreshPayload(selectedReportingPeriod.value, period)
+  if (!payload) {
+    return
+  }
+  emit('refresh-industry-analysis', payload)
+}
+
+function openReportPeriodSelect() {
+  if (!canSelectReportingPeriod.value) {
+    return
+  }
+  const selectInstance = Array.isArray(summaryPeriodSelectRef.value)
+    ? summaryPeriodSelectRef.value[0]
+    : summaryPeriodSelectRef.value
+  selectInstance?.focus?.()
+  selectInstance?.toggleMenu?.()
+}
+
+function segmentFromHistoryItem(item) {
+  const classification = item?.classification || null
+  return {
+    id: item.business_segment_id,
+    company_id: props.companyId || props.company?.id,
+    segment_name: item.segment_name,
+    segment_alias: selectedSegmentSnapshot.value?.segment_alias || null,
+    segment_type: item.segment_type,
+    revenue_ratio: item.revenue_ratio,
+    profit_ratio: item.profit_ratio,
+    description: item.description,
+    currency: selectedSegmentSnapshot.value?.currency || null,
+    source: item.source,
+    reporting_period: item.reporting_period,
+    is_current: item.reporting_period === selectedReportingPeriod.value,
+    confidence: item.confidence,
+    classification_labels: [classification?.industry_label].filter(Boolean),
+    classifications: classification ? [classification] : [],
+  }
+}
+
+function historyClassificationSummary(item) {
+  const classification = item?.classification
+  if (!classification) {
+    return '待建立产业分类'
+  }
+  return (
+    classification.industry_label ||
+    [classification.level_1, classification.level_2, classification.level_3, classification.level_4]
+      .filter(Boolean)
+      .join(' > ') ||
+    '待补充层级'
+  )
+}
+
+function applyDrawerHistoryPeriod(period, fallbackSegment = selectedSegmentSnapshot.value) {
+  drawerReportingPeriod.value = period || ''
+  const matchedItem = findHistoryItemForReportingPeriod(
+    segmentHistoryItems.value,
+    drawerReportingPeriod.value,
+  )
+  if (!matchedItem) {
+    selectedSegmentId.value = fallbackSegment?.id || selectedSegmentId.value
+    selectedSegmentSnapshot.value = fallbackSegment || selectedSegmentSnapshot.value
+    detailClassifications.value = fallbackSegment?.classifications || []
+    drawerFallbackMessage.value = drawerReportingPeriod.value
+      ? `该业务线在 ${drawerReportingPeriod.value} 报告期暂无记录，已回退显示原始业务线记录。`
+      : ''
+    resetManualDraft(resolvedClassification(selectedSegmentSnapshot.value))
+    return
+  }
+
+  const nextSegment = segmentFromHistoryItem(matchedItem)
+  selectedSegmentId.value = nextSegment.id
+  selectedSegmentSnapshot.value = nextSegment
+  detailClassifications.value = nextSegment.classifications || []
+  drawerFallbackMessage.value = ''
+  resetManualDraft(resolvedClassification(nextSegment))
+}
+
+async function loadSegmentHistory(segment, targetPeriod = drawerReportingPeriod.value || selectedReportingPeriod.value) {
+  if (!props.companyId || !segment?.id) {
+    return
+  }
+  detailHistoryLoading.value = true
+  try {
+    segmentHistory.value = await fetchBusinessSegmentHistory(props.companyId, segment.id)
+    applyDrawerHistoryPeriod(targetPeriod || segment.reporting_period, segment)
+  } catch (error) {
+    segmentHistory.value = null
+    drawerFallbackMessage.value = error.message || '业务线历史记录加载失败，已使用当前业务线记录。'
+  } finally {
+    detailHistoryLoading.value = false
+  }
+}
+
+async function handleDrawerReportingPeriodChange(period) {
+  if (!period || period === drawerReportingPeriod.value) {
+    return
+  }
+  applyDrawerHistoryPeriod(period)
+  if (selectedSegment.value?.id) {
+    try {
+      await refreshSelectedSegmentClassifications(selectedSegment.value.id)
+    } catch (error) {
+      detailClassifications.value = selectedSegment.value?.classifications || []
+    }
+  }
+}
+
+function handleHistoryRowClick(row) {
+  if (row?.reporting_period) {
+    handleDrawerReportingPeriodChange(row.reporting_period)
+  }
 }
 
 watch(
@@ -766,13 +916,35 @@ watch(
           v-for="metric in row.items"
           :key="metric.key"
           class="industry-summary-tile"
+          :role="metric.key === 'report-period' && canSelectReportingPeriod ? 'button' : null"
+          :tabindex="metric.key === 'report-period' && canSelectReportingPeriod ? 0 : null"
           :class="[
             `industry-summary-tile--${metric.key}`,
             { 'industry-summary-tile--emphasis': metric.emphasis },
           ]"
+          @click="metric.key === 'report-period' && openReportPeriodSelect()"
         >
           <span class="industry-summary-tile__label">{{ metric.label }}</span>
-          <strong class="industry-summary-tile__value">{{ metric.value }}</strong>
+          <el-select
+            v-if="metric.key === 'report-period' && canSelectReportingPeriod"
+            ref="summaryPeriodSelectRef"
+            class="industry-period-select"
+            :model-value="selectedReportingPeriod"
+            size="small"
+            :teleported="false"
+            @change="handleReportPeriodChange"
+            @click.stop
+          >
+            <el-option
+              v-for="period in availableReportingPeriods"
+              :key="period"
+              :label="period"
+              :value="period"
+            />
+          </el-select>
+          <strong v-else class="industry-summary-tile__value">
+            {{ metric.value }}
+          </strong>
           <p v-if="metric.description" class="industry-summary-tile__description">
             {{ metric.description }}
           </p>
@@ -914,6 +1086,7 @@ watch(
         <div>
           <h3>业务线分类主表</h3>
           <p>展示各业务线的占比、分类结果与当前状态，可点击“查看与分析”进入更深入的分析与处理。</p>
+          <p class="industry-table-period-note">当前显示：{{ reportPeriod }} 报告期业务线及其对应分类结果</p>
         </div>
       </div>
 
@@ -1079,7 +1252,23 @@ watch(
         <div class="industry-drawer__meta">
           <div>
             <span>报告期</span>
-            <strong>{{ selectedSegment.reporting_period || '—' }}</strong>
+            <el-select
+              v-if="canSelectDrawerReportingPeriod"
+              class="industry-drawer-period-select"
+              :model-value="drawerReportingPeriod"
+              size="small"
+              :teleported="false"
+              @change="handleDrawerReportingPeriodChange"
+            >
+              <el-option
+                v-for="period in drawerAvailableReportingPeriods"
+                :key="period"
+                :label="period"
+                :value="period"
+              />
+            </el-select>
+            <strong v-else>{{ selectedSegment.reporting_period || '—' }}</strong>
+            <small>分类结果对应当前所选报告期的业务线记录</small>
           </div>
           <div>
             <span>收入占比</span>
@@ -1094,6 +1283,14 @@ watch(
             <strong>{{ selectedSegment.source || '—' }}</strong>
           </div>
         </div>
+
+        <el-alert
+          v-if="drawerFallbackMessage"
+          type="info"
+          :closable="false"
+          show-icon
+          :title="drawerFallbackMessage"
+        />
 
         <el-skeleton v-if="detailLoading" animated :rows="8" />
 
@@ -1164,6 +1361,82 @@ watch(
                   <pre>{{ selectedClassification.mapping_basis }}</pre>
                 </details>
               </div>
+            </div>
+          </section>
+
+          <section class="industry-drawer-section">
+            <div class="section-heading">
+              <div>
+                <h3>历史变化趋势</h3>
+                <p>展示同一业务线在不同报告期的收入占比、利润占比和分类结果变化。</p>
+              </div>
+            </div>
+            <div class="industry-drawer-card">
+              <el-skeleton v-if="detailHistoryLoading" animated :rows="4" />
+              <SegmentHistoryTrendChart
+                v-else-if="hasSegmentTrend"
+                :rows="segmentHistoryItems"
+              />
+              <el-empty
+                v-else
+                description="当前业务线仅有一个报告期记录，暂无趋势变化。"
+                :image-size="72"
+              />
+            </div>
+          </section>
+
+          <section class="industry-drawer-section">
+            <div class="section-heading">
+              <div>
+                <h3>历史明细表</h3>
+                <p>点击某一报告期记录，可在 Drawer 内切换当前详情口径。</p>
+              </div>
+            </div>
+            <div class="industry-drawer-card">
+              <el-table
+                v-loading="detailHistoryLoading"
+                :data="segmentHistoryItems"
+                size="small"
+                row-key="business_segment_id"
+                empty-text="暂无历史明细"
+                highlight-current-row
+                @row-click="handleHistoryRowClick"
+              >
+                <el-table-column label="报告期" width="92">
+                  <template #default="{ row }">
+                    <strong>{{ row.reporting_period || '—' }}</strong>
+                  </template>
+                </el-table-column>
+                <el-table-column label="收入占比" width="92">
+                  <template #default="{ row }">
+                    {{ formatFlexiblePercent(row.revenue_ratio) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="利润占比" width="92">
+                  <template #default="{ row }">
+                    {{ formatFlexiblePercent(row.profit_ratio) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="业务线类型" width="96">
+                  <template #default="{ row }">
+                    <el-tag :type="segmentTypeTagType(row.segment_type)" effect="plain" size="small">
+                      {{ segmentTypeLabel(row.segment_type) }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="分类结果" min-width="220">
+                  <template #default="{ row }">
+                    <div class="industry-table-text industry-table-text--summary">
+                      {{ historyClassificationSummary(row) }}
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="结果来源" width="110">
+                  <template #default="{ row }">
+                    {{ classifierTypeLabel(row.classification?.classifier_type) }}
+                  </template>
+                </el-table-column>
+              </el-table>
             </div>
           </section>
 
@@ -1496,6 +1769,47 @@ watch(
 
 .industry-summary-tile--report-period .industry-summary-tile__value {
   font-size: 18px;
+}
+
+.industry-summary-tile--report-period {
+  cursor: default;
+}
+
+.industry-summary-tile--report-period[role="button"] {
+  cursor: pointer;
+}
+
+.industry-period-select {
+  width: 136px;
+  max-width: 100%;
+}
+
+.industry-period-select :deep(.el-select__wrapper),
+.industry-drawer-period-select :deep(.el-select__wrapper) {
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  box-shadow: none;
+  border: 1px solid rgba(31, 59, 87, 0.1);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.industry-period-select :deep(.el-select__placeholder),
+.industry-period-select :deep(.el-select__selected-item),
+.industry-drawer-period-select :deep(.el-select__placeholder),
+.industry-drawer-period-select :deep(.el-select__selected-item) {
+  color: var(--brand-ink);
+  font-weight: 700;
+}
+
+.industry-period-select :deep(.el-select__selected-item),
+.industry-period-select :deep(.el-select__placeholder) {
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.industry-period-select :deep(.el-select__suffix) {
+  font-size: 15px;
 }
 
 .industry-summary-tile--company-info .industry-summary-tile__value,
@@ -1862,6 +2176,12 @@ watch(
   overflow: hidden;
 }
 
+.industry-table-period-note {
+  margin-top: 4px !important;
+  color: var(--text-tertiary) !important;
+  font-size: 12px !important;
+}
+
 .industry-table-shell :deep(.el-table) {
   width: 100%;
 }
@@ -1962,10 +2282,16 @@ watch(
 }
 
 .industry-drawer__meta span,
+.industry-drawer__meta small,
 .industry-level-grid span {
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.35;
+}
+
+.industry-drawer__meta small {
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .industry-drawer__meta strong,
@@ -1974,6 +2300,14 @@ watch(
   font-size: 14px;
   font-weight: 700;
   line-height: 1.45;
+}
+
+.industry-drawer-period-select {
+  width: 136px;
+}
+
+.industry-drawer-card :deep(.el-table__row) {
+  cursor: pointer;
 }
 
 .industry-drawer-section {

@@ -4,7 +4,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from backend.analysis.control_chain import analyze_control_chain_with_options
 from backend.analysis.manual_control_override import (
@@ -654,6 +654,126 @@ def get_company_industry_analysis_quality(
         selected_reporting_period=context["selected_reporting_period"],
         segments=selected_segments,
     )
+
+
+def _select_primary_classification(
+    segment: BusinessSegment,
+) -> BusinessSegmentClassification | None:
+    primary_classification = next(
+        (
+            classification
+            for classification in segment.classifications
+            if classification.is_primary
+        ),
+        None,
+    )
+    return primary_classification or (
+        segment.classifications[0] if segment.classifications else None
+    )
+
+
+def _ratio_change(
+    earliest: BusinessSegment,
+    latest: BusinessSegment,
+    field_name: str,
+) -> float | None:
+    earliest_value = getattr(earliest, field_name)
+    latest_value = getattr(latest, field_name)
+    if earliest_value is None or latest_value is None:
+        return None
+    return float(latest_value) - float(earliest_value)
+
+
+def get_business_segment_history(
+    db: Session,
+    *,
+    company_id: int,
+    segment_id: int,
+) -> dict[str, Any]:
+    segment = get_business_segment_by_id(db, segment_id)
+    if segment is None or segment.company_id != company_id:
+        raise LookupError("Business segment not found.")
+
+    normalized_segment_name = segment.segment_name.strip()
+    history_segments = (
+        db.query(BusinessSegment)
+        .options(joinedload(BusinessSegment.classifications))
+        .filter(BusinessSegment.company_id == company_id)
+        .filter(BusinessSegment.segment_name == normalized_segment_name)
+        .order_by(BusinessSegment.id.asc())
+        .all()
+    )
+    history_segments = sorted(
+        history_segments,
+        key=lambda item: _reporting_period_sort_key(item.reporting_period),
+    )
+
+    available_reporting_periods = _sort_reporting_periods(
+        [
+            reporting_period
+            for item in history_segments
+            for reporting_period in [_normalize_reporting_period(item.reporting_period)]
+            if reporting_period is not None
+        ]
+    )
+
+    items: list[dict[str, Any]] = []
+    classification_labels: list[str | None] = []
+    for history_segment in history_segments:
+        classification = _select_primary_classification(history_segment)
+        classification_summary = (
+            build_classification_summary(classification) if classification else None
+        )
+        classification_labels.append(
+            classification_summary["industry_label"] if classification_summary else None
+        )
+        items.append(
+            {
+                "business_segment_id": history_segment.id,
+                "reporting_period": history_segment.reporting_period,
+                "segment_name": history_segment.segment_name,
+                "segment_type": history_segment.segment_type,
+                "revenue_ratio": history_segment.revenue_ratio,
+                "profit_ratio": history_segment.profit_ratio,
+                "source": history_segment.source,
+                "confidence": history_segment.confidence,
+                "description": history_segment.description,
+                "classification": classification_summary,
+            }
+        )
+
+    earliest_segment = history_segments[0] if history_segments else None
+    latest_segment = history_segments[-1] if history_segments else None
+    unique_classification_labels = {
+        label
+        for label in classification_labels
+        if label is not None
+    }
+
+    return {
+        "company_id": company_id,
+        "business_segment_id": segment.id,
+        "segment_name": segment.segment_name,
+        "available_reporting_periods": available_reporting_periods,
+        "items": items,
+        "trend_summary": {
+            "history_count": len(items),
+            "latest_reporting_period": (
+                available_reporting_periods[0] if available_reporting_periods else None
+            ),
+            "revenue_change": (
+                _ratio_change(earliest_segment, latest_segment, "revenue_ratio")
+                if earliest_segment is not None and latest_segment is not None
+                else None
+            ),
+            "profit_change": (
+                _ratio_change(earliest_segment, latest_segment, "profit_ratio")
+                if earliest_segment is not None and latest_segment is not None
+                else None
+            ),
+            "classification_changed": len(unique_classification_labels) > 1,
+        },
+    }
 
 
 def _serialize_annotation_log(log: AnnotationLog) -> dict[str, Any]:

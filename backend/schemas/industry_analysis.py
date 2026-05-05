@@ -190,6 +190,36 @@ class IndustryAnalysisQualityResponse(BaseModel):
     )
 
 
+class BusinessSegmentHistoryItem(BaseModel):
+    business_segment_id: int
+    reporting_period: str | None = None
+    segment_name: str
+    segment_type: BusinessSegmentType
+    revenue_ratio: Decimal | None = None
+    profit_ratio: Decimal | None = None
+    source: str | None = None
+    confidence: Decimal | None = None
+    description: str | None = None
+    classification: BusinessSegmentClassificationSummaryRead | None = None
+
+
+class BusinessSegmentTrendSummary(BaseModel):
+    history_count: int
+    latest_reporting_period: str | None = None
+    revenue_change: float | None = None
+    profit_change: float | None = None
+    classification_changed: bool
+
+
+class BusinessSegmentHistoryResponse(BaseModel):
+    company_id: int
+    business_segment_id: int
+    segment_name: str
+    available_reporting_periods: list[str] = Field(default_factory=list)
+    items: list[BusinessSegmentHistoryItem] = Field(default_factory=list)
+    trend_summary: BusinessSegmentTrendSummary
+
+
 class IndustryChangeSegmentItem(BaseModel):
     segment_name: str
     segment_type: BusinessSegmentType

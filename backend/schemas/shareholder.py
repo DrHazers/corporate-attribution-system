@@ -32,6 +32,7 @@ ShareholderEntityType = Literal[
     "institution",
     "fund",
     "government",
+    "public_float",
     "other",
 ]
 ShareholderRelationType = Literal[

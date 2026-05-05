@@ -1,0 +1,2 @@
+structure_key,from_entity_key,to_entity_key,relation_type,holding_ratio,voting_ratio,economic_ratio,effective_control_ratio,is_direct,is_current,look_through_allowed,termination_signal,relation_role,control_basis,board_seats,nomination_rights,agreement_scope,relation_metadata,relation_priority,confidence_level,reporting_period,effective_date,expiry_date,source,remarks
+parent_controls_target,parent_entity,target_entity,equity,60%,60%,60%,60%,true,true,true,none,ownership,,,,,,1,high,2026,2026-01-01,,fixture,Imported equity relation

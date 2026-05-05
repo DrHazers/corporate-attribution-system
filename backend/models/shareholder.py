@@ -23,6 +23,7 @@ shareholder_entity_type_enum = Enum(
     "institution",
     "fund",
     "government",
+    "public_float",
     "other",
     name="shareholder_entity_type",
     native_enum=False,

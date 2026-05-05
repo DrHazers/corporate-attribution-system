@@ -1,0 +1,3 @@
+entity_key,entity_name,entity_type,country,linked_company_key,identifier_code,is_listed,entity_subtype,ultimate_owner_hint,look_through_priority,controller_class,beneficial_owner_disclosed,notes
+target_entity,Import Target Co Entity,company,China,target_company,IMP-9001,true,operating_company,false,1,corporate_group,false,Target mapped entity
+parent_entity,Import Parent Ltd,company,Singapore,,PARENT-001,false,holding_company,true,0,corporate_group,true,Parent controller

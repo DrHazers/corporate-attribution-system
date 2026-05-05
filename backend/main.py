@@ -5,6 +5,7 @@ from backend.api.analysis import router as analysis_router
 from backend.api.company import router as company_router
 from backend.api.control_relationship import router as control_relationship_router
 from backend.api.country_attribution import router as country_attribution_router
+from backend.api.import_data import router as import_data_router
 from backend.api.industry_analysis import router as industry_analysis_router
 from backend.api.relationship_support import router as relationship_support_router
 from backend.api.shareholder import router as shareholder_router
@@ -32,6 +33,7 @@ app.include_router(analysis_router)
 app.include_router(company_router)
 app.include_router(control_relationship_router)
 app.include_router(country_attribution_router)
+app.include_router(import_data_router)
 app.include_router(industry_analysis_router)
 app.include_router(shareholder_router)
 app.include_router(relationship_support_router)

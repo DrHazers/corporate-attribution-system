@@ -1,0 +1,2 @@
+company_key,name,stock_code,incorporation_country,listing_country,headquarters,description
+target_company,Import Target Co,IMP-9001,China,China,Shanghai,Minimal ownership import fixture

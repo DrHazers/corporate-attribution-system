@@ -32,7 +32,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['update:modelValue', 'search', 'select-company'])
+const emit = defineEmits(['update:modelValue', 'search', 'select-company', 'open-import'])
 
 const inputValue = computed({
   get: () => props.modelValue,
@@ -51,6 +51,10 @@ function triggerSearch(value = props.modelValue) {
 
 function handleSelectCompany(company) {
   emit('select-company', company)
+}
+
+function openImportCenter() {
+  emit('open-import')
 }
 </script>
 
@@ -79,6 +83,9 @@ function handleSelectCompany(company) {
         />
         <el-button type="primary" size="large" :loading="searching" @click="triggerSearch()">
           查询
+        </el-button>
+        <el-button size="large" plain @click="openImportCenter">
+          数据导入
         </el-button>
       </div>
     </div>
@@ -159,7 +166,7 @@ function handleSelectCompany(company) {
 .search-bar-card__controls {
   display: flex;
   gap: 12px;
-  width: min(560px, 100%);
+  width: min(680px, 100%);
 }
 
 .search-bar-card__controls :deep(.el-input) {

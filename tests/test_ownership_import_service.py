@@ -16,6 +16,7 @@ from backend.models.shareholder import (
     ShareholderEntity,
     ShareholderStructure,
 )
+import backend.services.ownership_import_service as ownership_import_service
 from backend.services.ownership_import_service import import_ownership_facts
 
 
@@ -61,14 +62,71 @@ def build_fixture_zip(
     return buffer.getvalue()
 
 
-def import_fixture(db_session, *, mode="commit", conflict_strategy="fail", **zip_kwargs):
+def import_fixture(
+    db_session,
+    *,
+    mode="commit",
+    conflict_strategy="fail",
+    analysis_strategy="missing_only",
+    **zip_kwargs,
+):
     return import_ownership_facts(
         db_session,
         filename="ownership.zip",
         content=build_fixture_zip(**zip_kwargs),
         mode=mode,
         conflict_strategy=conflict_strategy,
+        analysis_strategy=analysis_strategy,
     )
+
+
+def add_auto_analysis_rows(db_session, company: Company):
+    parent = (
+        db_session.query(ShareholderEntity)
+        .filter(ShareholderEntity.entity_name == "Import Parent Ltd")
+        .one()
+    )
+    db_session.add(
+        ControlRelationship(
+            company_id=company.id,
+            controller_entity_id=parent.id,
+            controller_name=parent.entity_name,
+            controller_type=parent.entity_type,
+            control_type="equity_control",
+            control_ratio=Decimal("60.0000"),
+            control_path="fixture",
+            is_actual_controller=True,
+            is_ultimate_controller=True,
+            basis="fixture",
+            notes="auto fixture",
+            review_status="auto",
+        )
+    )
+    db_session.add(
+        CountryAttribution(
+            company_id=company.id,
+            incorporation_country=company.incorporation_country,
+            listing_country=company.listing_country,
+            actual_control_country="Singapore",
+            attribution_type="actual_controller_country",
+            actual_controller_entity_id=parent.id,
+            basis="fixture",
+            is_manual=False,
+            notes="auto fixture",
+        )
+    )
+    db_session.commit()
+
+
+def fake_refresh_factory(db_session, calls: list[int]):
+    def fake_refresh(db, company_id):
+        calls.append(company_id)
+        assert db is db_session
+        company = db.get(Company, company_id)
+        add_auto_analysis_rows(db, company)
+        return {"company_id": company_id}
+
+    return fake_refresh
 
 
 def test_validate_mode_does_not_insert_rows(db_session):
@@ -250,3 +308,168 @@ def test_result_tables_cannot_be_imported_from_csv(db_session):
     assert db_session.query(CountryAttribution).count() == 0
     assert any(error["file"] == "control_relationships.csv" for error in result["errors"])
     assert any(error["file"] == "country_attributions.csv" for error in result["errors"])
+
+
+def test_validate_mode_does_not_call_analysis(db_session, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ownership_import_service.ownership_penetration,
+        "refresh_company_control_analysis",
+        fake_refresh_factory(db_session, calls),
+    )
+
+    result = import_fixture(db_session, mode="validate")
+
+    assert result["success"] is True
+    assert calls == []
+    assert result["analysis"]["affected_company_ids"] == []
+
+
+def test_commit_mode_writes_facts_but_does_not_call_analysis(db_session, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ownership_import_service.ownership_penetration,
+        "refresh_company_control_analysis",
+        fake_refresh_factory(db_session, calls),
+    )
+
+    result = import_fixture(db_session, mode="commit")
+
+    assert result["success"] is True
+    assert calls == []
+    assert db_session.query(ControlRelationship).count() == 0
+    assert db_session.query(CountryAttribution).count() == 0
+
+
+def test_commit_and_analyze_reuses_existing_auto_results(db_session, monkeypatch):
+    first = import_fixture(db_session, mode="commit")
+    assert first["success"] is True
+    company = db_session.query(Company).filter(Company.stock_code == "IMP-9001").one()
+    add_auto_analysis_rows(db_session, company)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ownership_import_service.ownership_penetration,
+        "refresh_company_control_analysis",
+        fake_refresh_factory(db_session, calls),
+    )
+
+    result = import_fixture(
+        db_session,
+        mode="commit_and_analyze",
+        conflict_strategy="skip",
+    )
+
+    assert result["success"] is True
+    assert calls == []
+    assert result["analysis"]["affected_company_ids"] == [company.id]
+    assert result["analysis"]["reused_company_ids"] == [company.id]
+    assert result["analysis"]["items"][0]["analysis_status"] == "reused"
+    assert result["analysis"]["items"][0]["actual_control_country"] == "Singapore"
+
+
+def test_commit_and_analyze_generates_when_auto_results_are_missing(db_session, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ownership_import_service.ownership_penetration,
+        "refresh_company_control_analysis",
+        fake_refresh_factory(db_session, calls),
+    )
+
+    result = import_fixture(db_session, mode="commit_and_analyze")
+
+    company = db_session.query(Company).filter(Company.stock_code == "IMP-9001").one()
+    assert result["success"] is True
+    assert calls == [company.id]
+    assert result["analysis"]["generated_company_ids"] == [company.id]
+    assert result["analysis"]["items"][0]["analysis_status"] == "generated"
+    assert db_session.query(ControlRelationship).filter(ControlRelationship.company_id == company.id).count() == 1
+    assert db_session.query(CountryAttribution).filter(CountryAttribution.company_id == company.id).count() == 1
+
+
+def test_commit_and_analyze_missing_facts_is_stable(db_session, monkeypatch):
+    sparse_companies = (
+        "company_key,name,stock_code,incorporation_country,listing_country,headquarters,description\n"
+        "target_company,Sparse Target,SPARSE-001,China,China,Shanghai,Sparse facts\n"
+    )
+    empty_entities = "entity_key,entity_name,entity_type,country,linked_company_key\n"
+    empty_structures = "structure_key,from_entity_key,to_entity_key,relation_type\n"
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ownership_import_service.ownership_penetration,
+        "refresh_company_control_analysis",
+        fake_refresh_factory(db_session, calls),
+    )
+
+    result = import_fixture(
+        db_session,
+        mode="commit_and_analyze",
+        override_files={
+            "companies.csv": sparse_companies,
+            "shareholder_entities.csv": empty_entities,
+            "shareholder_structures.csv": empty_structures,
+            "relationship_sources.csv": "structure_key,source_type,source_name,source_url,source_date,excerpt,confidence_level\n",
+        },
+    )
+
+    company = db_session.query(Company).filter(Company.stock_code == "SPARSE-001").one()
+    assert result["success"] is True
+    assert calls == []
+    assert result["analysis"]["missing_fact_company_ids"] == [company.id]
+    assert result["analysis"]["items"][0]["analysis_status"] == "missing_facts"
+
+
+def test_manual_country_attribution_only_is_not_complete_auto_analysis(db_session, monkeypatch):
+    first = import_fixture(db_session, mode="commit")
+    assert first["success"] is True
+    company = db_session.query(Company).filter(Company.stock_code == "IMP-9001").one()
+    db_session.add(
+        CountryAttribution(
+            company_id=company.id,
+            incorporation_country=company.incorporation_country,
+            listing_country=company.listing_country,
+            actual_control_country="Manual Country",
+            attribution_type="manual_override",
+            basis="manual only",
+            is_manual=True,
+        )
+    )
+    db_session.commit()
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ownership_import_service.ownership_penetration,
+        "refresh_company_control_analysis",
+        fake_refresh_factory(db_session, calls),
+    )
+
+    result = import_fixture(
+        db_session,
+        mode="commit_and_analyze",
+        conflict_strategy="skip",
+    )
+
+    assert result["success"] is True
+    assert calls == [company.id]
+    assert result["analysis"]["generated_company_ids"] == [company.id]
+    assert db_session.query(CountryAttribution).filter(CountryAttribution.is_manual.is_(True)).count() == 1
+
+
+def test_analysis_collects_affected_company_ids_from_linked_company_and_to_entity(db_session, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ownership_import_service.ownership_penetration,
+        "refresh_company_control_analysis",
+        fake_refresh_factory(db_session, calls),
+    )
+
+    result = import_fixture(db_session, mode="commit_and_analyze")
+
+    company = db_session.query(Company).filter(Company.stock_code == "IMP-9001").one()
+    target_entity = (
+        db_session.query(ShareholderEntity)
+        .filter(ShareholderEntity.entity_name == "Import Target Co Entity")
+        .one()
+    )
+    structure = db_session.query(ShareholderStructure).one()
+    assert target_entity.company_id == company.id
+    assert structure.to_entity_id == target_entity.id
+    assert result["analysis"]["affected_company_ids"] == [company.id]

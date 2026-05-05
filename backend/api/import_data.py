@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from backend.api.company import get_db
 from backend.services.ownership_import_service import (
+    ANALYSIS_STRATEGIES,
     CONFLICT_STRATEGIES,
     IMPORT_MODES,
     import_ownership_facts,
@@ -26,6 +27,7 @@ async def import_ownership_endpoint(
     file: UploadFile = File(...),
     mode: str = Form(default="validate"),
     conflict_strategy: str = Form(default="fail"),
+    analysis_strategy: str = Form(default="missing_only"),
     db: Session = Depends(get_db),
 ):
     if mode not in IMPORT_MODES:
@@ -38,6 +40,11 @@ async def import_ownership_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported conflict_strategy: {conflict_strategy}",
         )
+    if analysis_strategy not in ANALYSIS_STRATEGIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported analysis_strategy: {analysis_strategy}",
+        )
 
     content = await file.read()
     try:
@@ -47,6 +54,7 @@ async def import_ownership_endpoint(
             content=content,
             mode=mode,
             conflict_strategy=conflict_strategy,
+            analysis_strategy=analysis_strategy,
         )
     except ValueError as exc:
         raise HTTPException(

@@ -51,6 +51,7 @@ const ownershipImportVisible = ref(false)
 const ownershipImportSubmitting = ref(false)
 const ownershipImportFileList = ref([])
 const ownershipImportResult = ref(null)
+const dataImportActiveTab = ref('ownership')
 const shareholderEntityOptions = ref([])
 const shareholderEntityLoading = ref(false)
 let manualPathKeySeed = 0
@@ -129,6 +130,7 @@ const manualForm = reactive({
 const ownershipImportForm = reactive({
   mode: 'validate',
   conflictStrategy: 'fail',
+  analysisStrategy: 'missing_only',
 })
 const sectionErrors = reactive({
   graph: '',
@@ -370,6 +372,7 @@ function openIndustryWorkbench() {
 }
 
 function openOwnershipImportDialog() {
+  dataImportActiveTab.value = 'ownership'
   ownershipImportVisible.value = true
 }
 
@@ -382,6 +385,25 @@ function clearOwnershipImportFile() {
   ownershipImportFileList.value = []
 }
 
+function analysisStatusLabel(status) {
+  const labels = {
+    reused: '已有结果',
+    generated: '已生成',
+    missing_facts: '缺少事实',
+    failed: '计算失败',
+  }
+  return labels[status] || status || '未知'
+}
+
+watch(
+  () => ownershipImportForm.mode,
+  (mode) => {
+    if (mode === 'commit_and_analyze' && ownershipImportForm.conflictStrategy === 'fail') {
+      ownershipImportForm.conflictStrategy = 'skip'
+    }
+  },
+)
+
 async function handleOwnershipImport() {
   const uploadFile = ownershipImportFileList.value[0]?.raw
   if (!uploadFile) {
@@ -389,21 +411,50 @@ async function handleOwnershipImport() {
     return
   }
 
+  if (ownershipImportForm.mode === 'commit_and_analyze' && ownershipImportForm.conflictStrategy === 'fail') {
+    ownershipImportForm.conflictStrategy = 'skip'
+  }
+
   ownershipImportSubmitting.value = true
   try {
+    const requestMode = ownershipImportForm.mode
+    const requestConflictStrategy = ownershipImportForm.conflictStrategy
     const result = await importOwnershipFacts({
       file: uploadFile,
-      mode: ownershipImportForm.mode,
-      conflictStrategy: ownershipImportForm.conflictStrategy,
+      mode: requestMode,
+      conflictStrategy: requestConflictStrategy,
+      analysisStrategy: ownershipImportForm.analysisStrategy,
     })
     ownershipImportResult.value = result
-    if (result?.success) {
-      ElMessage.success(ownershipImportForm.mode === 'validate' ? '校验完成，未写入数据库。' : '导入完成。')
-    } else {
+    const warningCount = Array.isArray(result?.warnings) ? result.warnings.length : 0
+    const failedCompanyIds = (result?.analysis?.failed_company_ids || []).map((id) => String(id))
+    const missingFactCompanyIds = (result?.analysis?.missing_fact_company_ids || []).map((id) => String(id))
+    if (!result?.success) {
       ElMessage.warning('导入处理完成，但存在错误。')
+    } else if (failedCompanyIds.length || warningCount) {
+      ElMessage.warning('导入完成，但存在需要关注的警告。')
+    } else {
+      ElMessage.success(requestMode === 'validate' ? '校验完成，未写入数据库。' : '导入完成。')
     }
 
-    if (ownershipImportForm.mode === 'commit' && result?.success && resolvedCompanyId.value) {
+    const currentCompanyId = String(resolvedCompanyId.value || '')
+    if (currentCompanyId && missingFactCompanyIds.includes(currentCompanyId)) {
+      ElMessage.warning('已导入数据，但该公司仍缺少可用于控制分析的有效关系事实。')
+    }
+    if (currentCompanyId && failedCompanyIds.includes(currentCompanyId)) {
+      ElMessage.warning('导入成功，但控制分析生成失败，请查看导入结果中的警告信息。')
+    }
+
+    const reloadCompanyIds = [
+      ...(result?.analysis?.generated_company_ids || []),
+      ...(result?.analysis?.reused_company_ids || []),
+    ].map((id) => String(id))
+    if (
+      requestMode === 'commit_and_analyze' &&
+      result?.success &&
+      currentCompanyId &&
+      reloadCompanyIds.includes(currentCompanyId)
+    ) {
       await loadCompanyData(resolvedCompanyId.value)
     }
   } catch (error) {
@@ -852,6 +903,7 @@ async function handleRestoreAutomaticResult() {
         :empty-message="companySearchEmptyMessage"
         @search="handleSearch"
         @select-company="handleSelectCompany"
+        @open-import="openOwnershipImportDialog"
       />
     </div>
 
@@ -896,14 +948,11 @@ async function handleRestoreAutomaticResult() {
 
         <div class="analysis-report">
           <section id="module-control-analysis" class="analysis-module analysis-module--control module-anchor">
-              <div class="analysis-module__header analysis-module__header--actionable">
+              <div class="analysis-module__header">
                 <div>
                   <h2>控股结构分析</h2>
                   <p>展示企业控制主体、控制路径与国别归属判断结果。</p>
                 </div>
-                <el-button type="primary" plain @click="openOwnershipImportDialog">
-                  导入控制关系数据
-                </el-button>
               </div>
 
             <div class="analysis-module__body">
@@ -1338,106 +1387,6 @@ async function handleRestoreAutomaticResult() {
           :company-id="company?.id || resolvedCompanyId"
           :industry-analysis="industryAnalysis"
         />
-
-        <el-dialog
-          v-model="ownershipImportVisible"
-          title="导入控制关系数据"
-          width="760px"
-          destroy-on-close
-        >
-          <div class="ownership-import">
-            <el-alert
-              type="info"
-              show-icon
-              :closable="false"
-              title="模板字段使用 company_key、entity_key、structure_key 作为本次导入文件内部标识；它们不是数据库 id，系统会自动生成真实数据库 id 并建立外键关系。"
-            />
-            <el-form label-position="top">
-              <el-form-item label="ZIP 文件">
-                <el-upload
-                  drag
-                  action=""
-                  :auto-upload="false"
-                  :limit="1"
-                  :file-list="ownershipImportFileList"
-                  accept=".zip"
-                  :on-change="handleOwnershipImportFileChange"
-                  :on-remove="clearOwnershipImportFile"
-                >
-                  <div class="ownership-import__upload-text">
-                    将包含四类 CSV 模板文件的 ZIP 拖到此处，或点击选择文件
-                  </div>
-                </el-upload>
-              </el-form-item>
-
-              <div class="ownership-import__options">
-                <el-form-item label="导入模式">
-                  <el-radio-group v-model="ownershipImportForm.mode">
-                    <el-radio-button label="validate">仅校验</el-radio-button>
-                    <el-radio-button label="commit">导入保存</el-radio-button>
-                  </el-radio-group>
-                </el-form-item>
-                <el-form-item label="冲突处理">
-                  <el-radio-group v-model="ownershipImportForm.conflictStrategy">
-                    <el-radio-button label="fail">发现重复即失败</el-radio-button>
-                    <el-radio-button label="skip">跳过重复</el-radio-button>
-                    <el-radio-button label="update">更新已有</el-radio-button>
-                  </el-radio-group>
-                </el-form-item>
-              </div>
-            </el-form>
-
-            <div class="ownership-import__actions">
-              <el-button @click="ownershipImportVisible = false">关闭</el-button>
-              <el-button
-                type="primary"
-                :loading="ownershipImportSubmitting"
-                @click="handleOwnershipImport"
-              >
-                开始导入
-              </el-button>
-            </div>
-
-            <section v-if="ownershipImportResult" class="ownership-import__result">
-              <div class="ownership-import__stats">
-                <div>
-                  <span>公司</span>
-                  <strong>{{ ownershipImportResult.summary?.companies_created || 0 }} / {{ ownershipImportResult.summary?.companies_matched || 0 }} / {{ ownershipImportResult.summary?.companies_updated || 0 }}</strong>
-                </div>
-                <div>
-                  <span>控制主体</span>
-                  <strong>{{ ownershipImportResult.summary?.entities_created || 0 }} / {{ ownershipImportResult.summary?.entities_matched || 0 }} / {{ ownershipImportResult.summary?.entities_updated || 0 }}</strong>
-                </div>
-                <div>
-                  <span>控制关系</span>
-                  <strong>{{ ownershipImportResult.summary?.structures_created || 0 }} / {{ ownershipImportResult.summary?.structures_matched || 0 }} / {{ ownershipImportResult.summary?.structures_updated || 0 }}</strong>
-                </div>
-                <div>
-                  <span>证据来源</span>
-                  <strong>{{ ownershipImportResult.summary?.sources_created || 0 }} / {{ ownershipImportResult.summary?.sources_matched || 0 }} / {{ ownershipImportResult.summary?.sources_updated || 0 }}</strong>
-                </div>
-                <div>
-                  <span>错误</span>
-                  <strong>{{ ownershipImportResult.summary?.error_count || 0 }}</strong>
-                </div>
-              </div>
-              <p class="ownership-import__stats-note">摘要数值顺序：新增 / 匹配跳过 / 更新。</p>
-
-              <el-table
-                v-if="ownershipImportResult.errors?.length"
-                :data="ownershipImportResult.errors"
-                size="small"
-                border
-                max-height="260"
-              >
-                <el-table-column prop="file" label="文件" min-width="170" />
-                <el-table-column prop="row" label="行" width="72" />
-                <el-table-column prop="field" label="字段" min-width="150" />
-                <el-table-column prop="message" label="错误信息" min-width="260" />
-              </el-table>
-            </section>
-          </div>
-        </el-dialog>
       </div>
     </template>
 
@@ -1450,6 +1399,194 @@ async function handleRestoreAutomaticResult() {
         </template>
       </el-empty>
     </el-card>
+
+    <el-dialog
+      v-model="ownershipImportVisible"
+      title="数据导入中心"
+      width="860px"
+      destroy-on-close
+    >
+      <div class="data-import-center">
+        <el-tabs v-model="dataImportActiveTab">
+          <el-tab-pane label="控制关系事实导入" name="ownership">
+            <div class="ownership-import">
+              <el-alert
+                type="info"
+                show-icon
+                :closable="false"
+                title="通过 CSV/ZIP 导入企业、控制主体、控制关系边和证据来源。导入文件使用 company_key、entity_key、structure_key 描述文件内部关系，系统会自动生成数据库 ID 并建立关联。"
+              />
+              <el-form label-position="top">
+                <el-form-item label="ZIP 文件">
+                  <el-upload
+                    drag
+                    action=""
+                    :auto-upload="false"
+                    :limit="1"
+                    :file-list="ownershipImportFileList"
+                    accept=".zip"
+                    :on-change="handleOwnershipImportFileChange"
+                    :on-remove="clearOwnershipImportFile"
+                  >
+                    <div class="ownership-import__upload-text">
+                      将包含 companies.csv、shareholder_entities.csv、shareholder_structures.csv、relationship_sources.csv 的 ZIP 拖到此处，或点击选择文件
+                    </div>
+                  </el-upload>
+                </el-form-item>
+
+                <div class="ownership-import__options">
+                  <el-form-item label="导入模式">
+                    <el-radio-group v-model="ownershipImportForm.mode">
+                      <el-radio-button label="validate">仅校验</el-radio-button>
+                      <el-radio-button label="commit">导入保存</el-radio-button>
+                      <el-radio-button label="commit_and_analyze">导入并生成分析结果</el-radio-button>
+                    </el-radio-group>
+                  </el-form-item>
+                  <el-form-item label="冲突处理">
+                    <el-radio-group v-model="ownershipImportForm.conflictStrategy">
+                      <el-radio-button
+                        v-if="ownershipImportForm.mode !== 'commit_and_analyze'"
+                        label="fail"
+                      >
+                        发现重复即失败
+                      </el-radio-button>
+                      <el-radio-button label="skip">跳过重复</el-radio-button>
+                      <el-radio-button label="update">更新已有</el-radio-button>
+                    </el-radio-group>
+                    <span
+                      v-if="ownershipImportForm.mode === 'commit_and_analyze'"
+                      class="ownership-import__field-help"
+                    >
+                      已有数据默认跳过，并继续生成或复用控制分析结果。
+                    </span>
+                  </el-form-item>
+                  <el-form-item
+                    v-if="ownershipImportForm.mode === 'commit_and_analyze'"
+                    label="分析策略"
+                  >
+                    <el-radio-group v-model="ownershipImportForm.analysisStrategy">
+                      <el-radio-button label="missing_only">仅缺失时生成</el-radio-button>
+                      <el-radio-button label="force">强制重新分析</el-radio-button>
+                    </el-radio-group>
+                  </el-form-item>
+                </div>
+              </el-form>
+
+              <div class="ownership-import__actions">
+                <el-button @click="ownershipImportVisible = false">关闭</el-button>
+                <el-button
+                  type="primary"
+                  :loading="ownershipImportSubmitting"
+                  @click="handleOwnershipImport"
+                >
+                  开始导入
+                </el-button>
+              </div>
+
+              <section v-if="ownershipImportResult" class="ownership-import__result">
+                <div class="ownership-import__stats">
+                  <div>
+                    <span>公司</span>
+                    <strong>{{ ownershipImportResult.summary?.companies_created || 0 }} / {{ ownershipImportResult.summary?.companies_matched || 0 }} / {{ ownershipImportResult.summary?.companies_updated || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>控制主体</span>
+                    <strong>{{ ownershipImportResult.summary?.entities_created || 0 }} / {{ ownershipImportResult.summary?.entities_matched || 0 }} / {{ ownershipImportResult.summary?.entities_updated || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>控制关系</span>
+                    <strong>{{ ownershipImportResult.summary?.structures_created || 0 }} / {{ ownershipImportResult.summary?.structures_matched || 0 }} / {{ ownershipImportResult.summary?.structures_updated || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>证据来源</span>
+                    <strong>{{ ownershipImportResult.summary?.sources_created || 0 }} / {{ ownershipImportResult.summary?.sources_matched || 0 }} / {{ ownershipImportResult.summary?.sources_updated || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>错误</span>
+                    <strong>{{ ownershipImportResult.summary?.error_count || 0 }}</strong>
+                  </div>
+                </div>
+                <p class="ownership-import__stats-note">摘要数值顺序：新增 / 匹配跳过 / 更新。</p>
+
+                <el-table
+                  v-if="ownershipImportResult.errors?.length"
+                  :data="ownershipImportResult.errors"
+                  size="small"
+                  border
+                  max-height="260"
+                >
+                  <el-table-column prop="file" label="文件" min-width="170" />
+                  <el-table-column prop="row" label="行" width="72" />
+                  <el-table-column prop="field" label="字段" min-width="150" />
+                  <el-table-column prop="message" label="错误信息" min-width="260" />
+                </el-table>
+
+                <el-alert
+                  v-if="ownershipImportResult.warnings?.length"
+                  type="warning"
+                  show-icon
+                  :closable="false"
+                  title="导入完成，但存在需要关注的警告。"
+                />
+
+                <el-table
+                  v-if="ownershipImportResult.warnings?.length"
+                  :data="ownershipImportResult.warnings"
+                  size="small"
+                  border
+                  max-height="220"
+                >
+                  <el-table-column prop="file" label="文件" min-width="170" />
+                  <el-table-column prop="row" label="行" width="72" />
+                  <el-table-column prop="field" label="字段" min-width="150" />
+                  <el-table-column prop="message" label="警告信息" min-width="260" />
+                </el-table>
+
+                <section
+                  v-if="ownershipImportResult.analysis?.items?.length"
+                  class="ownership-import__analysis"
+                >
+                  <h3>分析处理结果</h3>
+                  <el-table
+                    :data="ownershipImportResult.analysis.items"
+                    size="small"
+                    border
+                    max-height="280"
+                  >
+                    <el-table-column prop="company_name" label="公司名称" min-width="180" />
+                    <el-table-column label="状态" width="110">
+                      <template #default="{ row }">
+                        {{ analysisStatusLabel(row.analysis_status) }}
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="control_relationship_count" label="控制关系数量" width="120" />
+                    <el-table-column prop="actual_control_country" label="实际控制国别" min-width="130" />
+                    <el-table-column prop="attribution_type" label="归属类型" min-width="150" />
+                    <el-table-column prop="message" label="说明" min-width="240" />
+                  </el-table>
+                </section>
+              </section>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="业务线事实导入" name="business-segments">
+            <div class="data-import-placeholder">
+              <h3>业务线事实导入</h3>
+              <p>用于导入企业业务线事实数据，如业务线名称、收入占比、报告期和说明。该功能后续支持。</p>
+              <el-tag type="info" effect="plain">后续支持</el-tag>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="产业分类结果导入" name="industry-classifications">
+            <div class="data-import-placeholder">
+              <h3>产业分类结果导入</h3>
+              <p>后续可用于导入 business_segment_classifications.csv，支持产业分类结果批量维护。</p>
+              <el-tag type="info" effect="plain">后续支持</el-tag>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+    </el-dialog>
 
     <FloatingModuleNav
       :top-item="floatingModuleNavTopItem"
@@ -1860,9 +1997,42 @@ async function handleRestoreAutomaticResult() {
   gap: 16px;
 }
 
+.data-import-center {
+  min-width: 0;
+}
+
+.data-import-placeholder {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid rgba(31, 59, 87, 0.1);
+  border-radius: 8px;
+  background: rgba(248, 251, 253, 0.86);
+}
+
+.data-import-placeholder h3 {
+  margin: 0;
+  color: var(--brand-ink);
+  font-size: 15px;
+}
+
+.data-import-placeholder p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
 .ownership-import__upload-text {
   color: var(--brand-ink);
   font-weight: 700;
+}
+
+.ownership-import__field-help {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .ownership-import__options {
@@ -1916,6 +2086,17 @@ async function handleRestoreAutomaticResult() {
   font-size: 12px;
 }
 
+.ownership-import__analysis {
+  display: grid;
+  gap: 10px;
+}
+
+.ownership-import__analysis h3 {
+  margin: 0;
+  color: var(--brand-ink);
+  font-size: 15px;
+}
+
 @media (max-width: 980px) {
   .manual-entry-card__head {
     display: grid;
@@ -1948,3 +2129,4 @@ async function handleRestoreAutomaticResult() {
   }
 }
 </style>
+

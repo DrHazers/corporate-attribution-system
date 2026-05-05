@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 import io
@@ -10,7 +10,10 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+import backend.analysis.ownership_penetration as ownership_penetration
 from backend.models.company import Company
+from backend.models.control_relationship import ControlRelationship
+from backend.models.country_attribution import CountryAttribution
 from backend.models.shareholder import (
     RelationshipSource,
     ShareholderEntity,
@@ -24,8 +27,9 @@ from backend.shareholder_relations import (
 )
 
 
-IMPORT_MODES = {"validate", "commit"}
+IMPORT_MODES = {"validate", "commit", "commit_and_analyze"}
 CONFLICT_STRATEGIES = {"fail", "skip", "update"}
+ANALYSIS_STRATEGIES = {"missing_only", "force", "skip"}
 REQUIRED_FILES = (
     "companies.csv",
     "shareholder_entities.csv",
@@ -105,6 +109,17 @@ class ImportState:
     companies: dict[str, ResolvedRow] = field(default_factory=dict)
     entities: dict[str, ResolvedRow] = field(default_factory=dict)
     structures: dict[str, ResolvedRow] = field(default_factory=dict)
+    affected_company_ids: set[int] = field(default_factory=set)
+    analysis: dict[str, Any] = field(
+        default_factory=lambda: {
+            "affected_company_ids": [],
+            "reused_company_ids": [],
+            "generated_company_ids": [],
+            "missing_fact_company_ids": [],
+            "failed_company_ids": [],
+            "items": [],
+        }
+    )
     summary: dict[str, int] = field(
         default_factory=lambda: {
             "companies_created": 0,
@@ -161,6 +176,7 @@ class ImportState:
             "success": not self.errors,
             "mode": mode,
             "summary": self.summary,
+            "analysis": self.analysis,
             "errors": [error.as_dict() for error in self.errors],
             "warnings": [warning.as_dict() for warning in self.warnings],
         }
@@ -173,11 +189,14 @@ def import_ownership_facts(
     content: bytes,
     mode: str = "validate",
     conflict_strategy: str = "fail",
+    analysis_strategy: str = "missing_only",
 ) -> dict[str, Any]:
     if mode not in IMPORT_MODES:
         raise ValueError(f"Unsupported import mode: {mode}")
     if conflict_strategy not in CONFLICT_STRATEGIES:
         raise ValueError(f"Unsupported conflict_strategy: {conflict_strategy}")
+    if analysis_strategy not in ANALYSIS_STRATEGIES:
+        raise ValueError(f"Unsupported analysis_strategy: {analysis_strategy}")
 
     state = ImportState()
     files = _extract_csv_files(filename, content, state)
@@ -194,7 +213,7 @@ def import_ownership_facts(
     _resolve_sources(db, parsed.get("relationship_sources.csv", []), state, mode, conflict_strategy)
 
     if state.errors or mode == "validate":
-        if mode == "commit":
+        if _writes_to_database(mode):
             db.rollback()
         return state.result(mode=mode)
 
@@ -203,6 +222,10 @@ def import_ownership_facts(
     except Exception as exc:
         db.rollback()
         state.add_error("import", None, None, str(exc))
+        return state.result(mode=mode)
+
+    if mode == "commit_and_analyze" and analysis_strategy != "skip":
+        _run_on_demand_analysis(db, state, analysis_strategy=analysis_strategy)
 
     return state.result(mode=mode)
 
@@ -432,6 +455,10 @@ def _empty_to_none(value: Any) -> str | None:
     return stripped or None
 
 
+def _writes_to_database(mode: str) -> bool:
+    return mode in {"commit", "commit_and_analyze"}
+
+
 def _resolve_companies(
     db: Session,
     rows: list[dict[str, Any]],
@@ -459,6 +486,7 @@ def _resolve_companies(
             resolved = ResolvedRow(key=key, row=row, db_id=existing.id, matched=True, instance=existing)
             state.companies[key] = resolved
             state.company_key_to_id[key] = existing.id
+            state.affected_company_ids.add(existing.id)
             _handle_existing(
                 existing,
                 values,
@@ -482,11 +510,12 @@ def _resolve_companies(
             )
             continue
 
-        if mode == "commit":
+        if _writes_to_database(mode):
             instance = Company(**values)
             db.add(instance)
             db.flush()
             state.company_key_to_id[key] = instance.id
+            state.affected_company_ids.add(instance.id)
             state.companies[key] = ResolvedRow(key=key, row=row, db_id=instance.id, created=True, instance=instance)
         else:
             state.companies[key] = ResolvedRow(key=key, row=row, created=True)
@@ -531,6 +560,8 @@ def _resolve_entities(
             resolved = ResolvedRow(key=key, row=row, db_id=existing.id, matched=True, instance=existing)
             state.entities[key] = resolved
             state.entity_key_to_id[key] = existing.id
+            if existing.company_id is not None:
+                state.affected_company_ids.add(existing.company_id)
             _handle_existing(
                 existing,
                 prepared_values,
@@ -550,11 +581,13 @@ def _resolve_entities(
             state.summary["entities_created"] += 1
             continue
 
-        if mode == "commit":
+        if _writes_to_database(mode):
             instance = ShareholderEntity(**prepared_values)
             db.add(instance)
             db.flush()
             state.entity_key_to_id[key] = instance.id
+            if instance.company_id is not None:
+                state.affected_company_ids.add(instance.company_id)
             state.entities[key] = ResolvedRow(key=key, row=row, db_id=instance.id, created=True, instance=instance)
         else:
             state.entities[key] = ResolvedRow(key=key, row=row, created=True)
@@ -589,7 +622,7 @@ def _resolve_structures(
             continue
 
         values = _structure_values(row, from_entity_id=from_entity_id, to_entity_id=to_entity_id)
-        if mode == "commit" and (from_entity_id is None or to_entity_id is None):
+        if _writes_to_database(mode) and (from_entity_id is None or to_entity_id is None):
             state.add_error(
                 "shareholder_structures.csv",
                 row_number,
@@ -620,6 +653,7 @@ def _resolve_structures(
             resolved = ResolvedRow(key=key, row=row, db_id=existing.id, matched=True, instance=existing)
             state.structures[key] = resolved
             state.structure_key_to_id[key] = existing.id
+            _collect_structure_company_ids(db, state, existing.from_entity_id, existing.to_entity_id)
             _handle_existing(
                 existing,
                 prepared_values,
@@ -634,11 +668,12 @@ def _resolve_structures(
             )
             continue
 
-        if mode == "commit":
+        if _writes_to_database(mode):
             instance = ShareholderStructure(**prepared_values)
             db.add(instance)
             db.flush()
             state.structure_key_to_id[key] = instance.id
+            _collect_structure_company_ids(db, state, instance.from_entity_id, instance.to_entity_id)
             state.structures[key] = ResolvedRow(key=key, row=row, db_id=instance.id, created=True, instance=instance)
         else:
             state.structures[key] = ResolvedRow(key=key, row=row, created=True)
@@ -665,7 +700,7 @@ def _resolve_sources(
             continue
         structure_id = state.structure_key_to_id.get(str(structure_key))
         values = _source_values(row, structure_id=structure_id)
-        if mode == "commit" and structure_id is None:
+        if _writes_to_database(mode) and structure_id is None:
             state.add_error(
                 "relationship_sources.csv",
                 row_number,
@@ -707,7 +742,7 @@ def _resolve_sources(
             )
             continue
 
-        if mode == "commit":
+        if _writes_to_database(mode):
             db.add(RelationshipSource(**prepared_values))
             db.flush()
         state.summary["sources_created"] += 1
@@ -732,7 +767,7 @@ def _handle_existing(
     if conflict_strategy == "skip":
         state.summary[f"{summary_prefix}_matched"] += 1
         return
-    if mode == "commit":
+    if _writes_to_database(mode):
         for field_name, value in values.items():
             setattr(instance, field_name, value)
     state.summary[f"{summary_prefix}_updated"] += 1
@@ -927,3 +962,175 @@ def _entity_id_for_key(entity_key: Any, state: ImportState) -> int | None:
     if not entity_key:
         return None
     return state.entity_key_to_id.get(str(entity_key))
+
+
+def _collect_structure_company_ids(
+    db: Session,
+    state: ImportState,
+    from_entity_id: int | None,
+    to_entity_id: int | None,
+) -> None:
+    # The controlled-side entity is the primary analysis target; upstream company
+    # ids are included when present so imported cross-company edges can be reviewed.
+    for entity_id in (to_entity_id, from_entity_id):
+        company_id = _company_id_for_entity_id(db, entity_id)
+        if company_id is not None:
+            state.affected_company_ids.add(company_id)
+
+
+def _company_id_for_entity_id(db: Session, entity_id: int | None) -> int | None:
+    if entity_id is None:
+        return None
+    return (
+        db.query(ShareholderEntity.company_id)
+        .filter(ShareholderEntity.id == entity_id)
+        .scalar()
+    )
+
+
+def has_complete_auto_analysis(db: Session, company_id: int) -> bool:
+    control_count = (
+        db.query(ControlRelationship)
+        .filter(ControlRelationship.company_id == company_id)
+        .count()
+    )
+    auto_country_count = (
+        db.query(CountryAttribution)
+        .filter(CountryAttribution.company_id == company_id)
+        .filter(CountryAttribution.is_manual.is_(False))
+        .count()
+    )
+    return control_count > 0 and auto_country_count > 0
+
+
+def _has_sufficient_analysis_facts(db: Session, company_id: int) -> bool:
+    target_entity = (
+        db.query(ShareholderEntity)
+        .filter(ShareholderEntity.company_id == company_id)
+        .order_by(ShareholderEntity.id.asc())
+        .first()
+    )
+    if target_entity is None:
+        return False
+    incoming_count = (
+        db.query(ShareholderStructure)
+        .filter(ShareholderStructure.to_entity_id == target_entity.id)
+        .filter(ShareholderStructure.is_current.is_(True))
+        .count()
+    )
+    return incoming_count > 0
+
+
+def _run_on_demand_analysis(
+    db: Session,
+    state: ImportState,
+    *,
+    analysis_strategy: str,
+) -> None:
+    affected_company_ids = sorted(state.affected_company_ids)
+    state.analysis["affected_company_ids"] = affected_company_ids
+    if not affected_company_ids:
+        state.add_warning(
+            "analysis",
+            None,
+            "affected_company_ids",
+            "No affected company ids were collected for analysis.",
+        )
+        return
+
+    for company_id in affected_company_ids:
+        if analysis_strategy == "missing_only" and has_complete_auto_analysis(db, company_id):
+            item = _build_analysis_item(
+                db,
+                company_id,
+                status="reused",
+                message="Reused existing automatic analysis result.",
+            )
+            state.analysis["reused_company_ids"].append(company_id)
+            state.analysis["items"].append(item)
+            continue
+
+        if not _has_sufficient_analysis_facts(db, company_id):
+            item = _build_analysis_item(
+                db,
+                company_id,
+                status="missing_facts",
+                message="Missing mapped target entity or current incoming shareholder structures.",
+            )
+            state.analysis["missing_fact_company_ids"].append(company_id)
+            state.analysis["items"].append(item)
+            continue
+
+        try:
+            ownership_penetration.refresh_company_control_analysis(db, company_id)
+            item = _build_analysis_item(
+                db,
+                company_id,
+                status="generated",
+                message="Generated automatic analysis result.",
+            )
+            state.analysis["generated_company_ids"].append(company_id)
+            state.analysis["items"].append(item)
+        except Exception as exc:
+            db.rollback()
+            state.add_warning(
+                "analysis",
+                None,
+                "company_id",
+                f"{company_id}: {exc}",
+            )
+            item = _build_analysis_item(
+                db,
+                company_id,
+                status="failed",
+                message=str(exc),
+            )
+            state.analysis["failed_company_ids"].append(company_id)
+            state.analysis["items"].append(item)
+
+
+def _build_analysis_item(
+    db: Session,
+    company_id: int,
+    *,
+    status: str,
+    message: str,
+) -> dict[str, Any]:
+    company = db.get(Company, company_id)
+    control_relationship_count = (
+        db.query(ControlRelationship)
+        .filter(ControlRelationship.company_id == company_id)
+        .count()
+    )
+    country_attribution_count = (
+        db.query(CountryAttribution)
+        .filter(CountryAttribution.company_id == company_id)
+        .filter(CountryAttribution.is_manual.is_(False))
+        .count()
+    )
+    country_attribution = (
+        db.query(CountryAttribution)
+        .filter(CountryAttribution.company_id == company_id)
+        .filter(CountryAttribution.is_manual.is_(False))
+        .order_by(CountryAttribution.id.desc())
+        .first()
+    )
+    return {
+        "company_id": company_id,
+        "company_name": company.name if company is not None else "",
+        "analysis_status": status,
+        "control_relationship_count": control_relationship_count,
+        "country_attribution_count": country_attribution_count,
+        "actual_control_country": (
+            country_attribution.actual_control_country
+            if country_attribution is not None
+            else None
+        ),
+        "attribution_type": (
+            country_attribution.attribution_type
+            if country_attribution is not None
+            else None
+        ),
+        "message": message,
+    }
+

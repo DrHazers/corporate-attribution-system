@@ -62,11 +62,17 @@ export function restoreAutomaticControlResult(companyId, payload = {}) {
   return http.post(`/companies/${companyId}/manual-control-override/restore-auto`, payload)
 }
 
-export function importOwnershipFacts({ file, mode = 'validate', conflictStrategy = 'fail' }) {
+export function importOwnershipFacts({
+  file,
+  mode = 'validate',
+  conflictStrategy = 'fail',
+  analysisStrategy = 'missing_only',
+}) {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('mode', mode)
   formData.append('conflict_strategy', conflictStrategy)
+  formData.append('analysis_strategy', analysisStrategy)
   return http.post('/imports/ownership', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120000,

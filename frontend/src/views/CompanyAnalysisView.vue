@@ -52,6 +52,7 @@ const ownershipImportSubmitting = ref(false)
 const ownershipImportFileList = ref([])
 const ownershipImportResult = ref(null)
 const dataImportActiveTab = ref('ownership')
+const ownershipImportExampleCollapse = ref([])
 const shareholderEntityOptions = ref([])
 const shareholderEntityLoading = ref(false)
 let manualPathKeySeed = 0
@@ -1410,12 +1411,69 @@ async function handleRestoreAutomaticResult() {
         <el-tabs v-model="dataImportActiveTab">
           <el-tab-pane label="控制关系事实导入" name="ownership">
             <div class="ownership-import">
-              <el-alert
-                type="info"
-                show-icon
-                :closable="false"
-                title="通过 CSV/ZIP 导入企业、控制主体、控制关系边和证据来源。导入文件使用 company_key、entity_key、structure_key 描述文件内部关系，系统会自动生成数据库 ID 并建立关联。"
-              />
+              <section class="ownership-import-format" aria-label="导入格式说明">
+                <h3>导入格式说明</h3>
+                <p class="ownership-import-format__intro">
+                  请上传一个 ZIP 文件，文件中建议包含以下 CSV：
+                </p>
+                <ol class="ownership-import-format__list">
+                  <li>
+                    <strong>companies.csv：公司基础信息</strong>
+                    <div class="ownership-import-format__item">
+                      <span>必填字段：<code>company_key</code>、<code>name</code></span>
+                      <span>常用字段：<code>stock_code</code>、<code>incorporation_country</code>、<code>listing_country</code>、<code>headquarters</code>、<code>description</code></span>
+                    </div>
+                  </li>
+                  <li>
+                    <strong>shareholder_entities.csv：控制主体 / 股东节点</strong>
+                    <div class="ownership-import-format__item">
+                      <span>必填字段：<code>entity_key</code>、<code>entity_name</code>、<code>entity_type</code></span>
+                      <span>常用字段：<code>country</code>、<code>linked_company_key</code>、<code>entity_subtype</code>、<code>beneficial_owner_disclosed</code></span>
+                      <span>说明：<code>linked_company_key</code> 用于把某个控制主体绑定到 <code>companies.csv</code> 中的公司。</span>
+                    </div>
+                  </li>
+                  <li>
+                    <strong>shareholder_structures.csv：控制关系边</strong>
+                    <div class="ownership-import-format__item">
+                      <span>必填字段：<code>structure_key</code>、<code>from_entity_key</code>、<code>to_entity_key</code>、<code>relation_type</code></span>
+                      <span>常用字段：<code>holding_ratio</code>、<code>effective_control_ratio</code>、<code>is_direct</code>、<code>is_current</code>、<code>confidence_level</code>、<code>remarks</code></span>
+                      <span>说明：<code>from_entity_key</code> 表示控制方，<code>to_entity_key</code> 表示被控制方。</span>
+                    </div>
+                  </li>
+                  <li>
+                    <strong>relationship_sources.csv：证据来源，可选</strong>
+                    <div class="ownership-import-format__item">
+                      <span>必填字段：<code>structure_key</code>、<code>source_type</code>、<code>source_name</code></span>
+                      <span>常用字段：<code>source_url</code>、<code>source_date</code>、<code>excerpt</code>、<code>confidence_level</code></span>
+                    </div>
+                  </li>
+                </ol>
+                <p class="ownership-import-format__note">
+                  导入文件中的 <code>company_key</code>、<code>entity_key</code>、<code>structure_key</code> 只用于描述文件内部关系，不是数据库 ID。系统会在导入时自动生成数据库 ID，并建立公司、主体和控制关系之间的关联。
+                </p>
+              </section>
+
+              <el-collapse v-model="ownershipImportExampleCollapse" class="ownership-import-example">
+                <el-collapse-item title="查看最小示例" name="minimal-example">
+                  <div class="ownership-import-example__content">
+                    <pre><code>companies.csv
+company_key,name,stock_code,incorporation_country
+target,Import Target Co,IMP-9001,China
+
+shareholder_entities.csv
+entity_key,entity_name,entity_type,country,linked_company_key
+target,Import Target Co Entity,company,China,target
+parent,Import Parent Ltd,company,Singapore,
+
+shareholder_structures.csv
+structure_key,from_entity_key,to_entity_key,relation_type,holding_ratio,effective_control_ratio,is_direct,is_current
+s001,parent,target,equity,60%,60%,true,true</code></pre>
+                    <p class="ownership-import-example__note">
+                      <code>parent -&gt; target</code> 表示 Import Parent Ltd 控制 Import Target Co Entity；<code>target</code> 通过 <code>linked_company_key</code> 绑定到 <code>companies.csv</code> 中的 Import Target Co。
+                    </p>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
               <el-form label-position="top">
                 <el-form-item label="ZIP 文件">
                   <el-upload
@@ -2020,6 +2078,111 @@ async function handleRestoreAutomaticResult() {
   margin: 0;
   color: var(--text-secondary);
   line-height: 1.7;
+}
+
+.ownership-import-format {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(31, 59, 87, 0.1);
+  border-radius: 8px;
+  background: rgba(248, 251, 253, 0.9);
+}
+
+.ownership-import-format h3 {
+  margin: 0;
+  color: var(--brand-ink);
+  font-size: 15px;
+}
+
+.ownership-import-format__intro,
+.ownership-import-format__note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.ownership-import-format__list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.ownership-import-format__list li {
+  color: var(--brand-ink);
+  line-height: 1.55;
+}
+
+.ownership-import-format__item {
+  display: grid;
+  gap: 3px;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ownership-import-format code,
+.ownership-import-example code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(31, 59, 87, 0.08);
+  color: var(--brand-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.95em;
+}
+
+.ownership-import-example {
+  overflow: hidden;
+  border: 1px solid rgba(31, 59, 87, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.ownership-import-example :deep(.el-collapse-item__header) {
+  height: 42px;
+  padding: 0 14px;
+  border-bottom-color: rgba(31, 59, 87, 0.08);
+  color: var(--brand-ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ownership-import-example :deep(.el-collapse-item__content) {
+  padding: 12px 14px 14px;
+}
+
+.ownership-import-example__content {
+  display: grid;
+  gap: 10px;
+}
+
+.ownership-import-example pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  border-radius: 8px;
+  background: rgba(248, 251, 253, 0.95);
+  color: var(--brand-ink);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ownership-import-example pre code {
+  padding: 0;
+  background: transparent;
+  font-size: inherit;
+}
+
+.ownership-import-example__note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.65;
 }
 
 .ownership-import__upload-text {

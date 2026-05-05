@@ -815,7 +815,7 @@ watch(
     </section>
 
     <section class="industry-main-grid">
-      <article class="industry-chart-card surface-card">
+      <article id="module-business-structure" class="industry-chart-card surface-card module-anchor">
         <div class="section-heading">
           <div>
             <h3>业务结构图</h3>
@@ -846,7 +846,7 @@ watch(
         </div>
       </article>
 
-      <article class="industry-review-card surface-card">
+      <article id="module-industry-review" class="industry-review-card surface-card module-anchor">
         <div class="section-heading">
           <div>
             <h3>人工复核与修订</h3>
@@ -909,7 +909,7 @@ watch(
       </article>
     </section>
 
-    <article class="industry-table-card surface-card">
+    <article id="module-business-segments" class="industry-table-card surface-card module-anchor">
       <div class="section-heading">
         <div>
           <h3>业务线分类主表</h3>
@@ -1364,6 +1364,10 @@ watch(
 
 .industry-panel > * {
   min-width: 0;
+}
+
+.module-anchor {
+  scroll-margin-top: 16px;
 }
 
 .industry-hero {

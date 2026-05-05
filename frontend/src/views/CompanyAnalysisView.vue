@@ -16,6 +16,7 @@ import CompanyOverviewCard from '@/components/CompanyOverviewCard.vue'
 import ControlRelationsTable from '@/components/ControlRelationsTable.vue'
 import ControlStructureDiagram from '@/components/ControlStructureDiagram.vue'
 import ControlSummaryCard from '@/components/ControlSummaryCard.vue'
+import FloatingModuleNav from '@/components/FloatingModuleNav.vue'
 import IndustryAnalysisPanel from '@/components/IndustryAnalysisPanel.vue'
 import IndustryWorkbenchDrawer from '@/components/IndustryWorkbenchDrawer.vue'
 import SearchBar from '@/components/SearchBar.vue'
@@ -49,6 +50,35 @@ const shareholderEntityOptions = ref([])
 const shareholderEntityLoading = ref(false)
 let manualPathKeySeed = 0
 let manualNodeKeySeed = 0
+
+const floatingModuleNavTopItem = { label: '回到顶部', targetId: 'module-top' }
+const floatingModuleNavGroups = [
+  {
+    title: '基础信息',
+    items: [
+      { label: '企业搜索', targetId: 'module-company-search' },
+      { label: '公司总览', targetId: 'module-company-overview' },
+    ],
+  },
+  {
+    title: '控股结构',
+    items: [
+      { label: '控股结构分析', targetId: 'module-control-analysis' },
+      { label: '控制链与国别归属', targetId: 'module-control-summary' },
+      { label: '控制结构图', targetId: 'module-control-structure' },
+      { label: '控制结论明细', targetId: 'module-control-details' },
+      { label: '人工复核', targetId: 'module-manual-review' },
+    ],
+  },
+  {
+    title: '产业分析',
+    items: [
+      { label: '产业分析', targetId: 'module-industry-analysis' },
+      { label: '业务结构图', targetId: 'module-business-structure' },
+      { label: '业务线明细', targetId: 'module-business-segments' },
+    ],
+  },
+]
 
 const SUBJECT_MODE_EXISTING_ENTITY = 'existing_entity'
 const SUBJECT_MODE_NEW_ENTITY = 'new_entity'
@@ -751,7 +781,7 @@ async function handleRestoreAutomaticResult() {
 </script>
 
 <template>
-  <div class="page-shell">
+  <div id="module-top" class="page-shell">
     <header class="page-header">
       <h1 class="page-title">全球上市公司实际国别归属及主要业务线征订系统</h1>
       <p class="page-subtitle">
@@ -759,16 +789,18 @@ async function handleRestoreAutomaticResult() {
       </p>
     </header>
 
-    <SearchBar
-      v-model="companyIdInput"
-      :loading="loading"
-      :searching="companySearchLoading"
-      :results="companySearchResults"
-      :has-searched="companySearchAttempted"
-      :empty-message="companySearchEmptyMessage"
-      @search="handleSearch"
-      @select-company="handleSelectCompany"
-    />
+    <div id="module-company-search" class="module-anchor">
+      <SearchBar
+        v-model="companyIdInput"
+        :loading="loading"
+        :searching="companySearchLoading"
+        :results="companySearchResults"
+        :has-searched="companySearchAttempted"
+        :empty-message="companySearchEmptyMessage"
+        @search="handleSearch"
+        @select-company="handleSelectCompany"
+      />
+    </div>
 
     <el-alert
       v-if="pageError"
@@ -799,16 +831,18 @@ async function handleRestoreAutomaticResult() {
           :title="currentSummaryNote"
         />
 
-        <CompanyOverviewCard
-          :company="company"
-          :control-analysis="controlAnalysis"
-          :country-attribution="countryAttribution"
-          :industry-analysis="industryAnalysis"
-          :result-source-label="currentResultSourceLabel"
-        />
+        <div id="module-company-overview" class="module-anchor">
+          <CompanyOverviewCard
+            :company="company"
+            :control-analysis="controlAnalysis"
+            :country-attribution="countryAttribution"
+            :industry-analysis="industryAnalysis"
+            :result-source-label="currentResultSourceLabel"
+          />
+        </div>
 
         <div class="analysis-report">
-          <section class="analysis-module analysis-module--control">
+          <section id="module-control-analysis" class="analysis-module analysis-module--control module-anchor">
               <div class="analysis-module__header">
                 <div>
                   <h2>控股结构分析</h2>
@@ -817,30 +851,36 @@ async function handleRestoreAutomaticResult() {
               </div>
 
             <div class="analysis-module__body">
-              <ControlSummaryCard
-                :company="company"
-                :control-analysis="controlAnalysis"
-                :country-attribution="countryAttribution"
-              />
+              <div id="module-control-summary" class="module-anchor">
+                <ControlSummaryCard
+                  :company="company"
+                  :control-analysis="controlAnalysis"
+                  :country-attribution="countryAttribution"
+                />
+              </div>
 
-              <ControlStructureDiagram
-                :company="company"
-                :control-analysis="controlAnalysis"
-                :country-attribution="countryAttribution"
-                :relationship-graph="relationshipGraph || buildEmptyGraphState(resolvedCompanyId)"
-              />
+              <div id="module-control-structure" class="module-anchor">
+                <ControlStructureDiagram
+                  :company="company"
+                  :control-analysis="controlAnalysis"
+                  :country-attribution="countryAttribution"
+                  :relationship-graph="relationshipGraph || buildEmptyGraphState(resolvedCompanyId)"
+                />
+              </div>
 
-              <ControlRelationsTable
-                :company-id="resolvedCompanyId"
-                :relationships="controlRelationships"
-                :loading="loading"
-                :control-analysis="controlAnalysis"
-                :country-attribution="countryAttribution"
-                :company="company"
-                @manual-judgment-change="loadCompanyData(resolvedCompanyId)"
-              />
+              <div id="module-control-details" class="module-anchor">
+                <ControlRelationsTable
+                  :company-id="resolvedCompanyId"
+                  :relationships="controlRelationships"
+                  :loading="loading"
+                  :control-analysis="controlAnalysis"
+                  :country-attribution="countryAttribution"
+                  :company="company"
+                  @manual-judgment-change="loadCompanyData(resolvedCompanyId)"
+                />
+              </div>
 
-              <section class="manual-entry-card">
+              <section id="module-manual-review" class="manual-entry-card module-anchor">
                 <div class="manual-entry-card__head">
                   <div>
                     <h3>人工征订与确认</h3>
@@ -1213,7 +1253,7 @@ async function handleRestoreAutomaticResult() {
             </div>
           </section>
 
-          <section class="analysis-module analysis-module--industry">
+          <section id="module-industry-analysis" class="analysis-module analysis-module--industry module-anchor">
             <div class="analysis-module__header analysis-module__header--actionable">
               <div>
                 <h2>产业分析</h2>
@@ -1254,10 +1294,21 @@ async function handleRestoreAutomaticResult() {
         </template>
       </el-empty>
     </el-card>
+
+    <FloatingModuleNav
+      :top-item="floatingModuleNavTopItem"
+      :groups="floatingModuleNavGroups"
+      :hidden="industryWorkbenchVisible"
+    />
   </div>
 </template>
 
 <style scoped>
+.module-anchor {
+  min-width: 0;
+  scroll-margin-top: 16px;
+}
+
 .analysis-report {
   display: grid;
   gap: 28px;

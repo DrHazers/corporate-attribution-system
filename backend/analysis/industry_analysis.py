@@ -39,6 +39,22 @@ MANUAL_REVIEW_STATUSES = {
     "needs_manual_review",
 }
 
+SEGMENT_TYPE_LABELS = {
+    "primary": "主营",
+    "secondary": "补充",
+    "emerging": "新兴",
+    "other": "其他",
+}
+
+SEGMENT_TYPE_SOURCE_LABELS = {
+    "suggested_by_ratio": "系统根据收入和利润贡献推断",
+    "suggested_by_growth": "系统根据历史增长推断",
+    "input_consistent": "输入标签与系统建议一致",
+    "input_conflict": "输入标签与系统建议不一致",
+    "insufficient_data": "数据不足，暂按其他处理",
+    "insufficient_input_use_inferred": "未提供业务类型，使用系统建议",
+}
+
 
 def _normalize_text(value: str | None) -> str:
     if value is None:
@@ -169,6 +185,172 @@ def build_classification_summary(
     }
 
 
+def _numeric_ratio(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric < 0:
+        return None
+    return numeric / 100 if numeric > 1 else numeric
+
+
+def _rank_lookup(
+    rows: list[tuple[int, float]],
+) -> dict[int, int]:
+    ranked_rows = sorted(rows, key=lambda item: (-item[1], item[0]))
+    return {segment_id: index + 1 for index, (segment_id, _) in enumerate(ranked_rows)}
+
+
+def _previous_same_name_segment(
+    segment: BusinessSegment,
+    all_segments: list[BusinessSegment],
+) -> BusinessSegment | None:
+    current_period = _normalize_reporting_period(segment.reporting_period)
+    if current_period is None:
+        return None
+    current_key = _reporting_period_sort_key(current_period)
+    normalized_name = _normalize_text(segment.segment_name)
+    candidates = [
+        candidate
+        for candidate in all_segments
+        if candidate.company_id == segment.company_id
+        and candidate.id != segment.id
+        and _normalize_text(candidate.segment_name) == normalized_name
+        and _normalize_reporting_period(candidate.reporting_period) is not None
+        and _reporting_period_sort_key(candidate.reporting_period) < current_key
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda candidate: _reporting_period_sort_key(candidate.reporting_period),
+    )
+
+
+def _build_segment_type_inferences(
+    segments: list[BusinessSegment],
+    all_segments: list[BusinessSegment],
+) -> dict[int, dict[str, Any]]:
+    revenue_values = {
+        segment.id: _numeric_ratio(segment.revenue_ratio)
+        for segment in segments
+    }
+    profit_values = {
+        segment.id: _numeric_ratio(segment.profit_ratio)
+        for segment in segments
+    }
+    contribution_scores = {
+        segment.id: 0.6 * (revenue_values[segment.id] or 0) + 0.4 * (profit_values[segment.id] or 0)
+        for segment in segments
+    }
+    revenue_ranks = _rank_lookup(
+        [(segment.id, revenue_values[segment.id] or 0) for segment in segments]
+    )
+    profit_ranks = _rank_lookup(
+        [(segment.id, profit_values[segment.id] or 0) for segment in segments]
+    )
+    contribution_ranks = _rank_lookup(
+        [(segment.id, contribution_scores[segment.id]) for segment in segments]
+    )
+
+    inferences: dict[int, dict[str, Any]] = {}
+    for segment in segments:
+        revenue_ratio = revenue_values[segment.id]
+        profit_ratio = profit_values[segment.id]
+        contribution_score = contribution_scores[segment.id]
+        revenue_rank = revenue_ranks.get(segment.id)
+        profit_rank = profit_ranks.get(segment.id)
+        contribution_rank = contribution_ranks.get(segment.id)
+        previous_segment = _previous_same_name_segment(segment, all_segments)
+        previous_revenue_ratio = (
+            _numeric_ratio(previous_segment.revenue_ratio) if previous_segment else None
+        )
+        previous_profit_ratio = (
+            _numeric_ratio(previous_segment.profit_ratio) if previous_segment else None
+        )
+        revenue_change = (
+            revenue_ratio - previous_revenue_ratio
+            if revenue_ratio is not None and previous_revenue_ratio is not None
+            else None
+        )
+        profit_change = (
+            profit_ratio - previous_profit_ratio
+            if profit_ratio is not None and previous_profit_ratio is not None
+            else None
+        )
+
+        has_ratio_data = revenue_ratio is not None or profit_ratio is not None
+        is_primary_candidate = (
+            contribution_rank == 1 and contribution_score >= 0.35
+        ) or (
+            revenue_rank == 1 and (revenue_ratio or 0) >= 0.40
+        ) or (
+            profit_rank == 1 and (profit_ratio or 0) >= 0.40
+        )
+        is_emerging_candidate = (
+            previous_segment is not None
+            and ((revenue_ratio is not None and revenue_ratio < 0.15) or (profit_ratio is not None and profit_ratio < 0.15))
+            and ((revenue_change is not None and revenue_change >= 0.05) or (profit_change is not None and profit_change >= 0.05))
+        )
+        is_secondary_candidate = (
+            not is_primary_candidate
+            and ((revenue_ratio or 0) >= 0.10 or (profit_ratio or 0) >= 0.10)
+        )
+
+        if is_primary_candidate:
+            inferred_type = "primary"
+            inference_reason_source = "suggested_by_ratio"
+        elif is_emerging_candidate:
+            inferred_type = "emerging"
+            inference_reason_source = "suggested_by_growth"
+        elif is_secondary_candidate:
+            inferred_type = "secondary"
+            inference_reason_source = "suggested_by_ratio"
+        else:
+            inferred_type = "other"
+            inference_reason_source = "suggested_by_ratio" if has_ratio_data else "insufficient_data"
+
+        input_type = _normalize_text(segment.segment_type)
+        inferred_label = SEGMENT_TYPE_LABELS[inferred_type]
+        input_label = SEGMENT_TYPE_LABELS.get(input_type, input_type or "")
+        if not input_type:
+            segment_type_source = "insufficient_input_use_inferred"
+            warning = "未提供业务类型，当前展示为系统建议结果。"
+        elif input_type == inferred_type:
+            segment_type_source = "input_consistent"
+            warning = None
+        else:
+            segment_type_source = "input_conflict"
+            warning = f"输入业务类型为{input_label}，但系统根据收入和利润贡献建议标记为{inferred_label}。"
+
+        inferences[segment.id] = {
+            "inferred_segment_type": inferred_type,
+            "inferred_segment_type_label": inferred_label,
+            "segment_type_source": segment_type_source,
+            "segment_type_warning": warning,
+            "segment_type_evidence": {
+                "revenue_ratio": revenue_ratio,
+                "profit_ratio": profit_ratio,
+                "contribution_score": contribution_score,
+                "revenue_rank": revenue_rank,
+                "profit_rank": profit_rank,
+                "contribution_rank": contribution_rank,
+                "previous_reporting_period": previous_segment.reporting_period if previous_segment else None,
+                "previous_revenue_ratio": previous_revenue_ratio,
+                "previous_profit_ratio": previous_profit_ratio,
+                "revenue_change": revenue_change,
+                "profit_change": profit_change,
+                "inference_source": inference_reason_source,
+                "inference_source_label": SEGMENT_TYPE_SOURCE_LABELS[inference_reason_source],
+            },
+        }
+
+    return inferences
+
+
 def _classification_labels(segment: BusinessSegment) -> list[str]:
     labels: list[str] = []
     for classification in segment.classifications:
@@ -197,6 +379,7 @@ def _segment_primary_industry_labels(segment: BusinessSegment) -> list[str]:
 
 def build_business_segment_detail(
     segment: BusinessSegment,
+    segment_type_inference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     classification_summaries = [
         build_classification_summary(classification)
@@ -207,7 +390,7 @@ def build_business_segment_detail(
         "company_id": segment.company_id,
         "segment_name": segment.segment_name,
         "segment_alias": segment.segment_alias,
-        "segment_type": segment.segment_type,
+        "segment_type": _normalize_text(segment.segment_type) or None,
         "revenue_ratio": segment.revenue_ratio,
         "profit_ratio": segment.profit_ratio,
         "description": segment.description,
@@ -218,6 +401,21 @@ def build_business_segment_detail(
         "confidence": segment.confidence,
         "classification_labels": _classification_labels(segment),
         "classifications": classification_summaries,
+        "inferred_segment_type": (
+            segment_type_inference or {}
+        ).get("inferred_segment_type"),
+        "inferred_segment_type_label": (
+            segment_type_inference or {}
+        ).get("inferred_segment_type_label"),
+        "segment_type_source": (
+            segment_type_inference or {}
+        ).get("segment_type_source"),
+        "segment_type_warning": (
+            segment_type_inference or {}
+        ).get("segment_type_warning"),
+        "segment_type_evidence": (
+            segment_type_inference or {}
+        ).get("segment_type_evidence", {}),
         "created_at": segment.created_at,
         "updated_at": segment.updated_at,
     }
@@ -225,12 +423,13 @@ def build_business_segment_detail(
 
 def _build_business_segment_headline(
     segment: BusinessSegment,
+    segment_type_inference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": segment.id,
         "segment_name": segment.segment_name,
         "segment_alias": segment.segment_alias,
-        "segment_type": segment.segment_type,
+        "segment_type": _normalize_text(segment.segment_type) or None,
         "revenue_ratio": segment.revenue_ratio,
         "profit_ratio": segment.profit_ratio,
         "currency": segment.currency,
@@ -238,6 +437,21 @@ def _build_business_segment_headline(
         "is_current": segment.is_current,
         "confidence": segment.confidence,
         "classification_labels": _classification_labels(segment),
+        "inferred_segment_type": (
+            segment_type_inference or {}
+        ).get("inferred_segment_type"),
+        "inferred_segment_type_label": (
+            segment_type_inference or {}
+        ).get("inferred_segment_type_label"),
+        "segment_type_source": (
+            segment_type_inference or {}
+        ).get("segment_type_source"),
+        "segment_type_warning": (
+            segment_type_inference or {}
+        ).get("segment_type_warning"),
+        "segment_type_evidence": (
+            segment_type_inference or {}
+        ).get("segment_type_evidence", {}),
     }
 
 
@@ -451,6 +665,40 @@ def _build_quality_assessment(
     }
 
 
+def _augment_quality_with_segment_type_inferences(
+    quality_assessment: dict[str, Any],
+    segment_type_inferences: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    quality_summary = {
+        **quality_assessment["quality_summary"],
+        "segment_type_conflict_count": sum(
+            1
+            for inference in segment_type_inferences.values()
+            if inference.get("segment_type_source") == "input_conflict"
+        ),
+        "segment_type_inferred_without_input_count": sum(
+            1
+            for inference in segment_type_inferences.values()
+            if inference.get("segment_type_source")
+            == "insufficient_input_use_inferred"
+        ),
+    }
+    warnings = list(quality_assessment["warnings"])
+    if quality_summary["segment_type_conflict_count"]:
+        warnings.append(
+            f"{quality_summary['segment_type_conflict_count']} segment(s) have input business type conflicting with system suggestion."
+        )
+    if quality_summary["segment_type_inferred_without_input_count"]:
+        warnings.append(
+            f"{quality_summary['segment_type_inferred_without_input_count']} segment(s) do not provide business type; system suggestion is shown."
+        )
+    return {
+        **quality_assessment,
+        "warnings": warnings,
+        "quality_summary": quality_summary,
+    }
+
+
 def _build_history_item(
     company_id: int,
     reporting_period: str,
@@ -463,6 +711,7 @@ def _build_history_item(
     analysis = _build_industry_analysis_payload(
         company_id=company_id,
         segments=effective_segments,
+        all_segments=segments,
         selected_reporting_period=reporting_period,
         available_reporting_periods=[],
         latest_reporting_period=reporting_period,
@@ -481,6 +730,7 @@ def _build_industry_analysis_payload(
     *,
     company_id: int,
     segments: list[BusinessSegment],
+    all_segments: list[BusinessSegment] | None = None,
     selected_reporting_period: str | None,
     available_reporting_periods: list[str],
     latest_reporting_period: str | None,
@@ -499,12 +749,28 @@ def _build_industry_analysis_payload(
     has_classifications = False
     has_revenue_ratio = False
     detailed_segments: list[dict[str, Any]] = []
+    segment_type_inferences = _build_segment_type_inferences(
+        segments,
+        all_segments or segments,
+    )
 
     for segment in segments:
-        segment_detail = build_business_segment_detail(segment)
+        segment_type_inference = segment_type_inferences.get(segment.id, {})
+        segment_detail = build_business_segment_detail(
+            segment,
+            segment_type_inference=segment_type_inference,
+        )
         detailed_segments.append(segment_detail)
-        categorized_segments.setdefault(segment.segment_type, []).append(
-            _build_business_segment_headline(segment)
+        segment_category_type = (
+            _normalize_text(segment.segment_type)
+            or segment_type_inference.get("inferred_segment_type")
+            or "other"
+        )
+        categorized_segments.setdefault(segment_category_type, []).append(
+            _build_business_segment_headline(
+                segment,
+                segment_type_inference=segment_type_inference,
+            )
         )
 
         if segment.classifications:
@@ -522,7 +788,7 @@ def _build_industry_analysis_payload(
                 primary_industries.append(label)
             if (
                 label
-                and segment.segment_type == "primary"
+                and segment_category_type == "primary"
                 and label not in fallback_primary_industries
             ):
                 fallback_primary_industries.append(label)
@@ -532,6 +798,10 @@ def _build_industry_analysis_payload(
         company_id=company_id,
         selected_reporting_period=selected_reporting_period,
         segments=segments,
+    )
+    quality_assessment = _augment_quality_with_segment_type_inferences(
+        quality_assessment,
+        segment_type_inferences,
     )
 
     return {
@@ -608,6 +878,7 @@ def get_company_industry_analysis(
     return _build_industry_analysis_payload(
         company_id=company_id,
         segments=selected_segments,
+        all_segments=context["all_segments"],
         selected_reporting_period=context["selected_reporting_period"],
         available_reporting_periods=context["available_reporting_periods"],
         latest_reporting_period=context["latest_reporting_period"],
@@ -649,10 +920,17 @@ def get_company_industry_analysis_quality(
         context["selected_candidates"],
         include_inactive=False,
     )
-    return _build_quality_assessment(
+    quality_assessment = _build_quality_assessment(
         company_id=company_id,
         selected_reporting_period=context["selected_reporting_period"],
         segments=selected_segments,
+    )
+    return _augment_quality_with_segment_type_inferences(
+        quality_assessment,
+        _build_segment_type_inferences(
+            selected_segments,
+            context["all_segments"],
+        ),
     )
 
 
@@ -707,6 +985,15 @@ def get_business_segment_history(
         history_segments,
         key=lambda item: _reporting_period_sort_key(item.reporting_period),
     )
+    history_inferences = _build_segment_type_inferences(
+        history_segments,
+        get_business_segments_by_company_id(
+            db,
+            company_id=company_id,
+            include_inactive=True,
+            with_classifications=False,
+        ),
+    )
 
     available_reporting_periods = _sort_reporting_periods(
         [
@@ -739,6 +1026,7 @@ def get_business_segment_history(
                 "confidence": history_segment.confidence,
                 "description": history_segment.description,
                 "classification": classification_summary,
+                **history_inferences.get(history_segment.id, {}),
             }
         )
 

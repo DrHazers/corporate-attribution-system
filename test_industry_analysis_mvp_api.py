@@ -535,9 +535,13 @@ def test_industry_analysis_summary_endpoint_aggregates_segments_and_labels(indus
     assert payload["structure_flags"]["has_secondary_segment"] is True
     assert payload["structure_flags"]["has_primary_industry_mapping"] is True
     assert payload["history"] == []
-    assert payload["quality_warnings"] == []
+    assert any(
+        "business type conflicting" in warning
+        for warning in payload["quality_warnings"]
+    )
     assert payload["quality_summary"]["duplicate_segment_count"] == 0
     assert payload["quality_summary"]["segments_without_classification_count"] == 0
+    assert payload["quality_summary"]["segment_type_conflict_count"] == 1
     assert (
         payload["quality_summary"]["has_conflicting_primary_classification"] is False
     )
@@ -639,6 +643,7 @@ def test_industry_analysis_periods_and_quality_endpoints(industry_client):
         quality_payload["quality_summary"]["has_conflicting_primary_classification"]
         is True
     )
+    assert quality_payload["quality_summary"]["segment_type_conflict_count"] == 1
 
     analysis_response = client.get(f"/companies/{company['id']}/industry-analysis")
     assert analysis_response.status_code == 200
@@ -980,6 +985,139 @@ def test_same_named_segment_uses_period_specific_classification(industry_client)
     ]
     assert history_payload["items"][0]["classification"]["review_status"] == "unmapped"
     assert history_payload["items"][1]["classification"]["review_status"] == "confirmed"
+
+
+def test_industry_analysis_infers_segment_type_without_overwriting_input(
+    industry_client,
+):
+    client, session_factory = industry_client
+    company = create_company(client, stock_code="TYPE001")
+
+    previous_ai_lab = create_business_segment(
+        client,
+        company["id"],
+        segment_name="AI Lab",
+        segment_type="emerging",
+        revenue_ratio="0.0200",
+        profit_ratio="0.0100",
+        reporting_period="2024A",
+        is_current=False,
+    )
+    primary_segment = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Cloud Core",
+        segment_type="primary",
+        revenue_ratio="0.4600",
+        profit_ratio="0.3600",
+        reporting_period="2025A",
+    )
+    secondary_conflict = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Payments",
+        segment_type="other",
+        revenue_ratio="0.1600",
+        profit_ratio="0.1200",
+        reporting_period="2025A",
+    )
+    emerging_conflict = create_business_segment(
+        client,
+        company["id"],
+        segment_name="AI Lab",
+        segment_type="secondary",
+        revenue_ratio="0.0800",
+        profit_ratio="0.0700",
+        reporting_period="2025A",
+    )
+    low_without_history = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Legacy Support",
+        segment_type="other",
+        revenue_ratio="0.0300",
+        profit_ratio="0.0200",
+        reporting_period="2025A",
+    )
+    blank_input_segment = create_business_segment(
+        client,
+        company["id"],
+        segment_name="Channel Services",
+        segment_type="secondary",
+        revenue_ratio="0.1100",
+        profit_ratio="0.0500",
+        reporting_period="2025A",
+    )
+
+    with session_factory() as db:
+        blank_segment = (
+            db.query(BusinessSegment)
+            .filter(BusinessSegment.id == blank_input_segment["id"])
+            .one()
+        )
+        blank_segment.segment_type = ""
+        db.commit()
+
+    response = client.get(
+        f"/companies/{company['id']}/industry-analysis?reporting_period=2025A"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    segments_by_name = {segment["segment_name"]: segment for segment in payload["segments"]}
+
+    assert segments_by_name["Cloud Core"]["id"] == primary_segment["id"]
+    assert segments_by_name["Cloud Core"]["inferred_segment_type"] == "primary"
+    assert segments_by_name["Cloud Core"]["segment_type_source"] == "input_consistent"
+    assert segments_by_name["Cloud Core"]["segment_type_warning"] is None
+
+    assert segments_by_name["Payments"]["id"] == secondary_conflict["id"]
+    assert segments_by_name["Payments"]["inferred_segment_type"] == "secondary"
+    assert segments_by_name["Payments"]["segment_type_source"] == "input_conflict"
+    assert "系统" in segments_by_name["Payments"]["segment_type_warning"]
+
+    assert segments_by_name["AI Lab"]["id"] == emerging_conflict["id"]
+    assert segments_by_name["AI Lab"]["inferred_segment_type"] == "emerging"
+    assert segments_by_name["AI Lab"]["segment_type_source"] == "input_conflict"
+    assert segments_by_name["AI Lab"]["segment_type_evidence"]["previous_reporting_period"] == "2024A"
+    assert segments_by_name["AI Lab"]["segment_type_evidence"]["revenue_change"] == pytest.approx(0.06)
+
+    assert segments_by_name["Legacy Support"]["id"] == low_without_history["id"]
+    assert segments_by_name["Legacy Support"]["inferred_segment_type"] == "other"
+    assert segments_by_name["Legacy Support"]["segment_type_source"] == "input_consistent"
+
+    assert segments_by_name["Channel Services"]["id"] == blank_input_segment["id"]
+    assert segments_by_name["Channel Services"]["segment_type"] is None
+    assert segments_by_name["Channel Services"]["inferred_segment_type"] == "secondary"
+    assert segments_by_name["Channel Services"]["segment_type_source"] == (
+        "insufficient_input_use_inferred"
+    )
+    assert segments_by_name["Channel Services"]["segment_type_warning"] == (
+        "未提供业务类型，当前展示为系统建议结果。"
+    )
+
+    assert payload["quality_summary"]["segment_type_conflict_count"] == 2
+    assert payload["quality_summary"]["segment_type_inferred_without_input_count"] == 1
+
+    previous_response = client.get(
+        f"/companies/{company['id']}/industry-analysis?reporting_period=2024A"
+    )
+    assert previous_response.status_code == 200
+    previous_payload = previous_response.json()
+    previous_segment = previous_payload["segments"][0]
+    assert previous_segment["id"] == previous_ai_lab["id"]
+    assert previous_segment["inferred_segment_type"] == "other"
+    assert previous_segment["segment_type_source"] == "input_conflict"
+
+    with session_factory() as db:
+        persisted_types = {
+            segment.id: segment.segment_type
+            for segment in db.query(BusinessSegment)
+            .filter(BusinessSegment.company_id == company["id"])
+            .all()
+        }
+    assert persisted_types[secondary_conflict["id"]] == "other"
+    assert persisted_types[emerging_conflict["id"]] == "secondary"
+    assert persisted_types[blank_input_segment["id"]] == ""
 
 
 def test_industry_structure_change_analysis_detects_period_changes(industry_client):

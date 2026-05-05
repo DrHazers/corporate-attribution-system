@@ -18,7 +18,7 @@ class BusinessSegmentHeadlineRead(BaseModel):
     id: int
     segment_name: str
     segment_alias: str | None = None
-    segment_type: BusinessSegmentType
+    segment_type: BusinessSegmentType | None = None
     revenue_ratio: Decimal | None = None
     profit_ratio: Decimal | None = None
     currency: str | None = None
@@ -26,6 +26,11 @@ class BusinessSegmentHeadlineRead(BaseModel):
     is_current: bool
     confidence: Decimal | None = None
     classification_labels: list[str]
+    inferred_segment_type: BusinessSegmentType | None = None
+    inferred_segment_type_label: str | None = None
+    segment_type_source: str | None = None
+    segment_type_warning: str | None = None
+    segment_type_evidence: Any = Field(default_factory=dict)
 
 
 class BusinessSegmentClassificationSummaryRead(BaseModel):
@@ -52,7 +57,7 @@ class BusinessSegmentDetailRead(BaseModel):
     company_id: int
     segment_name: str
     segment_alias: str | None = None
-    segment_type: BusinessSegmentType
+    segment_type: BusinessSegmentType | None = None
     revenue_ratio: Decimal | None = None
     profit_ratio: Decimal | None = None
     description: str | None = None
@@ -63,6 +68,11 @@ class BusinessSegmentDetailRead(BaseModel):
     confidence: Decimal | None = None
     classification_labels: list[str]
     classifications: list[BusinessSegmentClassificationSummaryRead]
+    inferred_segment_type: BusinessSegmentType | None = None
+    inferred_segment_type_label: str | None = None
+    segment_type_source: str | None = None
+    segment_type_warning: str | None = None
+    segment_type_evidence: Any = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -94,6 +104,8 @@ class IndustryQualitySummary(BaseModel):
     segments_without_classification_count: int
     primary_segments_without_classification_count: int
     has_conflicting_primary_classification: bool
+    segment_type_conflict_count: int = 0
+    segment_type_inferred_without_input_count: int = 0
 
 
 class IndustryAnalysisRead(BaseModel):
@@ -194,13 +206,18 @@ class BusinessSegmentHistoryItem(BaseModel):
     business_segment_id: int
     reporting_period: str | None = None
     segment_name: str
-    segment_type: BusinessSegmentType
+    segment_type: BusinessSegmentType | None = None
     revenue_ratio: Decimal | None = None
     profit_ratio: Decimal | None = None
     source: str | None = None
     confidence: Decimal | None = None
     description: str | None = None
     classification: BusinessSegmentClassificationSummaryRead | None = None
+    inferred_segment_type: BusinessSegmentType | None = None
+    inferred_segment_type_label: str | None = None
+    segment_type_source: str | None = None
+    segment_type_warning: str | None = None
+    segment_type_evidence: Any = Field(default_factory=dict)
 
 
 class BusinessSegmentTrendSummary(BaseModel):
@@ -222,7 +239,7 @@ class BusinessSegmentHistoryResponse(BaseModel):
 
 class IndustryChangeSegmentItem(BaseModel):
     segment_name: str
-    segment_type: BusinessSegmentType
+    segment_type: BusinessSegmentType | None = None
     classification_labels: list[str]
     reporting_period: str | None = None
     is_current: bool

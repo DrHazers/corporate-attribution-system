@@ -811,6 +811,16 @@ def test_business_segment_history_endpoint_matches_same_segment_name_by_period(
         reporting_period="2024A",
         is_current=False,
     )
+    create_business_segment(
+        client,
+        company["id"],
+        segment_name="Core Network",
+        segment_type="primary",
+        revenue_ratio="65.0000",
+        profit_ratio="70.0000",
+        reporting_period="2024A",
+        is_current=False,
+    )
     segment_2025 = create_business_segment(
         client,
         company["id"],
@@ -885,6 +895,12 @@ def test_business_segment_history_endpoint_matches_same_segment_name_by_period(
     assert payload["items"][1]["classification"]["industry_label"] == (
         "Information Technology > Software > Cloud Services"
     )
+    assert payload["items"][1]["segment_type_evidence"]["revenue_rank"] == 2
+    assert payload["items"][1]["segment_type_evidence"]["profit_rank"] == 2
+    assert payload["items"][1]["segment_type_evidence"]["period_segment_count"] == 2
+    assert payload["items"][1]["segment_type_evidence"]["structure_judgement"] == "占比提升"
+    assert payload["items"][2]["segment_type_evidence"]["revenue_rank"] == 1
+    assert payload["items"][2]["segment_type_evidence"]["period_segment_count"] == 2
     assert payload["trend_summary"] == {
         "history_count": 3,
         "latest_reporting_period": "2025A",

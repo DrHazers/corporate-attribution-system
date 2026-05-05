@@ -281,6 +281,7 @@ def _build_segment_type_inferences(
             if profit_ratio is not None and previous_profit_ratio is not None
             else None
         )
+        max_ratio = max(revenue_ratio or 0, profit_ratio or 0)
 
         has_ratio_data = revenue_ratio is not None or profit_ratio is not None
         is_primary_candidate = (
@@ -313,6 +314,38 @@ def _build_segment_type_inferences(
             inferred_type = "other"
             inference_reason_source = "suggested_by_ratio" if has_ratio_data else "insufficient_data"
 
+        if not has_ratio_data:
+            structure_judgement = "数据不足"
+        elif (
+            revenue_rank == 1 and (revenue_ratio or 0) >= 0.35
+        ) or (
+            profit_rank == 1 and (profit_ratio or 0) >= 0.35
+        ):
+            structure_judgement = "主营稳定"
+        elif (
+            previous_segment is not None
+            and max_ratio < 0.15
+            and (
+                (revenue_change is not None and revenue_change >= 0.05)
+                or (profit_change is not None and profit_change >= 0.05)
+            )
+        ):
+            structure_judgement = "新兴观察"
+        elif (
+            (revenue_change is not None and revenue_change >= 0.05)
+            or (profit_change is not None and profit_change >= 0.05)
+        ):
+            structure_judgement = "占比提升"
+        elif (
+            (revenue_change is not None and revenue_change <= -0.05)
+            or (profit_change is not None and profit_change <= -0.05)
+        ):
+            structure_judgement = "贡献下降"
+        elif (revenue_ratio or 0) < 0.10 and (profit_ratio or 0) < 0.10:
+            structure_judgement = "低占比"
+        else:
+            structure_judgement = "结构稳定"
+
         input_type = _normalize_text(segment.segment_type)
         inferred_label = SEGMENT_TYPE_LABELS[inferred_type]
         input_label = SEGMENT_TYPE_LABELS.get(input_type, input_type or "")
@@ -338,11 +371,13 @@ def _build_segment_type_inferences(
                 "revenue_rank": revenue_rank,
                 "profit_rank": profit_rank,
                 "contribution_rank": contribution_rank,
+                "period_segment_count": len(segments),
                 "previous_reporting_period": previous_segment.reporting_period if previous_segment else None,
                 "previous_revenue_ratio": previous_revenue_ratio,
                 "previous_profit_ratio": previous_profit_ratio,
                 "revenue_change": revenue_change,
                 "profit_change": profit_change,
+                "structure_judgement": structure_judgement,
                 "inference_source": inference_reason_source,
                 "inference_source_label": SEGMENT_TYPE_SOURCE_LABELS[inference_reason_source],
             },
@@ -985,15 +1020,24 @@ def get_business_segment_history(
         history_segments,
         key=lambda item: _reporting_period_sort_key(item.reporting_period),
     )
-    history_inferences = _build_segment_type_inferences(
-        history_segments,
-        get_business_segments_by_company_id(
-            db,
-            company_id=company_id,
-            include_inactive=True,
-            with_classifications=False,
-        ),
+    all_company_segments = get_business_segments_by_company_id(
+        db,
+        company_id=company_id,
+        include_inactive=True,
+        with_classifications=False,
     )
+    segments_by_reporting_period: dict[str, list[BusinessSegment]] = {}
+    for company_segment in all_company_segments:
+        reporting_period = _normalize_reporting_period(company_segment.reporting_period)
+        if reporting_period is None:
+            continue
+        segments_by_reporting_period.setdefault(reporting_period, []).append(company_segment)
+
+    history_inferences: dict[int, dict[str, Any]] = {}
+    for period_segments in segments_by_reporting_period.values():
+        history_inferences.update(
+            _build_segment_type_inferences(period_segments, all_company_segments)
+        )
 
     available_reporting_periods = _sort_reporting_periods(
         [

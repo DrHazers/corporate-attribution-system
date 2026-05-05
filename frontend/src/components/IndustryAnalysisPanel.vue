@@ -31,6 +31,7 @@ import {
 import {
   buildIndustryAnalysisPeriodRefreshPayload,
   findHistoryItemForReportingPeriod,
+  normalizeReportingPeriod,
   reportingPeriodDisplayText,
   resolveSelectedReportingPeriod,
   shouldRefreshOuterIndustryAnalysis,
@@ -106,6 +107,7 @@ const drawerAvailableReportingPeriods = computed(
 )
 const canSelectDrawerReportingPeriod = computed(() => drawerAvailableReportingPeriods.value.length > 1)
 const segmentHistoryItems = computed(() => segmentHistory.value?.items || [])
+const segmentHistoryTableRows = computed(() => buildSegmentHistoryTableRows(segmentHistoryItems.value))
 const hasSegmentTrend = computed(() => segmentHistoryItems.value.length >= 2)
 const qualityWarnings = computed(() => props.industryAnalysis?.quality_warnings || [])
 const allIndustryLabels = computed(() => props.industryAnalysis?.all_industry_labels || [])
@@ -383,6 +385,187 @@ function normalizeEvidenceRatio(value) {
     return null
   }
   return Math.abs(numeric) > 1 ? numeric / 100 : numeric
+}
+
+function formatPctPointChange(value) {
+  if (value === null || value === undefined || value === '') {
+    return '—'
+  }
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) {
+    return String(value)
+  }
+  const percentPoints = numeric * 100
+  const sign = percentPoints > 0 ? '+' : ''
+  return `${sign}${percentPoints.toFixed(2)}pct`
+}
+
+function reportingPeriodSortKey(period) {
+  const normalized = normalizeReportingPeriod(period)
+  const matched = normalized.match(/^(\d{4})(?:\s*([AQH])?(\d+)?)?/i)
+  if (!matched) {
+    return [0, 0, 0, normalized]
+  }
+  const suffix = (matched[2] || 'A').toUpperCase()
+  const suffixWeight = { Q: 1, H: 2, A: 3 }[suffix] || 0
+  return [Number(matched[1]), suffixWeight, Number(matched[3] || 0), normalized]
+}
+
+function compareReportingPeriodAsc(left, right) {
+  const leftKey = reportingPeriodSortKey(left?.reporting_period)
+  const rightKey = reportingPeriodSortKey(right?.reporting_period)
+  for (let index = 0; index < leftKey.length; index += 1) {
+    if (leftKey[index] > rightKey[index]) return 1
+    if (leftKey[index] < rightKey[index]) return -1
+  }
+  return 0
+}
+
+function currentPeriodRankForHistoryItem(item, field) {
+  if (normalizeReportingPeriod(item?.reporting_period) !== normalizeReportingPeriod(selectedReportingPeriod.value)) {
+    return null
+  }
+  const rankedRows = [...displaySegments.value]
+    .map((segment) => ({
+      id: segment.id,
+      value: normalizeEvidenceRatio(segment[field]) || 0,
+    }))
+    .sort((left, right) => right.value - left.value || left.id - right.id)
+  const foundIndex = rankedRows.findIndex((row) => row.id === item.business_segment_id)
+  if (foundIndex < 0) {
+    return null
+  }
+  return {
+    rank: foundIndex + 1,
+    total: rankedRows.length,
+  }
+}
+
+function historyRankPayload(item, rankKey, field) {
+  const evidence = item?.segment_type_evidence || {}
+  if (evidence[rankKey]) {
+    return {
+      rank: evidence[rankKey],
+      total: evidence.period_segment_count || null,
+    }
+  }
+  return currentPeriodRankForHistoryItem(item, field) || { rank: null, total: null }
+}
+
+function formatHistoryRank(rank, total) {
+  if (!rank) {
+    return '—'
+  }
+  return total ? `${rank} / ${total}` : String(rank)
+}
+
+function inferHistoryStructureJudgement(row, historyCount) {
+  if (historyCount <= 1) {
+    return '仅单期记录'
+  }
+  const revenueRatio = normalizeEvidenceRatio(row.revenue_ratio)
+  const profitRatio = normalizeEvidenceRatio(row.profit_ratio)
+  const revenueChange = row.history_revenue_change
+  const profitChange = row.history_profit_change
+  if (revenueRatio === null && profitRatio === null) {
+    return '数据不足'
+  }
+  if (
+    (row.history_revenue_rank === 1 && (revenueRatio || 0) >= 0.35) ||
+    (row.history_profit_rank === 1 && (profitRatio || 0) >= 0.35)
+  ) {
+    return '主营稳定'
+  }
+  const maxRatio = Math.max(revenueRatio || 0, profitRatio || 0)
+  if (
+    maxRatio < 0.15 &&
+    ((revenueChange !== null && revenueChange >= 0.05) ||
+      (profitChange !== null && profitChange >= 0.05))
+  ) {
+    return '新兴观察'
+  }
+  if (
+    (revenueChange !== null && revenueChange >= 0.05) ||
+    (profitChange !== null && profitChange >= 0.05)
+  ) {
+    return '占比提升'
+  }
+  if (
+    (revenueChange !== null && revenueChange <= -0.05) ||
+    (profitChange !== null && profitChange <= -0.05)
+  ) {
+    return '贡献下降'
+  }
+  if ((revenueRatio || 0) < 0.10 && (profitRatio || 0) < 0.10) {
+    return '低占比'
+  }
+  return '结构稳定'
+}
+
+function buildSegmentHistoryTableRows(items) {
+  const sortedItems = [...items].sort(compareReportingPeriodAsc)
+  return sortedItems.map((item, index) => {
+    const previous = sortedItems[index - 1] || null
+    const revenueRatio = normalizeEvidenceRatio(item.revenue_ratio)
+    const profitRatio = normalizeEvidenceRatio(item.profit_ratio)
+    const previousRevenueRatio = normalizeEvidenceRatio(previous?.revenue_ratio)
+    const previousProfitRatio = normalizeEvidenceRatio(previous?.profit_ratio)
+    const revenueRank = historyRankPayload(item, 'revenue_rank', 'revenue_ratio')
+    const profitRank = historyRankPayload(item, 'profit_rank', 'profit_ratio')
+    const row = {
+      ...item,
+      previous_revenue_ratio: previousRevenueRatio,
+      previous_profit_ratio: previousProfitRatio,
+      history_revenue_change:
+        revenueRatio !== null && previousRevenueRatio !== null
+          ? revenueRatio - previousRevenueRatio
+          : null,
+      history_profit_change:
+        profitRatio !== null && previousProfitRatio !== null
+          ? profitRatio - previousProfitRatio
+          : null,
+      history_revenue_rank: revenueRank.rank,
+      history_revenue_rank_total: revenueRank.total,
+      history_profit_rank: profitRank.rank,
+      history_profit_rank_total: profitRank.total,
+    }
+    return {
+      ...row,
+      history_structure_judgement:
+        sortedItems.length <= 1
+          ? '仅单期记录'
+          : row.segment_type_evidence?.structure_judgement || inferHistoryStructureJudgement(row, sortedItems.length),
+    }
+  })
+}
+
+function historyChangeTooltip(row, field) {
+  const current = field === 'revenue' ? row.revenue_ratio : row.profit_ratio
+  const previous = field === 'revenue' ? row.previous_revenue_ratio : row.previous_profit_ratio
+  const change = field === 'revenue' ? row.history_revenue_change : row.history_profit_change
+  if (change === null || change === undefined) {
+    return '首个报告期或缺少上一期占比数据，暂无变化值。'
+  }
+  return `较上一报告期变化：${formatFlexiblePercent(current)} - ${formatFlexiblePercent(previous)} = ${formatPctPointChange(change)}`
+}
+
+function historyRowClassName({ row }) {
+  return normalizeReportingPeriod(row?.reporting_period) === normalizeReportingPeriod(drawerReportingPeriod.value)
+    ? 'history-row--active'
+    : ''
+}
+
+function historyJudgementTagType(value) {
+  const typeMap = {
+    主营稳定: 'success',
+    占比提升: 'success',
+    贡献下降: 'warning',
+    新兴观察: 'warning',
+    低占比: 'info',
+    数据不足: 'info',
+    仅单期记录: 'info',
+  }
+  return typeMap[value] || 'info'
 }
 
 function fallbackContributionScore(segment, evidence) {
@@ -1527,7 +1710,7 @@ watch(
             <div class="section-heading">
               <div>
                 <h3>历史变化趋势</h3>
-                <p>展示同一业务线在不同报告期的收入占比、利润占比和分类结果变化。</p>
+                <p>展示同一业务线在不同报告期的收入占比和利润占比变化。</p>
               </div>
             </div>
             <div class="industry-drawer-card">
@@ -1554,11 +1737,12 @@ watch(
             <div class="industry-drawer-card">
               <el-table
                 v-loading="detailHistoryLoading"
-                :data="segmentHistoryItems"
+                :data="segmentHistoryTableRows"
                 size="small"
                 row-key="business_segment_id"
                 empty-text="暂无历史明细"
                 highlight-current-row
+                :row-class-name="historyRowClassName"
                 @row-click="handleHistoryRowClick"
               >
                 <el-table-column label="报告期" width="92">
@@ -1571,28 +1755,56 @@ watch(
                     {{ formatFlexiblePercent(row.revenue_ratio) }}
                   </template>
                 </el-table-column>
+                <el-table-column label="收入变化" width="104">
+                  <template #default="{ row }">
+                    <el-tooltip placement="top" effect="light" :content="historyChangeTooltip(row, 'revenue')">
+                      <span
+                        class="history-change"
+                        :class="{
+                          'history-change--up': row.history_revenue_change > 0,
+                          'history-change--down': row.history_revenue_change < 0,
+                        }"
+                      >
+                        {{ formatPctPointChange(row.history_revenue_change) }}
+                      </span>
+                    </el-tooltip>
+                  </template>
+                </el-table-column>
                 <el-table-column label="利润占比" width="92">
                   <template #default="{ row }">
                     {{ formatFlexiblePercent(row.profit_ratio) }}
                   </template>
                 </el-table-column>
-                <el-table-column label="业务线类型" width="96">
+                <el-table-column label="利润变化" width="104">
                   <template #default="{ row }">
-                    <el-tag :type="segmentTypeTagType(row.segment_type)" effect="plain" size="small">
-                      {{ segmentTypeLabel(row.segment_type) }}
+                    <el-tooltip placement="top" effect="light" :content="historyChangeTooltip(row, 'profit')">
+                      <span
+                        class="history-change"
+                        :class="{
+                          'history-change--up': row.history_profit_change > 0,
+                          'history-change--down': row.history_profit_change < 0,
+                        }"
+                      >
+                        {{ formatPctPointChange(row.history_profit_change) }}
+                      </span>
+                    </el-tooltip>
+                  </template>
+                </el-table-column>
+                <el-table-column label="收入排名" width="90">
+                  <template #default="{ row }">
+                    {{ formatHistoryRank(row.history_revenue_rank, row.history_revenue_rank_total) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="利润排名" width="90">
+                  <template #default="{ row }">
+                    {{ formatHistoryRank(row.history_profit_rank, row.history_profit_rank_total) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="结构判断" min-width="102">
+                  <template #default="{ row }">
+                    <el-tag :type="historyJudgementTagType(row.history_structure_judgement)" effect="plain" size="small">
+                      {{ row.history_structure_judgement || '数据不足' }}
                     </el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="分类结果" min-width="220">
-                  <template #default="{ row }">
-                    <div class="industry-table-text industry-table-text--summary">
-                      {{ historyClassificationSummary(row) }}
-                    </div>
-                  </template>
-                </el-table-column>
-                <el-table-column label="结果来源" width="110">
-                  <template #default="{ row }">
-                    {{ classifierTypeLabel(row.classification?.classifier_type) }}
                   </template>
                 </el-table-column>
               </el-table>
@@ -2518,6 +2730,23 @@ watch(
 
 .industry-drawer-card :deep(.el-table__row) {
   cursor: pointer;
+}
+
+.industry-drawer-card :deep(.history-row--active > td.el-table__cell) {
+  background: rgba(74, 144, 226, 0.08);
+}
+
+.history-change {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.history-change--up {
+  color: #4d7f65;
+}
+
+.history-change--down {
+  color: #a86a3d;
 }
 
 .industry-drawer-section {

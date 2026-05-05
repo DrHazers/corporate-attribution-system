@@ -459,6 +459,13 @@ function formatHistoryRank(rank, total) {
   return total ? `${rank} / ${total}` : String(rank)
 }
 
+function formatEvidenceRank(rank, total) {
+  if (!rank) {
+    return '—'
+  }
+  return total ? `第 ${rank} / ${total}` : `第 ${rank}`
+}
+
 function inferHistoryStructureJudgement(row, historyCount) {
   if (historyCount <= 1) {
     return '仅单期记录'
@@ -586,17 +593,65 @@ function segmentTypeEvidenceItems(segment) {
     { label: '收入占比', value: formatEvidencePercent(evidence.revenue_ratio ?? segment?.revenue_ratio) },
     { label: '利润占比', value: formatEvidencePercent(evidence.profit_ratio ?? segment?.profit_ratio) },
     { label: '综合贡献分', value: formatEvidenceNumber(fallbackContributionScore(segment, evidence)) },
-    { label: '收入排名', value: evidence.revenue_rank ? `第 ${evidence.revenue_rank}` : '—' },
-    { label: '利润排名', value: evidence.profit_rank ? `第 ${evidence.profit_rank}` : '—' },
+    { label: '收入排名', value: formatEvidenceRank(evidence.revenue_rank, evidence.period_segment_count) },
+    { label: '利润排名', value: formatEvidenceRank(evidence.profit_rank, evidence.period_segment_count) },
   ]
   if (segment?.inferred_segment_type === 'emerging' || evidence.previous_reporting_period) {
     items.push(
       { label: '上一报告期', value: evidence.previous_reporting_period || '—' },
-      { label: '收入变化', value: formatEvidencePercent(evidence.revenue_change) },
-      { label: '利润变化', value: formatEvidencePercent(evidence.profit_change) },
+      { label: '收入变化', value: formatPctPointChange(evidence.revenue_change) },
+      { label: '利润变化', value: formatPctPointChange(evidence.profit_change) },
     )
   }
   return items
+}
+
+function segmentTypeJudgementStatus(segment) {
+  const source = segment?.segment_type_source
+  if (source === 'input_consistent') return '一致'
+  if (source === 'input_conflict' || segment?.segment_type_warning) return '建议复核'
+  if (source === 'insufficient_input_use_inferred') return '使用系统建议'
+  if (source === 'insufficient_data') return '数据不足'
+  return source ? segmentTypeSourceDescription(segment) : '暂无建议'
+}
+
+function segmentTypeNoticeMessage(segment) {
+  const source = segment?.segment_type_source
+  if (source === 'input_conflict' || segment?.segment_type_warning) {
+    return '输入业务类型与系统建议不一致，建议人工复核业务类型。'
+  }
+  if (source === 'insufficient_input_use_inferred') {
+    return '当前未提供业务类型，系统已根据收入和利润结构给出建议。'
+  }
+  if (source === 'insufficient_data') {
+    return '当前数据不足，系统建议仅供参考。'
+  }
+  if (!source) {
+    return '后端未返回系统建议字段，当前仅展示已有业务线数据。'
+  }
+  return '当前标记与系统建议一致，无需额外处理。'
+}
+
+function segmentTypeNoticeTone(segment) {
+  const source = segment?.segment_type_source
+  if (source === 'input_conflict' || segment?.segment_type_warning) return 'warning'
+  if (source === 'insufficient_data' || !source) return 'neutral'
+  return 'success'
+}
+
+function segmentTypeJudgementEvidenceItems(segment) {
+  const evidence = segment?.segment_type_evidence || {}
+  return [
+    { label: '收入占比', value: formatEvidencePercent(evidence.revenue_ratio ?? segment?.revenue_ratio) },
+    { label: '利润占比', value: formatEvidencePercent(evidence.profit_ratio ?? segment?.profit_ratio) },
+    { label: '综合贡献分', value: formatEvidenceNumber(fallbackContributionScore(segment, evidence)) },
+    { label: '收入排名', value: formatEvidenceRank(evidence.revenue_rank, evidence.period_segment_count) },
+    { label: '利润排名', value: formatEvidenceRank(evidence.profit_rank, evidence.period_segment_count) },
+    { label: '上一报告期', value: evidence.previous_reporting_period || '—' },
+    { label: '收入变化', value: formatPctPointChange(evidence.revenue_change) },
+    { label: '利润变化', value: formatPctPointChange(evidence.profit_change) },
+    { label: '结构判断', value: evidence.structure_judgement || '—' },
+  ]
 }
 
 function resetManualDraft(classification) {
@@ -1599,40 +1654,55 @@ watch(
                 <p>系统基于当前报告期收入占比、利润占比和历史变化给出建议，不自动覆盖原始输入标签。</p>
               </div>
             </div>
-            <div class="industry-drawer-card">
-              <div class="industry-result-grid">
-                <div>
-                  <span>当前标记</span>
-                  <strong>{{ selectedSegment.segment_type ? segmentTypeLabel(selectedSegment.segment_type) : '未提供' }}</strong>
+            <div class="industry-drawer-card segment-type-judgement">
+              <div class="segment-type-summary">
+                <div class="segment-type-summary__item">
+                  <span class="segment-type-summary__label">当前标记</span>
+                  <el-tag
+                    v-if="selectedSegment.segment_type"
+                    :type="segmentTypeTagType(selectedSegment.segment_type)"
+                    effect="plain"
+                    size="small"
+                  >
+                    {{ segmentTypeLabel(selectedSegment.segment_type) }}
+                  </el-tag>
+                  <el-tag v-else effect="plain" size="small" type="info">未提供</el-tag>
                 </div>
-                <div>
-                  <span>系统建议</span>
-                  <strong>{{ segmentTypeLabel(selectedSegment.inferred_segment_type) }}</strong>
+                <div class="segment-type-summary__item">
+                  <span class="segment-type-summary__label">系统建议</span>
+                  <el-tag
+                    :type="segmentTypeTagType(selectedSegment.inferred_segment_type)"
+                    effect="plain"
+                    size="small"
+                  >
+                    {{ segmentTypeLabel(selectedSegment.inferred_segment_type) }}
+                  </el-tag>
                 </div>
-                <div>
-                  <span>判断状态</span>
-                  <strong>{{ segmentTypeSourceDescription(selectedSegment) }}</strong>
-                </div>
-                <div>
-                  <span>人工复核提示</span>
-                  <strong>{{ selectedSegment.segment_type_warning || '当前标记与系统建议一致。' }}</strong>
+                <div class="segment-type-summary__item">
+                  <span class="segment-type-summary__label">判断状态</span>
+                  <el-tag
+                    :type="segmentTypeNoticeTone(selectedSegment) === 'warning' ? 'warning' : segmentTypeNoticeTone(selectedSegment) === 'success' ? 'success' : 'info'"
+                    effect="plain"
+                    size="small"
+                  >
+                    {{ segmentTypeJudgementStatus(selectedSegment) }}
+                  </el-tag>
                 </div>
               </div>
-              <el-alert
-                v-if="selectedSegment.segment_type_source === 'input_conflict'"
-                type="warning"
-                :closable="false"
-                show-icon
-                title="建议人工复核业务类型。"
-              />
-              <div class="segment-type-evidence-grid">
+              <div class="segment-type-judgement-grid">
                 <div
-                  v-for="item in segmentTypeEvidenceItems(selectedSegment)"
+                  v-for="item in segmentTypeJudgementEvidenceItems(selectedSegment)"
                   :key="item.label"
                 >
                   <span>{{ item.label }}</span>
                   <strong>{{ item.value }}</strong>
                 </div>
+              </div>
+              <div
+                class="segment-type-notice"
+                :class="`segment-type-notice--${segmentTypeNoticeTone(selectedSegment)}`"
+              >
+                {{ segmentTypeNoticeMessage(selectedSegment) }}
               </div>
             </div>
           </section>
@@ -2803,6 +2873,88 @@ watch(
   line-height: 1.5;
 }
 
+.segment-type-judgement {
+  gap: 12px;
+}
+
+.segment-type-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(249, 251, 254, 0.72);
+}
+
+.segment-type-summary__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.segment-type-summary__label,
+.segment-type-judgement-grid span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.segment-type-summary :deep(.el-tag) {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: max-content;
+}
+
+.segment-type-judgement-grid strong {
+  color: var(--brand-ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.segment-type-judgement-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 16px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.segment-type-judgement-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.segment-type-notice {
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  color: #33465b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.segment-type-notice--success {
+  border-color: rgba(80, 139, 112, 0.18);
+  background: rgba(239, 248, 244, 0.72);
+}
+
+.segment-type-notice--warning {
+  border-color: rgba(180, 124, 64, 0.22);
+  background: rgba(255, 247, 235, 0.74);
+}
+
+.segment-type-notice--neutral {
+  background: rgba(249, 251, 254, 0.78);
+}
+
 .industry-drawer-card__stack {
   display: grid;
   gap: 10px;
@@ -3039,6 +3191,8 @@ watch(
   .industry-summary-row,
   .industry-status-strip__items,
   .segment-type-evidence-grid,
+  .segment-type-summary,
+  .segment-type-judgement-grid,
   .industry-level-grid,
   .industry-result-grid,
   .industry-llm-summary,

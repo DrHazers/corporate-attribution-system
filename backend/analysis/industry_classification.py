@@ -2133,6 +2133,10 @@ def _build_llm_messages(
                 "If evidence is not strong enough, keep deeper levels null instead "
                 "of forcing a detailed mapping."
             ),
+            "reviewer_friendly_output_policy": (
+                "Return reviewer-facing explanation fields in Simplified Chinese. "
+                "Keep GICS level names in their standard English form."
+            ),
         },
         "company_context": {
             "company_name": company.name if company else None,
@@ -2176,13 +2180,27 @@ def _build_llm_messages(
             "level_4": "string or null",
             "is_primary": segment.segment_type == "primary",
             "confidence": "number between 0 and 1",
-            "mapping_basis": "short concrete human-readable explanation",
+            "mapping_basis": (
+                "Simplified Chinese reviewer-facing explanation. Do not use debug "
+                "prefixes such as 'Segment description:', 'Peer includes:', or "
+                "'Company is...'. If level_3 or level_4 is null, explain in Chinese "
+                "that there is insufficient clear sub-industry evidence. If company "
+                "context and segment context differ, explain that the segment was "
+                "judged from its own description instead of directly inheriting the "
+                "company-wide industry."
+            ),
+            "reference_context_summary": (
+                "array of 2-5 Simplified Chinese strings summarizing what evidence "
+                "was considered; avoid raw pipe-delimited debug tokens."
+            ),
             "review_status": (
                 "one of confirmed, pending, needs_llm_review, "
-                "needs_manual_review, conflicted, unmapped"
+                "needs_manual_review, conflicted, unmapped. Prefer "
+                "needs_manual_review for an LLM suggestion that still requires "
+                "human confirmation."
             ),
             "classifier_type": "llm_assisted",
-            "review_reason": "short snake_case string",
+            "review_reason": "short snake_case string such as model_suggested_needs_confirmation",
         },
     }
 
@@ -2192,8 +2210,10 @@ def _build_llm_messages(
         "this system, defaulting to GICS. Be conservative: if the evidence is "
         "weak or ambiguous, do not over-specify deeper levels. Use current "
         "rule-based output only as a reference, not as mandatory truth. Return "
-        "only one JSON object and no extra commentary. mapping_basis must be "
-        "brief, concrete, and understandable by a human reviewer."
+        "only one JSON object and no extra commentary. Keep level_1, level_2, "
+        "level_3, and level_4 as standard English GICS names. mapping_basis and "
+        "reference_context_summary must be in Simplified Chinese for human "
+        "reviewers, not debug-style English notes."
     )
 
     return [
@@ -2283,6 +2303,26 @@ def _normalize_review_status_for_llm(
     return "needs_manual_review" if has_any_level else "unmapped"
 
 
+def _normalize_reference_context_summary(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        candidates = re.split(r"[\n;；|]+", value)
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        candidates = [value]
+
+    items: list[str] = []
+    for candidate in candidates:
+        normalized = normalize_optional_text(str(candidate))
+        if normalized is None:
+            continue
+        if normalized not in items:
+            items.append(normalized)
+    return items[:5]
+
+
 def _build_llm_suggestion_from_content(
     *,
     content: str,
@@ -2303,6 +2343,11 @@ def _build_llm_suggestion_from_content(
     if classifier_type is None:
         classifier_type = "llm_assisted"
     standard_system = normalize_standard_system(payload.get("standard_system"))
+    reference_context_summary = _normalize_reference_context_summary(
+        payload.get("reference_context_summary")
+        or payload.get("reference_context")
+        or payload.get("model_context")
+    )
 
     return BusinessSegmentClassificationSuggestionRead(
         standard_system=standard_system,
@@ -2314,12 +2359,12 @@ def _build_llm_suggestion_from_content(
         mapping_basis=(
             mapping_basis
             or (
-                "LLM suggested a conservative classification based on the segment "
-                "description and company context."
+                "模型根据业务线描述和公司背景给出了保守分类建议，仍需人工复核确认。"
                 if has_any_level
-                else "LLM could not derive a stable mapping from the available context."
+                else "现有业务线描述和上下文不足以形成稳定映射，建议人工补充判断依据。"
             )
         ),
+        reference_context_summary=reference_context_summary,
         review_status=review_status,
         classifier_type=classifier_type,
         confidence=_normalize_confidence(payload.get("confidence")),
@@ -2333,9 +2378,9 @@ def _build_llm_parse_fallback_suggestion(
     raw_content: str,
 ) -> BusinessSegmentClassificationSuggestionRead:
     compact_content = _truncate_text(raw_content, limit=160)
-    mapping_basis = "LLM returned a non-JSON response, so the suggestion was downgraded for manual review."
+    mapping_basis = "模型返回内容不是合法 JSON，系统已降级为需要人工复核的保守建议。"
     if compact_content:
-        mapping_basis = f"{mapping_basis} Response summary: {compact_content}"
+        mapping_basis = f"{mapping_basis} 返回摘要：{compact_content}"
 
     return BusinessSegmentClassificationSuggestionRead(
         standard_system=STANDARD_SYSTEM,
@@ -2345,6 +2390,7 @@ def _build_llm_parse_fallback_suggestion(
         level_4=None,
         is_primary=segment.segment_type == "primary",
         mapping_basis=mapping_basis,
+        reference_context_summary=["模型返回格式异常，未能提取稳定的参考信息。"],
         review_status="needs_manual_review",
         classifier_type="llm_assisted",
         confidence=Decimal("0.1000"),

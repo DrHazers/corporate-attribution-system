@@ -212,6 +212,7 @@ class BusinessSegmentClassificationSuggestionRead(BaseModel):
     level_4: str | None = None
     is_primary: bool = False
     mapping_basis: str | None = None
+    reference_context_summary: list[str] = Field(default_factory=list)
     review_status: BusinessSegmentClassificationReviewStatus
     classifier_type: BusinessSegmentClassificationClassifierType
     confidence: Decimal | None = None

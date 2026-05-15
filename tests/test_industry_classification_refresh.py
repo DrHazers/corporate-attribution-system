@@ -35,10 +35,14 @@ class _FakeDeepSeekChatClient:
                     "level_4": "Interactive Media & Services",
                     "is_primary": True,
                     "confidence": 0.78,
-                    "mapping_basis": "The segment focuses on digital advertising marketplace and merchant monetization.",
+                    "mapping_basis": "该业务线聚焦数字广告市场和商户变现服务，业务属性更接近互动媒体与服务。该建议仍需人工复核确认。",
+                    "reference_context_summary": [
+                        "当前业务线描述强调数字广告市场和商户变现。",
+                        "规则候选指向互动媒体与服务方向。",
+                    ],
                     "review_status": "needs_manual_review",
                     "classifier_type": "llm_assisted",
-                    "review_reason": "llm_suggested",
+                    "review_reason": "model_suggested_needs_confirmation",
                 }
             )
         )
@@ -427,7 +431,11 @@ def test_refresh_builds_research_style_rule_results_and_preserves_manual_rows(
     assert llm_payload.suggested_classification.classifier_type == "llm_assisted"
     assert llm_payload.suggested_classification.level_1 == "Communication Services"
     assert llm_payload.suggested_classification.level_4 == "Interactive Media & Services"
-    assert llm_payload.suggested_classification.mapping_basis
+    assert llm_payload.suggested_classification.mapping_basis.startswith("该业务线")
+    assert llm_payload.suggested_classification.reference_context_summary == [
+        "当前业务线描述强调数字广告市场和商户变现。",
+        "规则候选指向互动媒体与服务方向。",
+    ]
     assert llm_payload.request_context is not None
     assert "digital advertising marketplace" == llm_payload.request_context.segment_name.lower()
     assert llm_payload.request_context.rule_candidates

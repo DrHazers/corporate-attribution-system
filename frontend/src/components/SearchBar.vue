@@ -59,52 +59,39 @@ function openImportCenter() {
 </script>
 
 <template>
-  <el-card class="surface-card search-bar-card" shadow="never">
-    <div class="search-bar-card__layout">
-      <div class="search-bar-card__intro">
-        <div class="section-heading">
-          <div>
-            <h2>企业综合分析</h2>
-            <p>
-              可按公司名称、股票代码搜索企业；如需按 ID 精确查询，可输入 <code>/ID</code>。
-              系统将展示控制链、国别归属与产业结构分析结果。
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div class="search-bar-card__controls">
-        <el-input
-          v-model="inputValue"
-          clearable
-          size="large"
-          placeholder="输入公司名称、股票代码，或 /ID 精确查询"
-          @keyup.enter="triggerSearch()"
-        />
-        <el-button type="primary" size="large" :loading="searching" @click="triggerSearch()">
-          查询
-        </el-button>
-        <el-button size="large" plain @click="openImportCenter">
-          数据导入
-        </el-button>
-      </div>
+  <el-card class="analysis-query-card" shadow="never">
+    <div class="query-card-header">
+      <h2>企业综合分析</h2>
+      <p>选择或检索分析对象，查看控制链、国别归属与产业结构分析结果。</p>
     </div>
 
-    <div class="search-bar-card__hint">
-      按 ID 精确查询请使用 <code>/ID</code>，例如 <code>/128</code>。
+    <div class="query-toolbar">
+      <el-input
+        v-model="inputValue"
+        clearable
+        size="large"
+        placeholder="请输入公司名称、股票代码或 /ID，例如 /128"
+        @keyup.enter="triggerSearch()"
+      />
+      <el-button type="primary" class="query-button" :loading="searching" @click="triggerSearch()">
+        查询
+      </el-button>
+      <el-button class="import-button" plain @click="openImportCenter">
+        数据导入
+      </el-button>
     </div>
 
-    <div class="search-bar-card__examples">
-      <span class="search-bar-card__examples-label">推荐演示 ID</span>
-      <el-tag
+    <div class="quick-sample-row">
+      <span class="quick-sample-label">快捷样本</span>
+      <button
         v-for="demoId in demoIds"
         :key="demoId"
-        class="search-bar-card__tag"
-        effect="plain"
+        type="button"
+        class="quick-sample-chip"
         @click="triggerSearch(`/${demoId}`)"
       >
         /{{ demoId }}
-      </el-tag>
+      </button>
     </div>
 
     <div
@@ -146,58 +133,104 @@ function openImportCenter() {
 </template>
 
 <style scoped>
-.search-bar-card {
-  display: grid;
-  gap: 14px;
+.analysis-query-card {
+  border: 1px solid #e5ebf2;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+  overflow: hidden;
 }
 
-.search-bar-card__layout {
+.analysis-query-card :deep(.el-card__body) {
+  display: grid;
+  gap: 0;
+  padding: 22px 24px 20px;
+}
+
+.query-card-header h2 {
+  margin: 0;
+  color: #1f3a5b;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", Georgia, serif;
+  font-size: 23px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.query-card-header p {
+  margin: 6px 0 0;
+  color: #6f7f92;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.query-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.search-bar-card__intro {
-  flex: 1;
-  min-width: 0;
-}
-
-.search-bar-card__controls {
-  display: flex;
   gap: 12px;
-  width: min(680px, 100%);
+  margin-top: 18px;
 }
 
-.search-bar-card__controls :deep(.el-input) {
-  flex: 1;
+.query-toolbar :deep(.el-input) {
+  width: 560px;
+  max-width: min(640px, 100%);
 }
 
-.search-bar-card__hint {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
+.query-button,
+.import-button {
+  height: 38px;
+  border-radius: 6px;
+  font-weight: 600;
 }
 
-.search-bar-card__examples {
+.import-button {
+  border-color: #dfe7f0;
+  background: #fff;
+  color: #56677d;
+}
+
+.quick-sample-row {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  color: var(--text-secondary);
-}
-
-.search-bar-card__examples-label {
+  margin-top: 12px;
+  color: #7b8794;
   font-size: 13px;
-  line-height: 32px;
 }
 
-.search-bar-card__tag {
+.quick-sample-label {
+  margin-right: 4px;
+  color: #7b8794;
+}
+
+.quick-sample-chip {
+  border: 1px solid #dfe7f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #4f6680;
   cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 4px 10px;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.quick-sample-chip:hover,
+.quick-sample-chip:focus-visible {
+  border-color: #cfdbe8;
+  background: #eef4fb;
+  color: #244765;
+  outline: none;
 }
 
 .search-bar-card__results {
   min-height: 48px;
-  padding-top: 4px;
+  padding-top: 14px;
 }
 
 .search-result-list {
@@ -261,19 +294,25 @@ function openImportCenter() {
   line-height: 1.6;
 }
 
-@media (max-width: 980px) {
-  .search-bar-card__layout {
-    flex-direction: column;
-    align-items: stretch;
+@media (max-width: 768px) {
+  .analysis-query-card :deep(.el-card__body) {
+    padding: 18px;
   }
 
-  .search-bar-card__controls {
+  .query-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .query-toolbar :deep(.el-input) {
     width: 100%;
+    max-width: none;
   }
-}
 
-@media (max-width: 640px) {
-  .search-bar-card__controls,
+  .query-button,
+  .import-button {
+    flex: 1 1 140px;
+  }
+
   .search-result-item__head {
     flex-direction: column;
     align-items: stretch;

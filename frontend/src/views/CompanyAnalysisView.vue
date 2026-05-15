@@ -377,13 +377,6 @@ const industryAnalysis = computed(() => summaryData.value?.industry_analysis || 
 const controlRelationships = computed(
   () => summaryData.value?.control_analysis?.control_relationships || [],
 )
-const currentSummaryNote = computed(() => {
-  if (!company.value) {
-    return '请选择企业后查看综合分析结果。'
-  }
-
-  return `当前展示：${company.value.name}（ID：${company.value.id}）`
-})
 
 function openIndustryWorkbench() {
   industryWorkbenchVisible.value = true
@@ -938,7 +931,7 @@ async function handleRestoreAutomaticResult() {
       <el-empty description="请输入公司名称、股票代码，或使用 /ID 精确查询" :image-size="96">
         <template #description>
           <div class="table-text table-text--muted">
-            可直接使用上方推荐演示 ID，例如 /128、/240、/9717。
+            可直接使用上方示例入口，例如 /128、/240、/9717。
           </div>
         </template>
       </el-empty>
@@ -946,13 +939,12 @@ async function handleRestoreAutomaticResult() {
 
     <template v-else-if="summaryData">
       <div v-loading="loading">
-        <el-alert
-          class="status-banner"
-          type="info"
-          show-icon
-          :closable="false"
-          :title="currentSummaryNote"
-        />
+        <div v-if="company" class="current-analysis-card">
+          <span class="current-dot"></span>
+          <span class="current-label">当前分析对象</span>
+          <strong>{{ company.name }}</strong>
+          <span class="current-id">ID：{{ company.id }}</span>
+        </div>
 
         <div id="module-company-overview" class="module-anchor">
           <CompanyOverviewCard
@@ -1675,6 +1667,63 @@ s001,parent,target,equity,60%,60%,true,true</code></pre>
 .module-anchor {
   min-width: 0;
   scroll-margin-top: 16px;
+}
+
+.status-banner {
+  margin-top: 10px;
+  margin-bottom: 18px;
+  border-radius: 8px;
+  border-color: rgba(48, 95, 131, 0.12);
+  background: #f7f9fc;
+  color: #7b8794;
+}
+
+.status-banner :deep(.el-alert__title) {
+  color: #6b7a90;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.status-banner :deep(.el-alert__icon) {
+  color: #6b7a90;
+}
+
+.current-analysis-card {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  margin-bottom: 18px;
+  padding: 10px 16px;
+  border: 1px solid #e5ebf2;
+  border-radius: 10px;
+  background: #fff;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.current-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #409eff;
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
+}
+
+.current-label {
+  color: #7b8794;
+}
+
+.current-analysis-card strong {
+  color: #31465f;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.current-id {
+  color: #7b8794;
 }
 
 .analysis-report {

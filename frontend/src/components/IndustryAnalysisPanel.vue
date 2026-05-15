@@ -806,20 +806,37 @@ const llmSuggestionAdopted = computed(() => {
 
 function llmClassifierTypeLabel(value) {
   if (value === 'llm_assisted') {
-    return '模型辅助结果'
+    return '模型辅助建议'
   }
   return classifierTypeLabel(value)
 }
 
-function llmReviewReasonLabel(value) {
-  const localLabels = {
-    llm_inconclusive: '模型未形成稳定判断',
-    llm_response_parse_failed: '模型返回解析失败',
-    clear_gics_alignment: '分类方向较为明确',
-    segment_fits_gics_structure: '已匹配当前 GICS 分类结构',
-    segment_clearly_fits_level_2: '已明确匹配到二级分类',
+function llmSuggestionStageStatus() {
+  if (llmSuggestionAdopted.value) {
+    return '已采用建议'
   }
-  return localLabels[value] || reviewReasonLabel(value)
+  return '待人工确认'
+}
+
+function llmReviewReasonLabel() {
+  return '模型辅助建议，需人工复核'
+}
+
+function llmConfidenceDisplay(value) {
+  if (value === null || value === undefined || value === '') {
+    return '—'
+  }
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) {
+    return String(value)
+  }
+  let level = '较低'
+  if (numeric >= 0.8) {
+    level = '较高'
+  } else if (numeric >= 0.6) {
+    level = '中等'
+  }
+  return `${numeric.toFixed(2)}（${level}，建议人工复核）`
 }
 
 function formatLlmLevel(value) {
@@ -828,22 +845,41 @@ function formatLlmLevel(value) {
 
 function llmDisplayMessage() {
   if (llmErrorMessage.value) {
-    return llmErrorMessage.value
+    return '模型调用失败，请查看错误信息'
   }
-  return llmSuggestionPayload.value?.message || '尚未生成模型建议。'
+  if (llmSuggestionPayload.value?.status) {
+    return '模型建议已生成'
+  }
+  return '尚未生成模型建议。'
 }
 
-function llmContextSummary() {
+function normalizeLlmContextItems(value) {
+  if (!value) {
+    return []
+  }
+  const rawItems = Array.isArray(value) ? value : String(value).split(/[\n;；|]+/)
+  return rawItems
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 5)
+}
+
+function llmReferenceContextItems() {
+  const suggestion = llmSuggestionClassification()
+  const summaryItems = normalizeLlmContextItems(suggestion?.reference_context_summary)
+  if (summaryItems.length) {
+    return summaryItems
+  }
   const requestContext = llmSuggestionPayload.value?.request_context
   if (!requestContext) {
-    return '暂无上下文摘要'
+    return []
   }
-  return (
-    requestContext.company_description ||
-    requestContext.company_text ||
-    requestContext.peer_text ||
-    '暂无上下文摘要'
-  )
+  return [
+    requestContext.company_description ? `公司背景：${requestContext.company_description}` : '',
+    requestContext.description ? `业务线描述：${requestContext.description}` : '',
+    requestContext.peer_text ? `同业线索：${requestContext.peer_text}` : '',
+    requestContext.rule_candidates?.length ? `规则候选：${requestContext.rule_candidates.join('、')}` : '',
+  ].filter(Boolean).slice(0, 5)
 }
 
 const BASIS_DECISION_LABELS = {
@@ -1979,11 +2015,12 @@ watch(
                   </div>
                   <div>
                     <span>建议状态</span>
-                    <strong>{{ reviewStatusLabel(llmSuggestionClassification()?.review_status) }}</strong>
+                    <strong>{{ llmSuggestionStageStatus() }}</strong>
                   </div>
                   <div>
                     <span>置信度</span>
-                    <strong>{{ formatConfidence(llmSuggestionClassification()?.confidence) }}</strong>
+                    <strong>{{ llmConfidenceDisplay(llmSuggestionClassification()?.confidence) }}</strong>
+                    <small>模型自评置信度，仅作为人工复核参考。</small>
                   </div>
                 </div>
 
@@ -2009,7 +2046,7 @@ watch(
                 <div class="industry-llm-notes">
                   <div>
                     <span>当前原因</span>
-                    <strong>{{ llmReviewReasonLabel(llmSuggestionClassification()?.review_reason) }}</strong>
+                    <strong>{{ llmReviewReasonLabel() }}</strong>
                   </div>
                   <div>
                     <span>调用状态</span>
@@ -2018,13 +2055,21 @@ watch(
                 </div>
 
                 <div class="industry-llm-basis">
-                  <span>映射依据</span>
+                  <span>模型判断依据</span>
                   <p>{{ llmSuggestionClassification()?.mapping_basis || '暂无映射依据' }}</p>
                 </div>
 
                 <div class="industry-llm-context">
-                  <span>模型参考上下文</span>
-                  <p>{{ llmContextSummary() }}</p>
+                  <span>模型参考信息</span>
+                  <ul v-if="llmReferenceContextItems().length">
+                    <li
+                      v-for="item in llmReferenceContextItems()"
+                      :key="item"
+                    >
+                      {{ item }}
+                    </li>
+                  </ul>
+                  <p v-else>暂无可展示的参考信息。</p>
                 </div>
                 <el-alert
                   v-if="llmSuggestionAdopted"
@@ -2043,18 +2088,6 @@ watch(
                     采用该建议
                   </el-button>
                 </div>
-                <p><strong>状态：</strong>{{ llmSuggestionPayload.status }}</p>
-                <p><strong>消息：</strong>{{ llmSuggestionPayload.message }}</p>
-                <p><strong>建议分类：</strong>{{ llmSuggestionLabel() }}</p>
-                <p><strong>建议 level_1：</strong>{{ llmSuggestionClassification()?.level_1 || '暂无' }}</p>
-                <p><strong>建议 level_2：</strong>{{ llmSuggestionClassification()?.level_2 || '暂无' }}</p>
-                <p><strong>建议 level_3：</strong>{{ llmSuggestionClassification()?.level_3 || '暂无' }}</p>
-                <p><strong>建议 level_4：</strong>{{ llmSuggestionClassification()?.level_4 || '暂无' }}</p>
-                <p><strong>置信度：</strong>{{ formatConfidence(llmSuggestionClassification()?.confidence) }}</p>
-                <p><strong>结果来源：</strong>{{ classifierTypeLabel(llmSuggestionClassification()?.classifier_type) }}</p>
-                <p><strong>建议 review_status：</strong>{{ reviewStatusLabel(llmSuggestionClassification()?.review_status) }}</p>
-                <p><strong>建议映射依据：</strong>{{ llmSuggestionClassification()?.mapping_basis || '暂无' }}</p>
-                <p><strong>模型输入上下文：</strong>{{ llmSuggestionPayload.request_context?.company_text || llmSuggestionPayload.request_context?.company_description || '暂无公司上下文' }}</p>
               </div>
               <el-empty
                 v-else
@@ -3159,6 +3192,26 @@ watch(
   font-weight: 600;
   line-height: 1.65;
   overflow-wrap: anywhere;
+}
+
+.industry-llm-summary small {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.industry-llm-context ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: #33465b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.industry-llm-context li {
+  padding-left: 2px;
 }
 
 

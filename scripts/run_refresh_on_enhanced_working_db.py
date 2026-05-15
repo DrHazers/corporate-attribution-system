@@ -8,7 +8,8 @@ import sys
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 
@@ -33,6 +34,7 @@ DEFAULT_DATABASE = PROJECT_ROOT / "ultimate_controller_enhanced_dataset_working.
 DEFAULT_OUTPUT_JSON = (
     PROJECT_ROOT / "logs" / "ultimate_controller_enhanced_dataset_working_refresh_summary.json"
 )
+DEFAULT_OUTPUT_MD = PROJECT_ROOT / "export" / "postgres_demo_refresh_report.md"
 PROTECTED_DATABASE_NAMES = {
     "company_test_analysis_industry.db",
     "company_test_analysis_industry_v2.db",
@@ -47,6 +49,17 @@ OUTPUT_TABLES = (
     "control_relationships",
     "country_attributions",
     "control_inference_runs",
+)
+INPUT_TABLES = (
+    "companies",
+    "shareholder_entities",
+    "shareholder_structures",
+)
+POST_REFRESH_TABLES = (
+    "control_inference_runs",
+    "control_relationships",
+    "country_attributions",
+    "control_inference_audit_log",
 )
 COUNT_TABLES = (
     "companies",
@@ -67,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_JSON)
+    parser.add_argument("--output-md", type=Path, default=DEFAULT_OUTPUT_MD)
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument(
         "--keep-existing-output",
@@ -74,6 +88,23 @@ def parse_args() -> argparse.Namespace:
         help="Do not clear existing output tables before refresh.",
     )
     return parser.parse_args()
+
+
+def resolve_database_target(database: Path) -> dict[str, Any]:
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return {
+            "kind": "url",
+            "url": database_url,
+            "display": make_url(database_url).render_as_string(hide_password=True),
+        }
+
+    database_path = validate_database_path(database)
+    return {
+        "kind": "sqlite",
+        "path": database_path,
+        "display": str(database_path),
+    }
 
 
 def validate_database_path(database: Path) -> Path:
@@ -85,28 +116,29 @@ def validate_database_path(database: Path) -> Path:
     return database
 
 
-def create_session_factory(database: Path):
-    engine = create_engine(
-        f"sqlite:///{database}",
-        connect_args={"check_same_thread": False},
-    )
+def create_session_factory(target: dict[str, Any]):
+    if target["kind"] == "url":
+        engine = create_engine(target["url"])
+    else:
+        engine = create_engine(
+            f"sqlite:///{target['path']}",
+            connect_args={"check_same_thread": False},
+        )
     return engine, sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def table_exists(db, table_name: str) -> bool:
-    return (
-        db.execute(
-            text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:table_name"),
-            {"table_name": table_name},
-        ).first()
-        is not None
-    )
+    return inspect(db.get_bind()).has_table(table_name)
+
+
+def quote_table(db, table_name: str) -> str:
+    return db.get_bind().dialect.identifier_preparer.quote(table_name)
 
 
 def count_table(db, table_name: str) -> int:
     if not table_exists(db, table_name):
         return 0
-    return int(db.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar_one())
+    return int(db.execute(text(f"SELECT COUNT(*) FROM {quote_table(db, table_name)}")).scalar_one())
 
 
 def collect_counts(db) -> dict[str, int]:
@@ -124,7 +156,7 @@ def clear_output_tables(db) -> dict[str, int]:
     before = {table_name: count_table(db, table_name) for table_name in OUTPUT_TABLES}
     for table_name in OUTPUT_TABLES:
         if table_exists(db, table_name):
-            db.execute(text(f'DELETE FROM "{table_name}"'))
+            db.execute(text(f"DELETE FROM {quote_table(db, table_name)}"))
     db.commit()
     after = {table_name: count_table(db, table_name) for table_name in OUTPUT_TABLES}
     return {
@@ -133,13 +165,146 @@ def clear_output_tables(db) -> dict[str, int]:
     }
 
 
+def collect_distribution(db, *, table_name: str, column_name: str) -> dict[str, int]:
+    if not table_exists(db, table_name):
+        return {}
+    table_sql = quote_table(db, table_name)
+    column_sql = db.get_bind().dialect.identifier_preparer.quote(column_name)
+    rows = db.execute(
+        text(
+            f"""
+            SELECT {column_sql} AS value, COUNT(*) AS count
+            FROM {table_sql}
+            GROUP BY {column_sql}
+            ORDER BY COUNT(*) DESC, {column_sql}
+            """
+        )
+    ).mappings()
+    return {
+        "<NULL>" if row["value"] is None else str(row["value"]): int(row["count"])
+        for row in rows
+    }
+
+
+def count_companies_without_country_attributions(db) -> int:
+    return int(
+        db.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM companies c
+                LEFT JOIN country_attributions ca ON ca.company_id = c.id
+                WHERE ca.id IS NULL
+                """
+            )
+        ).scalar_one()
+    )
+
+
+def collect_post_refresh_summary(db) -> dict[str, Any]:
+    return {
+        "attribution_type_distribution": collect_distribution(
+            db,
+            table_name="country_attributions",
+            column_name="attribution_type",
+        ),
+        "control_type_distribution": collect_distribution(
+            db,
+            table_name="control_relationships",
+            column_name="control_type",
+        ),
+        "companies_without_country_attributions": (
+            count_companies_without_country_attributions(db)
+        ),
+    }
+
+
+def write_markdown_report(output_md: Path, summary: dict[str, Any]) -> None:
+    output_md = output_md.expanduser().resolve()
+    output_md.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "# PostgreSQL Demo Refresh Report",
+        "",
+        "## Target",
+        f"- Database: `{summary['database_target']}`",
+        f"- Duration seconds: {summary['duration_seconds']}",
+        "",
+        "## Pre-refresh Input Counts",
+    ]
+    for table_name in INPUT_TABLES:
+        lines.append(f"- {table_name}: {summary['pre_counts'].get(table_name, 0)}")
+
+    if summary["cleared_output"] is not None:
+        lines.extend(["", "## Cleared Output Counts"])
+        for table_name, count in summary["cleared_output"]["before"].items():
+            lines.append(f"- {table_name}: {count}")
+
+    lines.extend(
+        [
+            "",
+            "## Refresh Outcome",
+            f"- Processed companies: {summary['processed_count']}",
+            f"- Successful refresh companies: {summary['success_count']}",
+            f"- Failed companies: {summary['failed_count']}",
+            "",
+            "## Post-refresh Output Counts",
+        ]
+    )
+    for table_name in POST_REFRESH_TABLES:
+        lines.append(f"- {table_name}: {summary['post_counts'].get(table_name, 0)}")
+
+    lines.extend(["", "## Attribution Type Distribution"])
+    attribution_distribution = summary["post_refresh_summary"][
+        "attribution_type_distribution"
+    ]
+    if attribution_distribution:
+        for value, count in attribution_distribution.items():
+            lines.append(f"- {value}: {count}")
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## Control Type Distribution"])
+    control_distribution = summary["post_refresh_summary"]["control_type_distribution"]
+    if control_distribution:
+        for value, count in control_distribution.items():
+            lines.append(f"- {value}: {count}")
+    else:
+        lines.append("- None")
+
+    lines.extend(
+        [
+            "",
+            "## Country Attribution Coverage",
+            (
+                "- Companies without country_attributions: "
+                f"{summary['post_refresh_summary']['companies_without_country_attributions']}"
+            ),
+            "",
+            "## Failures",
+        ]
+    )
+    if summary["failures"]:
+        for failure in summary["failures"][:100]:
+            lines.append(
+                f"- company_id={failure['company_id']}: "
+                f"{failure['error_type']}: {failure['error']}"
+            )
+        if len(summary["failures"]) > 100:
+            lines.append(f"- ... {len(summary['failures']) - 100} more failures omitted")
+    else:
+        lines.append("- None")
+
+    output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def run_refresh(
     *,
-    database: Path,
+    target: dict[str, Any],
     batch_size: int,
     keep_existing_output: bool,
 ) -> dict[str, Any]:
-    engine, session_factory = create_session_factory(database)
+    engine, session_factory = create_session_factory(target)
     started_at = perf_counter()
     successes: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -227,18 +392,20 @@ def run_refresh(
                             successes.pop()
 
             post_counts = collect_counts(db)
+            post_refresh_summary = collect_post_refresh_summary(db)
 
     finally:
         engine.dispose()
 
     return {
-        "database_path": str(database),
+        "database_target": target["display"],
         "pre_counts": pre_counts,
         "cleared_output": cleared_output,
         "processed_count": len(company_ids),
         "success_count": len(successes),
         "failed_count": len(failures),
         "post_counts": post_counts,
+        "post_refresh_summary": post_refresh_summary,
         "duration_seconds": round(perf_counter() - started_at, 4),
         "failures": failures,
         "successes_preview": successes[:20],
@@ -247,9 +414,9 @@ def run_refresh(
 
 def main() -> int:
     args = parse_args()
-    database = validate_database_path(args.database)
+    target = resolve_database_target(args.database)
     summary = run_refresh(
-        database=database,
+        target=target,
         batch_size=args.batch_size,
         keep_existing_output=args.keep_existing_output,
     )
@@ -260,10 +427,12 @@ def main() -> int:
         json.dumps(summary, ensure_ascii=False, indent=2, default=str),
         encoding="utf-8",
     )
+    write_markdown_report(args.output_md, summary)
 
-    print(f"database: {summary['database_path']}")
+    print(f"database: {summary['database_target']}")
     print("pre_counts:")
-    for table_name, count in summary["pre_counts"].items():
+    for table_name in INPUT_TABLES:
+        count = summary["pre_counts"].get(table_name, 0)
         print(f"  - {table_name}: {count}")
     if summary["cleared_output"] is not None:
         print("cleared_output_before:")
@@ -273,10 +442,22 @@ def main() -> int:
     print(f"success_count: {summary['success_count']}")
     print(f"failed_count: {summary['failed_count']}")
     print("post_counts:")
-    for table_name, count in summary["post_counts"].items():
+    for table_name in POST_REFRESH_TABLES:
+        count = summary["post_counts"].get(table_name, 0)
         print(f"  - {table_name}: {count}")
+    print("attribution_type_distribution:")
+    for value, count in summary["post_refresh_summary"]["attribution_type_distribution"].items():
+        print(f"  - {value}: {count}")
+    print("control_type_distribution:")
+    for value, count in summary["post_refresh_summary"]["control_type_distribution"].items():
+        print(f"  - {value}: {count}")
+    print(
+        "companies_without_country_attributions: "
+        f"{summary['post_refresh_summary']['companies_without_country_attributions']}"
+    )
     print(f"duration_seconds: {summary['duration_seconds']}")
     print(f"output_json: {output_json}")
+    print(f"output_md: {args.output_md.expanduser().resolve()}")
     return 0
 
 

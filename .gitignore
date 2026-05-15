@@ -14,3 +14,4 @@ _industry_import_tmp/
 logs/
 docs/deepseek_api.txt
 exports_csv/
+data/

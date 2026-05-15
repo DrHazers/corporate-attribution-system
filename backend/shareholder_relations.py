@@ -23,6 +23,7 @@ RELATION_ROLE_VALUES = (
     "governance",
     "nominee",
     "contractual",
+    "contractual_control",
     "other",
 )
 CONFIDENCE_LEVEL_VALUES = ("high", "medium", "low", "unknown")
@@ -56,6 +57,8 @@ TERMINATION_SIGNAL_VALUES = (
     "beneficial_owner_unknown",
     "nominee_without_disclosure",
     "protective_right_only",
+    "evidence_insufficient",
+    "upstream_incomplete",
 )
 CONTROL_TIER_VALUES = (
     "direct",

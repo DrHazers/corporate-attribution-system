@@ -46,6 +46,7 @@ SUPPORTED_ENTITY_TYPES = (
     "fund",
     "government",
     "public_float",
+    "trust",
     "other",
 )
 RATIO_FIELDS = {

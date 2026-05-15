@@ -1603,14 +1603,18 @@ def build_control_context(
                 source,
                 remarks
             FROM shareholder_structures
-            WHERE is_current = 1
-              AND is_direct = 1
-              AND (effective_date IS NULL OR date(effective_date) <= :as_of_date)
-              AND (expiry_date IS NULL OR date(expiry_date) >= :as_of_date)
+            WHERE is_current = :is_current
+              AND is_direct = :is_direct
+              AND (effective_date IS NULL OR effective_date <= :as_of_date)
+              AND (expiry_date IS NULL OR expiry_date >= :as_of_date)
             ORDER BY id ASC
             """
         ),
-        {"as_of_date": as_of_date.isoformat()},
+        {
+            "as_of_date": as_of_date,
+            "is_current": True,
+            "is_direct": True,
+        },
     ).mappings()
 
     factor_map: dict[int, EdgeFactor] = {}

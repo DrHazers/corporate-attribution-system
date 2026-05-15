@@ -33,6 +33,7 @@ ShareholderEntityType = Literal[
     "fund",
     "government",
     "public_float",
+    "trust",
     "other",
 ]
 ShareholderRelationType = Literal[
@@ -50,6 +51,7 @@ ShareholderRelationRole = Literal[
     "governance",
     "nominee",
     "contractual",
+    "contractual_control",
     "other",
 ]
 ShareholderEntitySubtype = Literal[
@@ -81,6 +83,8 @@ TerminationSignal = Literal[
     "beneficial_owner_unknown",
     "nominee_without_disclosure",
     "protective_right_only",
+    "evidence_insufficient",
+    "upstream_incomplete",
 ]
 ConfidenceLevel = Literal["high", "medium", "low", "unknown"]
 RelationshipSourceType = Literal[

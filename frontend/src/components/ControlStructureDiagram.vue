@@ -399,6 +399,37 @@ const diagramState = computed(() => {
 })
 
 const diagramLayout = computed(() => diagramState.value.layout)
+
+watch(
+  () => ({
+    companyId: props.company?.id || props.relationshipGraph?.company_id || null,
+    rawNodeCount: Array.isArray(props.relationshipGraph?.nodes)
+      ? props.relationshipGraph.nodes.length
+      : 0,
+    rawEdgeCount: Array.isArray(props.relationshipGraph?.edges)
+      ? props.relationshipGraph.edges.length
+      : 0,
+    adapterNodeCount: Array.isArray(diagramModel.value?.nodes)
+      ? diagramModel.value.nodes.length
+      : 0,
+    adapterEdgeCount: Array.isArray(diagramModel.value?.edges)
+      ? diagramModel.value.edges.length
+      : 0,
+    layoutNodeCount: Array.isArray(diagramLayout.value?.nodes)
+      ? diagramLayout.value.nodes.length
+      : 0,
+    layoutEdgeCount: Array.isArray(diagramLayout.value?.edges)
+      ? diagramLayout.value.edges.length
+      : 0,
+    omittedCount:
+      props.relationshipGraph?.omitted_count ?? props.relationshipGraph?.filtered_count ?? 0,
+  }),
+  (stats) => {
+    console.info('[control-structure-diagram] graph counts', stats)
+  },
+  { immediate: true },
+)
+
 const shouldFallback = computed(() => Boolean(diagramState.value.error || !diagramLayout.value))
 const pathConvergenceItems = computed(() =>
   Array.isArray(diagramModel.value?.multiPathConvergences)
@@ -615,6 +646,9 @@ function formatPercent(value) {
 }
 
 function entityTypeLabel(value) {
+  if (value === 'public_float') {
+    return 'Public Float'
+  }
   return ENTITY_TYPE_LABELS[value] || ENTITY_TYPE_LABELS.other
 }
 
@@ -659,6 +693,9 @@ function summaryNodeVariantClass(node) {
 }
 
 function nodeRoleLabel(node) {
+  if (node.role === 'supplementalGroup') {
+    return '补充关系入口'
+  }
   if (node.role === 'actualSummary') {
     return summaryControllerRoleLabel.value
   }
@@ -668,7 +705,7 @@ function nodeRoleLabel(node) {
   if (node.isMainPath && node.isKeyPath) {
     return node.role === 'direct' ? '主链路直接控制人' : '主链路中间层'
   }
-  if (node.depthFromTarget === 1) {
+  if (Math.abs(Number(node.depthFromTarget) || 0) === 1) {
     return '直接上游主体'
   }
   if (node.isKeyPath) {
@@ -678,6 +715,9 @@ function nodeRoleLabel(node) {
 }
 
 function resolvedNodeRoleLabel(node) {
+  if (node.role === 'supplementalGroup') {
+    return '补充关系入口'
+  }
   if (node.role === 'actualSummary') {
     return summaryControllerRoleLabel.value
   }
@@ -687,7 +727,7 @@ function resolvedNodeRoleLabel(node) {
   if (node.isMainPath && node.isKeyPath) {
     return node.role === 'direct' ? '主链路直接控制人' : '主链路中间层'
   }
-  if (node.depthFromTarget === 1) {
+  if (Math.abs(Number(node.depthFromTarget) || 0) === 1) {
     return '直接上游主体'
   }
   if (node.branchDirection === 'up') {
@@ -786,6 +826,14 @@ function buildTooltipLines(item) {
   }
 
   const convergence = item?.multiPathConvergence || null
+  if (item?.role === 'supplementalGroup') {
+    return [
+      '节点角色：补充关系入口',
+      `当前状态：${item.expanded ? '已展开' : '已收起'}`,
+      `包含关系：${item.supplementalCount || item.hiddenUpstreamCount || 0} 个非主链直接股东 / 补充上游关系`,
+      '说明：默认收起以保持主控链路清晰；点击 + 展开，点击 - 收起。',
+    ]
+  }
   if (item?.role === 'actualSummary' && isManualConfirmedResult.value && summaryControllerRoleKey.value === 'actual_controller') {
     return [
       '节点角色：人工确认实际控制人',
@@ -965,6 +1013,12 @@ function toggleTransform(node) {
 
 function pathBadgeTransform(node) {
   return `translate(${node.width / 2 - 34}, ${-node.height / 2 - 10})`
+}
+
+function nodeTransformStyle(node) {
+  return {
+    transform: `translate(${node.x}px, ${node.y}px)`,
+  }
 }
 
 function handleWheel(event) {
@@ -1204,7 +1258,7 @@ onBeforeUnmount(() => {
                 <g
                   v-for="node in diagramLayout.nodes"
                   :key="node.renderKey"
-                  :transform="`translate(${node.x}, ${node.y})`"
+                  :style="nodeTransformStyle(node)"
                   :class="[
                     'structure-node',
                     `structure-node--${node.role}`,
@@ -1529,6 +1583,20 @@ onBeforeUnmount(() => {
   stroke-width: 1.75;
   opacity: 0.48;
   pointer-events: stroke;
+  transition:
+    d 240ms ease-out,
+    opacity 220ms ease-out,
+    stroke-width 220ms ease-out;
+  animation: structure-edge-fade 220ms ease-out;
+}
+
+.structure-node {
+  transform-box: view-box;
+  transform-origin: 0 0;
+  transition:
+    transform 240ms ease-out,
+    opacity 220ms ease-out;
+  animation: structure-node-fade 220ms ease-out;
 }
 
 .structure-edge--agreement,
@@ -1642,6 +1710,11 @@ onBeforeUnmount(() => {
   fill: #3b9b6d;
 }
 
+.structure-node__box--public_float {
+  fill: #cbd5e1;
+  stroke-dasharray: 7 4;
+}
+
 .structure-node__box--government {
   fill: #c9792d;
 }
@@ -1655,6 +1728,12 @@ onBeforeUnmount(() => {
   stroke: #1e293b;
   stroke-width: 3.6;
   filter: drop-shadow(0 9px 13px rgba(15, 23, 42, 0.16));
+}
+
+.structure-node__box--role-direct,
+.structure-node__box--role-intermediate,
+.structure-node__box--role-support {
+  fill: #64748b;
 }
 
 .structure-node__box--role-actualSummary {
@@ -1744,6 +1823,21 @@ onBeforeUnmount(() => {
   font-size: 14px;
   font-weight: 800;
   pointer-events: none;
+}
+
+@keyframes structure-node-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes structure-edge-fade {
+  from {
+    opacity: 0;
+  }
 }
 
 .control-structure-tooltip {

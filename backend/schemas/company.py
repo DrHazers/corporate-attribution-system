@@ -56,6 +56,7 @@ class RelationshipGraphNodeRead(BaseModel):
     id: int = Field(description="Shareholder entity primary key.")
     entity_id: int = Field(description="Alias of the node identifier for graph rendering.")
     entity_name: str = Field(description="Canonical shareholder entity name.")
+    label: str | None = Field(default=None, description="Alias display label.")
     name: str = Field(description="Frontend-friendly display name.")
     entity_type: str = Field(description="Mapped shareholder entity type.")
     country: str | None = Field(
@@ -74,15 +75,41 @@ class RelationshipGraphNodeRead(BaseModel):
         default=None,
         description="Whether the entity is marked as listed in shareholder data.",
     )
+    entity_subtype: str | None = Field(default=None, description="Optional entity subtype.")
+    ultimate_owner_hint: bool | None = Field(default=None, description="Ultimate owner hint flag.")
+    look_through_priority: int | None = Field(default=None, description="Look-through priority.")
+    controller_class: str | None = Field(default=None, description="Controller class hint.")
+    beneficial_owner_disclosed: bool | None = Field(
+        default=None,
+        description="Whether beneficial owner disclosure exists.",
+    )
     notes: str | None = Field(default=None, description="Free-text notes on the entity.")
     is_root: bool = Field(
         description="Whether the node is the mapped shareholder entity for the requested company."
     )
+    is_target: bool = Field(default=False, description="Whether this node is the target entity.")
+    is_actual_controller: bool = Field(default=False, description="Actual controller highlight.")
+    is_direct_controller: bool = Field(default=False, description="Direct controller highlight.")
+    is_intermediate_controller: bool = Field(
+        default=False,
+        description="Intermediate controller highlight.",
+    )
+    is_ultimate_controller: bool = Field(default=False, description="Ultimate controller highlight.")
+    is_public_float: bool = Field(default=False, description="Public float node flag.")
+    is_on_actual_control_path: bool = Field(
+        default=False,
+        description="Whether this node appears on the actual controller path.",
+    )
+    controller_role: str | None = Field(default=None, description="Controller role label.")
+    control_tier: str | None = Field(default=None, description="Stored control tier.")
+    display_priority: int | None = Field(default=None, description="Frontend display priority.")
 
 
 class RelationshipGraphEdgeRead(BaseModel):
     id: int = Field(description="Shareholder structure primary key.")
     structure_id: int = Field(description="Alias of the edge identifier for graph rendering.")
+    from_: int = Field(alias="from", description="Alias of upstream shareholder entity id.")
+    to: int = Field(description="Alias of downstream target entity id.")
     from_entity_id: int = Field(description="Upstream shareholder entity id.")
     from_entity_name: str | None = Field(
         default=None,
@@ -97,6 +124,12 @@ class RelationshipGraphEdgeRead(BaseModel):
         default=None,
         description="Shareholding ratio serialized as a string percentage.",
     )
+    voting_ratio: str | None = Field(default=None, description="Voting ratio.")
+    economic_ratio: str | None = Field(default=None, description="Economic ratio.")
+    effective_control_ratio: str | None = Field(
+        default=None,
+        description="Effective control ratio.",
+    )
     is_direct: bool = Field(description="Whether the relationship is direct.")
     control_type: str | None = Field(
         default=None,
@@ -108,6 +141,9 @@ class RelationshipGraphEdgeRead(BaseModel):
     has_numeric_ratio: bool = Field(
         description="Whether the edge contributes a numeric ownership ratio."
     )
+    is_beneficial_control: bool = Field(default=False, description="Beneficial control flag.")
+    look_through_allowed: bool = Field(default=True, description="Look-through traversal flag.")
+    termination_signal: str | None = Field(default=None, description="Termination signal.")
     relation_role: str | None = Field(
         default=None,
         description="Normalized role of the relationship such as ownership or governance.",
@@ -153,6 +189,10 @@ class RelationshipGraphEdgeRead(BaseModel):
         description="Expiry date normalized to YYYY-MM-DD when present.",
     )
     is_current: bool = Field(description="Whether the shareholder structure is marked current.")
+    is_on_actual_control_path: bool = Field(
+        default=False,
+        description="Whether this edge appears on the actual controller path.",
+    )
     source: str | None = Field(
         default=None,
         description="Source field stored on the shareholder structure.",
@@ -176,6 +216,19 @@ class CompanyRelationshipGraphRead(BaseModel):
     target_entity_id: int | None = Field(
         default=None,
         description="Mapped shareholder entity id used as the graph root.",
+    )
+    country_attribution: dict[str, Any] | None = Field(
+        default=None,
+        description="Latest country attribution summary for graph side panels.",
+    )
+    max_depth: int | None = Field(default=None, description="Upstream traversal depth.")
+    filtered_count: int = Field(
+        default=0,
+        description="Number of relationships filtered by display threshold.",
+    )
+    omitted_count: int = Field(
+        default=0,
+        description="Alias of filtered_count for frontend empty-state copy.",
     )
     node_count: int = Field(description="Number of graph nodes returned in the payload.")
     edge_count: int = Field(description="Number of graph edges returned in the payload.")

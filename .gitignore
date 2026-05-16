@@ -10,6 +10,7 @@ tests/output/
 tests/output_demo_graphs/
 data_import_tmp/
 exports/
+export/
 _industry_import_tmp/
 logs/
 docs/deepseek_api.txt

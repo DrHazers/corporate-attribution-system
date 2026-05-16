@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from backend.database_config import (
@@ -18,9 +20,51 @@ SEEDED_DEVELOPMENT_DATABASE_NAMES = {
     "company_import_test.db",
 }
 DEFAULT_DATABASE_URL = get_default_application_database_url()
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+def load_env_file() -> None:
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+
+
+def is_sqlite_url(database_url: str) -> bool:
+    return make_url(database_url).get_backend_name() == "sqlite"
+
+
+def is_postgres_url(database_url: str) -> bool:
+    return make_url(database_url).get_backend_name() == "postgresql"
+
+
+def render_database_url(database_url: str | None = None) -> str:
+    return make_url(database_url or DATABASE_URL).render_as_string(hide_password=True)
+
+
+def get_database_url() -> str:
+    load_env_file()
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return database_url
+
+    print(
+        "DATABASE_URL is not set; falling back to SQLite development database: "
+        f"{DEFAULT_DATABASE_URL}"
+    )
+    return DEFAULT_DATABASE_URL
+
+
+def create_engine_from_url(database_url: str) -> Engine:
+    if is_sqlite_url(database_url):
+        return create_engine(
+            database_url,
+            connect_args={"check_same_thread": False},
+        )
+    if is_postgres_url(database_url):
+        return create_engine(database_url, pool_pre_ping=True)
+    return create_engine(database_url)
+
+
+DATABASE_URL = get_database_url()
+
+engine = create_engine_from_url(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

@@ -15,15 +15,23 @@ from sqlalchemy import (
     DateTime,
     Integer,
     Numeric,
-    create_engine,
     false,
     text,
     true,
 )
-from sqlalchemy.engine import Connection, make_url
+from sqlalchemy.engine import Connection
 from sqlalchemy.schema import DefaultClause
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.database import (  # noqa: E402
+    create_engine_from_url,
+    is_postgres_url,
+    load_env_file,
+    render_database_url,
+)
+
 DEFAULT_INPUT_DIR = PROJECT_ROOT / "data" / "final_enhanced_input_tables_csv"
 
 IMPORT_ORDER = [
@@ -66,22 +74,22 @@ def raise_csv_field_limit() -> None:
 
 
 def require_database_url() -> str:
+    load_env_file()
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise SystemExit(
             "DATABASE_URL is required. Refusing to default to SQLite for this import."
         )
 
-    url = make_url(database_url)
-    if url.get_backend_name() != "postgresql":
+    if not is_postgres_url(database_url):
         raise SystemExit(
-            f"DATABASE_URL must point to PostgreSQL, got backend: {url.get_backend_name()}"
+            "DATABASE_URL must point to PostgreSQL, got: "
+            f"{render_database_url(database_url)}"
         )
     return database_url
 
 
 def load_metadata():
-    sys.path.insert(0, str(PROJECT_ROOT))
     import backend.models  # noqa: F401
     from backend.database import Base
 
@@ -387,7 +395,8 @@ def main() -> None:
 
     database_url = require_database_url()
     Base = load_metadata()
-    engine = create_engine(database_url, future=True)
+    print(f"database: {render_database_url(database_url)}")
+    engine = create_engine_from_url(database_url)
 
     missing_tables = [name for name in IMPORT_ORDER if name not in Base.metadata.tables]
     if missing_tables:

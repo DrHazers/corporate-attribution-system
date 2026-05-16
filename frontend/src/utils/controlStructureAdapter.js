@@ -4,7 +4,7 @@ export const CONTROL_STRUCTURE_DISPLAY_CONFIG = {
   maxAutoExpandedKeyPathDepth: 8,
 }
 
-const ENTITY_TYPES = ['company', 'person', 'fund', 'government', 'other']
+const ENTITY_TYPES = ['company', 'person', 'institution', 'fund', 'government', 'public_float', 'other']
 const SEMANTIC_RELATION_TYPES = new Set([
   'agreement',
   'agreement_control',
@@ -100,6 +100,8 @@ function normalizedRatioForComparison(value) {
 function ratioFromEdge(edge = {}) {
   return (
     ratioFromValue(edge?.holding_ratio) ??
+    ratioFromValue(edge?.effective_control_ratio) ??
+    ratioFromValue(edge?.voting_ratio) ??
     ratioFromValue(edge?.control_ratio) ??
     ratioFromValue(edge?.numeric_factor)
   )
@@ -118,7 +120,7 @@ function buildEntityLookup(relationshipGraph = {}) {
     lookup.set(key, {
       id: key,
       name: safeText(node?.name || node?.entity_name, `Entity ${key}`),
-      entityType: normalizeEntityType(node?.entity_type),
+      entityType: node?.is_public_float ? 'public_float' : normalizeEntityType(node?.entity_type),
       country: node?.country || null,
       raw: node,
     })
@@ -477,6 +479,7 @@ function addCanonicalNode(nodeMap, nodeLike, extra = {}) {
     isDirectUpstream: Boolean(extra.isDirectUpstream || existing?.isDirectUpstream),
     isSecondLayerCandidate: Boolean(extra.isSecondLayerCandidate || existing?.isSecondLayerCandidate),
     isKeyPath: Boolean(extra.isKeyPath || existing?.isKeyPath),
+    isPublicFloat: Boolean(extra.isPublicFloat || existing?.isPublicFloat || nodeLike?.raw?.is_public_float),
     keyPathIndex:
       extra.keyPathIndex ?? existing?.keyPathIndex ?? (extra.isKeyPath ? Number.MAX_SAFE_INTEGER : null),
     bestDownstreamRatio:
@@ -568,7 +571,22 @@ function addCanonicalEdge(edgeMap, edgeLike = {}) {
 
 function addGraphNodes(nodeMap, entityLookup) {
   entityLookup.forEach((entity) => {
-    addCanonicalNode(nodeMap, entity)
+    addCanonicalNode(nodeMap, entity, {
+      isActualController: Boolean(entity.raw?.is_actual_controller),
+      isFocused: false,
+      isDirectUpstream: Boolean(entity.raw?.is_direct_controller),
+      isKeyPath: Boolean(entity.raw?.is_on_actual_control_path),
+      isPublicFloat: Boolean(entity.raw?.is_public_float),
+      role: entity.raw?.is_target
+        ? 'target'
+        : entity.raw?.is_actual_controller
+          ? 'actualController'
+          : entity.raw?.is_direct_controller
+            ? 'direct'
+            : entity.raw?.is_on_actual_control_path
+              ? 'intermediate'
+              : 'support',
+    })
   })
 }
 
@@ -582,6 +600,8 @@ function addGraphEdges(edgeMap, relationshipGraph = {}) {
       target: edge?.to_entity_id,
       relationType: edge?.relation_type || edge?.control_type,
       controlRatio: ratioFromEdge(edge),
+      isKeyPath: Boolean(edge?.is_on_actual_control_path),
+      isPrimary: Boolean(edge?.is_on_actual_control_path),
       isVirtual: false,
       origin: 'graph',
     })
@@ -812,9 +832,8 @@ function buildKeyPathMetadata(pathSteps = []) {
   }
 }
 
-function buildDefaultExpandedNodeIds(keyPathNodeIds = [], config = {}) {
-  const maxDepth = config.maxAutoExpandedKeyPathDepth ?? CONTROL_STRUCTURE_DISPLAY_CONFIG.maxAutoExpandedKeyPathDepth
-  return keyPathNodeIds.slice(2, Math.max(2, keyPathNodeIds.length - 1)).slice(0, maxDepth)
+function buildDefaultExpandedNodeIds() {
+  return []
 }
 
 function buildExpansionSeed({
@@ -1028,7 +1047,15 @@ export function buildControlStructureModel({
   }))
 
   const summaryControllerNode = nodeMap.get(summaryControllerId) || null
-  const defaultExpandedNodeIds = buildDefaultExpandedNodeIds(keyPath.nodeIds, config)
+  const defaultExpandedNodeIds = buildDefaultExpandedNodeIds({
+    targetId: target.id,
+    incoming: structural.incoming,
+    keyPathNodeIds: keyPath.nodeIds,
+    config: {
+      ...config,
+      relationshipGraphMaxDepth: relationshipGraph?.max_depth ?? 3,
+    },
+  })
 
   if (!edges.length && !directUpstreamIds.length && !summaryControllerId) {
     return {

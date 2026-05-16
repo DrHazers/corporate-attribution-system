@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 
@@ -16,6 +17,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.analysis.ownership_penetration import refresh_company_control_analysis  # noqa: E402
+from backend.database import (  # noqa: E402
+    create_engine_from_url,
+    is_sqlite_url,
+    load_env_file,
+    render_database_url,
+)
 
 
 DEFAULT_DATABASE = PROJECT_ROOT / "ultimate_controller_test_dataset.db"
@@ -47,6 +54,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_database_target(database: Path) -> dict[str, Any]:
+    load_env_file()
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return {
+            "kind": "url",
+            "url": database_url,
+            "is_sqlite": is_sqlite_url(database_url),
+            "display": render_database_url(database_url),
+        }
+
+    database_path = validate_database_path(database)
+    return {
+        "kind": "sqlite",
+        "path": database_path,
+        "is_sqlite": True,
+        "display": str(database_path),
+    }
+
+
 def validate_database_path(database: Path) -> Path:
     database = database.expanduser().resolve()
     if database.name in PROTECTED_DATABASE_NAMES:
@@ -56,31 +83,26 @@ def validate_database_path(database: Path) -> Path:
     return database
 
 
-def create_session_factory(database: Path):
-    engine = create_engine(
-        f"sqlite:///{database}",
-        connect_args={"check_same_thread": False},
-    )
+def create_session_factory(target: dict[str, Any]):
+    if target["kind"] == "url":
+        engine = create_engine_from_url(target["url"])
+    else:
+        engine = create_engine_from_url(f"sqlite:///{target['path']}")
 
-    @event.listens_for(engine, "connect")
-    def _set_sqlite_pragma(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA foreign_keys=ON")
-        finally:
-            cursor.close()
+    if target["is_sqlite"]:
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_connection, _connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
 
     return engine, sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def table_exists(db, table_name: str) -> bool:
-    return (
-        db.execute(
-            text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:table_name"),
-            {"table_name": table_name},
-        ).first()
-        is not None
-    )
+    return inspect(db.get_bind()).has_table(table_name)
 
 
 def count_table(db, table_name: str) -> int:
@@ -124,6 +146,8 @@ def collect_orphan_counts(db) -> dict[str, int]:
 
 
 def collect_foreign_key_errors(db) -> list[dict[str, Any]]:
+    if not is_sqlite_url(str(db.get_bind().url)):
+        return []
     return [dict(row) for row in db.execute(text("PRAGMA foreign_key_check")).mappings()]
 
 
@@ -195,8 +219,8 @@ def collect_result_flags(db) -> dict[str, int]:
     }
 
 
-def run_refresh(database: Path) -> dict[str, Any]:
-    engine, session_factory = create_session_factory(database)
+def run_refresh(target: dict[str, Any]) -> dict[str, Any]:
+    engine, session_factory = create_session_factory(target)
     started_at = perf_counter()
 
     with session_factory() as db:
@@ -257,7 +281,7 @@ def run_refresh(database: Path) -> dict[str, Any]:
         result_flags = collect_result_flags(db)
 
     summary = {
-        "database_path": str(database),
+        "database_path": target["display"],
         "pre_counts": pre_counts,
         "orphan_counts": orphan_counts,
         "foreign_key_error_count": len(foreign_key_errors),
@@ -281,8 +305,8 @@ def run_refresh(database: Path) -> dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
-    database = validate_database_path(args.database)
-    summary = run_refresh(database)
+    target = resolve_database_target(args.database)
+    summary = run_refresh(target)
 
     output_json = args.output_json.expanduser().resolve()
     output_json.parent.mkdir(parents=True, exist_ok=True)

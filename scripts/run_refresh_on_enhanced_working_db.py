@@ -8,8 +8,7 @@ import sys
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import make_url
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import sessionmaker
 
 
@@ -21,6 +20,13 @@ os.environ["CONTROL_INFERENCE_ENGINE"] = "unified"
 os.environ["CONTROL_INFERENCE_DISABLE_LEGACY_FALLBACK"] = "1"
 
 from backend.analysis.control_inference import build_control_context  # noqa: E402
+from backend.database import (  # noqa: E402
+    create_engine_from_url,
+    is_postgres_url,
+    is_sqlite_url,
+    load_env_file,
+    render_database_url,
+)
 from backend.analysis.ownership_penetration import (  # noqa: E402
     DEFAULT_DISCLOSURE_THRESHOLD_PCT,
     DEFAULT_MAJORITY_THRESHOLD_PCT,
@@ -91,18 +97,27 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_database_target(database: Path) -> dict[str, Any]:
+    load_env_file()
     database_url = os.getenv("DATABASE_URL")
     if database_url:
+        if is_postgres_url(database_url):
+            database_type = "postgresql"
+        elif is_sqlite_url(database_url):
+            database_type = "sqlite"
+        else:
+            database_type = "other"
         return {
             "kind": "url",
             "url": database_url,
-            "display": make_url(database_url).render_as_string(hide_password=True),
+            "database_type": database_type,
+            "display": render_database_url(database_url),
         }
 
     database_path = validate_database_path(database)
     return {
         "kind": "sqlite",
         "path": database_path,
+        "database_type": "sqlite",
         "display": str(database_path),
     }
 
@@ -118,12 +133,9 @@ def validate_database_path(database: Path) -> Path:
 
 def create_session_factory(target: dict[str, Any]):
     if target["kind"] == "url":
-        engine = create_engine(target["url"])
+        engine = create_engine_from_url(target["url"])
     else:
-        engine = create_engine(
-            f"sqlite:///{target['path']}",
-            connect_args={"check_same_thread": False},
-        )
+        engine = create_engine_from_url(f"sqlite:///{target['path']}")
     return engine, sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -398,6 +410,7 @@ def run_refresh(
         engine.dispose()
 
     return {
+        "database_type": target["database_type"],
         "database_target": target["display"],
         "pre_counts": pre_counts,
         "cleared_output": cleared_output,
@@ -429,6 +442,7 @@ def main() -> int:
     )
     write_markdown_report(args.output_md, summary)
 
+    print(f"database_type: {summary['database_type']}")
     print(f"database: {summary['database_target']}")
     print("pre_counts:")
     for table_name in INPUT_TABLES:

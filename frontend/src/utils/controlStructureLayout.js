@@ -21,6 +21,8 @@ export const CONTROL_STRUCTURE_LAYOUT_CONFIG = {
   },
 }
 
+const DIRECT_SHAREHOLDER_DEFAULT_LIMIT = 8
+
 function toKey(value) {
   return value === null || value === undefined ? '' : String(value)
 }
@@ -142,7 +144,7 @@ function resolveTreeNodeRole(node, instance) {
   if (node?.isFocused) {
     return 'focused'
   }
-  if (instance.depthFromTarget === 1) {
+  if (Math.abs(Number(instance.depthFromTarget) || 0) === 1) {
     return 'direct'
   }
   if (instance.onKeyPath) {
@@ -258,17 +260,14 @@ function buildLowerRootInstances({
   incomingMap,
   expandedByNodeId,
   keyParentByNodeId,
-  summaryControllerId,
+  rootIds = [],
   mainPathNodeIds = [],
   suppressedBranchNodeIds = [],
 }) {
   const targetId = toKey(model?.targetId)
   const mainPathNodeIdSet = new Set(uniqueIds(mainPathNodeIds))
-  const rootIds = (Array.isArray(model?.directUpstreamIds) ? model.directUpstreamIds : [])
-    .map((id) => toKey(id))
-    .filter((id) => id && id !== summaryControllerId && !mainPathNodeIdSet.has(id))
   const excludedNodeIds = new Set(
-    [summaryControllerId, ...mainPathNodeIdSet, ...suppressedBranchNodeIds].filter(
+    [...mainPathNodeIdSet, ...suppressedBranchNodeIds].filter(
       (id) => id && id !== targetId,
     ),
   )
@@ -290,6 +289,55 @@ function buildLowerRootInstances({
       }),
     )
     .filter(Boolean)
+}
+
+function buildSupplementalRootIds({
+  model,
+  mainPathNodeIds = [],
+}) {
+  const mainPathNodeIdSet = new Set(uniqueIds(mainPathNodeIds))
+  return (Array.isArray(model?.directUpstreamIds) ? model.directUpstreamIds : [])
+    .map((id) => toKey(id))
+    .filter((id) => id && !mainPathNodeIdSet.has(id))
+}
+
+function buildSupplementalGroupContext({
+  model,
+  mainPathNodeIds = [],
+  expandedByNodeId = {},
+}) {
+  const rootIds = buildSupplementalRootIds({
+    model,
+    mainPathNodeIds,
+  })
+  const targetId = toKey(model?.targetId)
+  const id = targetId ? `supplemental:${targetId}` : 'supplemental'
+  const directUpstreamIds = uniqueIds(model?.directUpstreamIds)
+  const mainPathNodeIdSet = new Set(uniqueIds(mainPathNodeIds))
+  const directRootLimit = Math.max(
+    1,
+    Number(model?.directShareholderDefaultLimit || DIRECT_SHAREHOLDER_DEFAULT_LIMIT),
+  )
+  const mainPathDirectCount = directUpstreamIds.filter((id) => mainPathNodeIdSet.has(id)).length
+  const visibleNonMainLimit = Math.max(1, directRootLimit - mainPathDirectCount)
+  const shouldCollapseLowPriority = directUpstreamIds.length > directRootLimit
+  const expanded = isExpanded(expandedByNodeId, id)
+  const visibleRootIds = shouldCollapseLowPriority || expanded
+    ? rootIds.slice(0, visibleNonMainLimit)
+    : rootIds
+  const collapsedRootIds = shouldCollapseLowPriority ? rootIds.slice(visibleNonMainLimit) : []
+
+  return {
+    id,
+    renderKey: 'supplemental-group',
+    rootIds,
+    visibleRootIds,
+    collapsedRootIds,
+    count: collapsedRootIds.length,
+    totalDirectRootCount: rootIds.length,
+    visibleDirectRootCount: visibleRootIds.length,
+    expanded,
+  }
 }
 
 function mainPathExtraIncomingEdges({
@@ -455,9 +503,9 @@ function orderRoots(roots, nodeMap, rootEdgeBySourceId, centerRootId = '') {
     return null
   }
 
-  const centerRoot =
-    ordered.find((root) => toKey(root.canonicalId) === toKey(centerRootId)) || ordered[0] || null
-  const others = centerRoot ? ordered.filter((root) => root !== centerRoot) : []
+  const matchedCenterRoot = ordered.find((root) => toKey(root.canonicalId) === toKey(centerRootId))
+  const centerRoot = matchedCenterRoot || (centerRootId ? null : ordered[0] || null)
+  const others = centerRoot ? ordered.filter((root) => root !== centerRoot) : ordered
   const left = []
   const right = []
 
@@ -470,6 +518,25 @@ function orderRoots(roots, nodeMap, rootEdgeBySourceId, centerRootId = '') {
   })
 
   return { centerRoot, left, right }
+}
+
+function orderRootsForCenteredLayer(roots, nodeMap, rootEdgeBySourceId) {
+  const ordered = [...roots].sort((left, right) => {
+    const priorityDelta =
+      rootPriority(left, rootEdgeBySourceId) - rootPriority(right, rootEdgeBySourceId)
+    if (priorityDelta !== 0) {
+      return priorityDelta
+    }
+    return safeText(nodeMap.get(toKey(left.canonicalId))?.name).localeCompare(
+      safeText(nodeMap.get(toKey(right.canonicalId))?.name),
+    )
+  })
+
+  if (ordered.length === 3) {
+    return [ordered[1], ordered[0], ordered[2]]
+  }
+
+  return ordered
 }
 
 function assignInstancePositions(instance, bandLeft, bandRight, placed = [], downstreamRenderKey = 'target-node') {
@@ -499,6 +566,27 @@ function assignInstancePositions(instance, bandLeft, bandRight, placed = [], dow
   return placed
 }
 
+function placeCenteredLayerBands(roots, nodeMap, rootEdgeBySourceId) {
+  const ordered = orderRootsForCenteredLayer(roots, nodeMap, rootEdgeBySourceId)
+  if (!ordered.length) {
+    return []
+  }
+
+  const totalWidth =
+    ordered.reduce((sum, root) => sum + root.bandWidth, 0) +
+    CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap * Math.max(0, ordered.length - 1)
+  let cursor = -totalWidth / 2
+
+  return ordered.map((root) => {
+    const centerX = cursor + root.bandWidth / 2
+    cursor += root.bandWidth + CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap
+    return {
+      instance: root,
+      centerX,
+    }
+  })
+}
+
 function placeRootBands(roots, nodeMap, rootEdgeBySourceId, centerRootId = '') {
   const arrangement = orderRoots(roots, nodeMap, rootEdgeBySourceId, centerRootId)
   if (!arrangement) {
@@ -507,7 +595,7 @@ function placeRootBands(roots, nodeMap, rootEdgeBySourceId, centerRootId = '') {
 
   const placements = []
   const { centerRoot, left, right } = arrangement
-  const centerWidth = centerRoot?.bandWidth || 0
+  const centerWidth = centerRoot?.bandWidth || (centerRootId ? getNodeSize('support').width : 0)
 
   if (centerRoot) {
     placements.push({
@@ -584,6 +672,17 @@ function collectPlacedTreeNodes(rootPlacements = [], rootDownstreamRenderKey = '
   return placed
 }
 
+function supplementalGroupX(rootPlacements = []) {
+  if (!rootPlacements.length) {
+    return 0
+  }
+
+  const rightEdge = Math.max(
+    ...rootPlacements.map(({ instance, centerX }) => centerX + instance.bandWidth / 2),
+  )
+  return rightEdge + CONTROL_STRUCTURE_LAYOUT_CONFIG.rootGap + getNodeSize('support').width / 2
+}
+
 function buildRenderNodes({
   model,
   nodeMap,
@@ -592,6 +691,7 @@ function buildRenderNodes({
   expandedByNodeId,
   mainPath,
   mainPathBranchStats,
+  supplementalGroup,
 }) {
   const renderNodes = []
   const summaryControllerId = toKey(model?.summaryControllerId)
@@ -683,6 +783,43 @@ function buildRenderNodes({
     relationDirection: 'controlledBy',
   })
 
+  if (supplementalGroup?.count > 0) {
+    const size = getNodeSize('support')
+    renderNodes.push({
+      renderKey: supplementalGroup.renderKey,
+      id: supplementalGroup.id,
+      name: `其他股东 ${supplementalGroup.count}`,
+      entityType: 'other',
+      country: null,
+      role: 'supplementalGroup',
+      width: size.width,
+      height: size.height,
+      radius: 10,
+      row: 1,
+      x: Number.isFinite(supplementalGroup.x) ? supplementalGroup.x : 0,
+      branchDirection: 'down',
+      expandable: true,
+      expanded: Boolean(supplementalGroup.expanded),
+      hiddenUpstreamCount: supplementalGroup.expanded ? 0 : supplementalGroup.count,
+      isKeyPath: false,
+      isMainPath: false,
+      displayGroup: 'collapsed_group',
+      isSupplementCollapsed: !supplementalGroup.expanded,
+      depthFromTarget: 1,
+      downstreamId: targetId,
+      relationType: 'other',
+      controlRatio: null,
+      multiPathConvergence: null,
+      relatedEntityId: targetId,
+      relatedEntityName: model?.targetName || null,
+      relationDirection: 'supplemental',
+      isSupplementalGroup: true,
+      supplementalCount: supplementalGroup.count,
+      totalDirectRootCount: supplementalGroup.totalDirectRootCount,
+      visibleDirectRootCount: supplementalGroup.visibleDirectRootCount,
+    })
+  }
+
   placedTreeNodes.forEach((instance) => {
     const canonical = nodeMap.get(toKey(instance.canonicalId))
     if (!canonical) {
@@ -708,6 +845,9 @@ function buildRenderNodes({
       expanded: instance.expanded,
       hiddenUpstreamCount: instance.hiddenUpstreamCount,
       isKeyPath: instance.onKeyPath,
+      displayGroup: instance.depthFromTarget === 1 ? 'direct_shareholder' : 'expanded_supplement',
+      isFirstLayerShareholder: instance.depthFromTarget === 1,
+      parentEntityId: instance.downstreamId,
       depthFromTarget: instance.depthFromTarget,
       downstreamId: instance.downstreamId,
       rootId: instance.rootId,
@@ -816,6 +956,40 @@ function buildTreeEdges({ placedTreeNodes, renderNodes, edgeMap }) {
   return edges
 }
 
+function buildSupplementalGroupEdges({ supplementalGroup, renderNodes }) {
+  if (!supplementalGroup?.count) {
+    return []
+  }
+
+  const renderNodeByKey = new Map(renderNodes.map((node) => [node.renderKey, node]))
+  const groupNode = renderNodeByKey.get(supplementalGroup.renderKey)
+  const targetNode = renderNodeByKey.get('target-node')
+  if (!groupNode || !targetNode) {
+    return []
+  }
+
+  return [
+    {
+      id: `supplemental-group:${groupNode.renderKey}->target-node`,
+      sourceRenderKey: groupNode.renderKey,
+      targetRenderKey: 'target-node',
+      relationType: 'other',
+      controlRatio: null,
+      isKeyPath: false,
+      isPrimary: false,
+      isCollapsed: !supplementalGroup.expanded,
+      isBranch: true,
+      branchDepth: 1,
+      branchDirection: 'down',
+      controlSubjectId: groupNode.id,
+      controlSubjectName: groupNode.name,
+      controlObjectId: targetNode.id,
+      controlObjectName: targetNode.name,
+      isSupplementalGroupEdge: true,
+    },
+  ]
+}
+
 function edgeAnchor(node, side, direction = 'down') {
   const verticalOffset = node.height / 2
   if (side === 'source') {
@@ -859,7 +1033,8 @@ function translateToViewport(renderNodes, renderEdges) {
   const minY = Math.min(...renderNodes.map((node) => node.y - node.height / 2))
   const maxY = Math.max(...renderNodes.map((node) => node.y + node.height / 2))
 
-  const contentWidth = maxX - minX
+  const anchoredContentHalfWidth = Math.max(Math.abs(minX), Math.abs(maxX))
+  const contentWidth = anchoredContentHalfWidth * 2
   const contentHeight = maxY - minY
   const width = Math.max(
     CONTROL_STRUCTURE_LAYOUT_CONFIG.minWidth,
@@ -870,7 +1045,7 @@ function translateToViewport(renderNodes, renderEdges) {
     Math.round(contentHeight + CONTROL_STRUCTURE_LAYOUT_CONFIG.paddingY * 2),
   )
 
-  const shiftX = Math.round((width - contentWidth) / 2 - minX)
+  const shiftX = Math.round(width / 2)
   const shiftY = Math.round((height - contentHeight) / 2 - minY)
 
   const shiftedNodes = renderNodes.map((node) => ({
@@ -911,9 +1086,13 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
   const edgeMap = buildEdgeMap(model?.edges)
   const incomingMap = buildIncomingMap(model?.edges)
   const keyParentByNodeId = buildKeyParentMap(model)
-  const summaryControllerId = toKey(model?.summaryControllerId)
   const suppressedBranchNodeIds = uniqueIds(model?.multiPathConvergenceNodeIds)
   const mainPath = buildMainPathContext(model)
+  const supplementalGroup = buildSupplementalGroupContext({
+    model,
+    mainPathNodeIds: mainPath.nodeIds,
+    expandedByNodeId,
+  })
   const mainPathBranchStats = buildMainPathBranchStats({
     mainPath,
     incomingMap,
@@ -928,7 +1107,10 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     incomingMap,
     expandedByNodeId,
     keyParentByNodeId,
-    summaryControllerId,
+    rootIds: [
+      ...supplementalGroup.visibleRootIds,
+      ...(supplementalGroup.expanded ? supplementalGroup.collapsedRootIds : []),
+    ],
     mainPathNodeIds: mainPath.nodeIds,
     suppressedBranchNodeIds,
   }).map((root) => measureInstanceTree(root, nodeMap))
@@ -944,12 +1126,15 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     roots: group.roots.map((root) => measureInstanceTree(root, nodeMap)),
   }))
 
-  const lowerRootPlacements = placeRootBands(
+  const lowerRootPlacements = placeCenteredLayerBands(
     lowerRootInstances,
     nodeMap,
     buildRootEdgeLookup(model?.targetId, incomingMap),
-    model?.keyPathFirstLayerId,
   )
+  const positionedSupplementalGroup = {
+    ...supplementalGroup,
+    x: supplementalGroup.count > 0 ? supplementalGroupX(lowerRootPlacements) : 0,
+  }
   const mainPathBranchPlacedNodes = mainPathBranchGroups.flatMap((group) =>
     collectPlacedTreeNodes(
       placeSideBranchBands(group.roots, nodeMap, buildRootEdgeLookup(group.anchorId, incomingMap)),
@@ -968,12 +1153,17 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     expandedByNodeId,
     mainPath,
     mainPathBranchStats,
+    supplementalGroup: positionedSupplementalGroup,
   })
 
   const treeEdges = buildTreeEdges({
     placedTreeNodes,
     renderNodes,
     edgeMap,
+  })
+  const supplementalGroupEdges = buildSupplementalGroupEdges({
+    supplementalGroup: positionedSupplementalGroup,
+    renderNodes,
   })
 
   const mainPathEdges = buildMainPathEdges({
@@ -984,7 +1174,7 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
 
   const viewport = translateToViewport(
     renderNodes,
-    [...mainPathEdges, ...treeEdges],
+    [...mainPathEdges, ...treeEdges, ...supplementalGroupEdges],
   )
 
   return {
@@ -1002,5 +1192,6 @@ export function computeControlStructureLayout(model = {}, expandedByNodeId = {})
     nodes: viewport.nodes,
     edges: viewport.edges,
     mainPathNodeIds: mainPath.nodeIds,
+    supplementalGroup: positionedSupplementalGroup,
   }
 }

@@ -54,7 +54,7 @@ def health_check():
     default_database = describe_default_application_database()
     return {
         "status": "ok",
-        "database_url": database_module.DATABASE_URL,
+        "database_url": database_module.render_database_url(),
         "database_path": str(database_module.get_database_path() or ""),
         "configured_default_database": default_database,
     }

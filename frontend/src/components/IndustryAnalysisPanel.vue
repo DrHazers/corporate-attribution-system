@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
 
@@ -73,6 +73,7 @@ const summaryPeriodSelectRef = ref(null)
 const detailClassifications = ref([])
 const llmSuggestionPayload = ref(null)
 const manualOverrides = ref({})
+const manualReviewSection = ref(null)
 const manualDraft = reactive({
   level_1: '',
   level_2: '',
@@ -80,6 +81,8 @@ const manualDraft = reactive({
   level_4: '',
   mapping_basis: '',
   final_confirmed: true,
+  segment_type_review_action: 'keep_current',
+  segment_type_review_note: '',
 })
 
 const rawSegments = computed(() => props.industryAnalysis?.segments || [])
@@ -198,15 +201,26 @@ const pendingAnalysisSummary = computed(() => {
   }
 })
 
-const primaryIndustryTags = computed(() =>
-  allIndustryLabels.value
+const primaryIndustryRelatedItems = computed(() => {
+  const primary = String(primaryIndustrySummary.value || '').trim()
+  const seen = new Set()
+  return allIndustryLabels.value
+    .map((label) => String(label || '').trim())
     .filter(Boolean)
-    .slice(0, 6)
+    .filter((label) => {
+      const key = label.toLowerCase()
+      if (key === primary.toLowerCase() || seen.has(key)) {
+        return false
+      }
+      seen.add(key)
+      return true
+    })
     .map((label, index) => ({
-      key: `industry-label-${index}`,
+      key: `related-industry-${index}`,
       label,
-    })),
-)
+      index: index + 1,
+    }))
+})
 
 const companyInfoTags = computed(() => {
   const tags = []
@@ -243,7 +257,7 @@ const topSummaryMetrics = computed(() => [
     label: '主营分类摘要',
     value: primaryIndustrySummary.value,
     description: '展示当前业务线的主要行业分类',
-    tags: primaryIndustryTags.value,
+    relatedIndustries: primaryIndustryRelatedItems.value,
     emphasis: true,
   },
   {
@@ -304,6 +318,150 @@ const effectiveClassifications = computed(() => {
     : selectedSegment.value?.classifications || []
 })
 const selectedClassification = computed(() => effectiveClassifications.value[0] || null)
+
+function fallbackText(value, fallback = '—') {
+  if (value === null || value === undefined || value === '') {
+    return fallback
+  }
+  return value
+}
+
+function classificationSourceText(classification) {
+  const source =
+    classification?.classification_source ||
+    classification?.source ||
+    classification?.classifier_type ||
+    classification?.result_source
+  if (!source) {
+    return '暂无来源'
+  }
+  return classifierTypeLabel(source) || source
+}
+
+function classificationAdoptionText(classification) {
+  if (!classification) {
+    return '待复核'
+  }
+  if (classification.is_final || classification.final_confirmed || classification.mark_as_final) {
+    return '最终采用'
+  }
+  if (classification.review_status === 'confirmed') {
+    return '已确认'
+  }
+  if (classification.review_status) {
+    return reviewStatusLabel(classification.review_status)
+  }
+  return '规则建议'
+}
+
+function classificationFinalText(classification) {
+  return classification?.is_final || classification?.final_confirmed || classification?.mark_as_final
+    ? '是'
+    : '否'
+}
+
+function classificationMappingPath(classification) {
+  return [
+    classification?.sector || classification?.level_1,
+    classification?.industry_group || classification?.level_2,
+    classification?.industry || classification?.level_3,
+    classification?.sub_industry || classification?.level_4,
+  ].filter(Boolean).join(' > ') || '暂无映射路径'
+}
+
+function classificationBasisItems(classification, segment = selectedSegment.value) {
+  const basisItems = mappingBasisSummaryItems(classification)
+  const directItems = [
+    {
+      label: '分类来源',
+      value: classificationSourceText(classification),
+    },
+    {
+      label: '当前映射路径',
+      value: classificationMappingPath(classification),
+    },
+    {
+      label: '规则名称',
+      value: fallbackText(
+        classification?.rule_name ||
+        classification?.matched_rule ||
+        classification?.rule_summary,
+        '暂无详细规则',
+      ),
+    },
+    {
+      label: '业务描述依据',
+      value: fallbackText(
+        classification?.evidence_summary ||
+        classification?.mapping_summary ||
+        classification?.basis ||
+        classification?.evidence ||
+        segment?.description,
+        '暂无详细依据',
+      ),
+    },
+  ]
+  return [...directItems, ...basisItems]
+}
+
+function shouldShowSegmentTypeReview(segment) {
+  return segmentTypeNoticeTone(segment) === 'warning'
+}
+
+async function scrollToManualReview() {
+  await nextTick()
+  manualReviewSection.value?.scrollIntoView?.({
+    behavior: 'smooth',
+    block: 'start',
+  })
+}
+
+const segmentTypeReviewOptions = [
+  { value: 'keep_current', label: '保持当前类型' },
+  { value: 'use_system', label: '采纳系统建议' },
+  { value: 'primary', label: '主营' },
+  { value: 'secondary', label: '补充' },
+  { value: 'emerging', label: '新兴' },
+  { value: 'other', label: '其他' },
+]
+
+function segmentTypeReviewActionLabel(value) {
+  return segmentTypeReviewOptions.find((option) => option.value === value)?.label || '保持当前类型'
+}
+
+function segmentTypeReviewResolvedType(segment = selectedSegment.value) {
+  const action = manualDraft.segment_type_review_action
+  if (action === 'keep_current') {
+    return segment?.segment_type || 'other'
+  }
+  if (action === 'use_system') {
+    return segment?.inferred_segment_type || segment?.segment_type || 'other'
+  }
+  return action || segment?.segment_type || 'other'
+}
+
+function segmentTypeReviewBasisLine(segment = selectedSegment.value) {
+  const action = manualDraft.segment_type_review_action
+  const resolvedLabel = segmentTypeLabel(segmentTypeReviewResolvedType(segment))
+  if (manualDraft.segment_type_review_note?.trim()) {
+    return `业务类型复核：${segmentTypeReviewActionLabel(action)}，人工确认类型为${resolvedLabel}。复核说明：${manualDraft.segment_type_review_note.trim()}`
+  }
+  if (action === 'use_system') {
+    return `人工确认采纳系统建议类型：${resolvedLabel}。`
+  }
+  if (action === 'keep_current') {
+    return `人工确认保持当前业务类型：${resolvedLabel}。`
+  }
+  return `人工确认业务类型为：${resolvedLabel}。`
+}
+
+function buildManualMappingBasis() {
+  return [
+    manualDraft.mapping_basis?.trim(),
+    segmentTypeReviewBasisLine(selectedSegment.value),
+    '业务类型复核意见仅作为人工依据记录，当前版本不自动覆盖原始业务类型标签。',
+  ].filter(Boolean).join('\n')
+}
 
 function normalizeComparableValue(value) {
   if (value === null || value === undefined || value === '') {
@@ -661,6 +819,8 @@ function resetManualDraft(classification) {
   manualDraft.level_4 = classification?.level_4 || ''
   manualDraft.mapping_basis = ''
   manualDraft.final_confirmed = true
+  manualDraft.segment_type_review_action = 'keep_current'
+  manualDraft.segment_type_review_note = ''
 }
 
 async function openSegmentDetail(segment, options = {}) {
@@ -1061,11 +1221,12 @@ async function submitManualClassification() {
   if (!selectedSegment.value?.id) {
     return
   }
+  const mappingBasis = buildManualMappingBasis()
   if (!manualDraft.level_1 && !manualDraft.level_2 && !manualDraft.level_3 && !manualDraft.level_4) {
     ElMessage.warning('请至少填写一个产业层级后再应用人工征订。')
     return
   }
-  if (!manualDraft.mapping_basis?.trim()) {
+  if (!mappingBasis.trim()) {
     ElMessage.warning('请填写人工修订依据后再应用人工征订。')
     return
   }
@@ -1079,7 +1240,7 @@ async function submitManualClassification() {
       level_3: manualDraft.level_3 || null,
       level_4: manualDraft.level_4 || null,
       is_primary: selectedSegment.value.segment_type === 'primary',
-      mapping_basis: manualDraft.mapping_basis,
+      mapping_basis: mappingBasis,
       review_status: 'confirmed',
       confidence: 1,
       mark_as_final: manualDraft.final_confirmed,
@@ -1098,7 +1259,7 @@ async function submitManualClassification() {
         includeHistory: true,
       })
     }
-    ElMessage.success('人工征订结果已更新。')
+    ElMessage.success('已记录人工复核意见，原始业务类型标签未自动覆盖。')
   } catch (error) {
     ElMessage.warning(error.message || '人工征订更新失败。')
   } finally {
@@ -1305,6 +1466,31 @@ watch(
               :value="period"
             />
           </el-select>
+          <div v-else-if="metric.key === 'primary-summary'" class="industry-primary-summary">
+            <div class="industry-primary-summary__main">
+              <span>当前主分类</span>
+              <strong>{{ metric.value }}</strong>
+            </div>
+            <div
+              v-if="metric.relatedIndustries?.length"
+              class="industry-primary-summary__related"
+            >
+              <span class="industry-primary-summary__subtitle">其他相关分类</span>
+              <div class="industry-primary-summary__list">
+                <div
+                  v-for="item in metric.relatedIndustries"
+                  :key="item.key"
+                  class="industry-primary-summary__item"
+                >
+                  <span class="industry-primary-summary__index">{{ item.index }}</span>
+                  <strong>{{ item.label }}</strong>
+                </div>
+              </div>
+            </div>
+            <div v-else class="industry-primary-summary__empty">
+              暂无其他相关分类
+            </div>
+          </div>
           <strong v-else class="industry-summary-tile__value">
             {{ metric.value }}
           </strong>
@@ -1603,6 +1789,15 @@ watch(
           show-icon
           :title="warning"
         />
+        <el-button
+          v-if="flaggedSegments.length"
+          class="industry-quality-action"
+          plain
+          type="warning"
+          @click="openSegmentDetail(flaggedSegments[0])"
+        >
+          查看复核项
+        </el-button>
       </div>
     </article>
 
@@ -1683,7 +1878,7 @@ watch(
         <el-skeleton v-if="detailLoading" animated :rows="8" />
 
         <template v-else>
-          <section class="industry-drawer-section">
+          <section class="industry-drawer-section industry-section--type">
             <div class="section-heading">
               <div>
                 <h3>业务类型判断</h3>
@@ -1738,35 +1933,43 @@ watch(
                 class="segment-type-notice"
                 :class="`segment-type-notice--${segmentTypeNoticeTone(selectedSegment)}`"
               >
-                {{ segmentTypeNoticeMessage(selectedSegment) }}
+                <span>{{ segmentTypeNoticeMessage(selectedSegment) }}</span>
+                <el-button
+                  v-if="shouldShowSegmentTypeReview(selectedSegment)"
+                  link
+                  type="warning"
+                  @click="scrollToManualReview"
+                >
+                  去人工复核
+                </el-button>
               </div>
             </div>
           </section>
 
-          <section class="industry-drawer-section">
+          <section class="industry-drawer-section industry-section--classification">
             <div class="section-heading">
               <div>
-                <h3>当前正式结果</h3>
-                <p>这里展示当前业务线的分类结果、结果来源与映射依据。</p>
+                <h3>当前分类结果</h3>
+                <p>优先展示当前业务线采用的产业分类、置信度、来源和映射依据。</p>
               </div>
             </div>
             <div class="industry-drawer-card">
               <div class="industry-level-grid">
                 <div>
-                  <span>一级分类</span>
-                  <strong>{{ selectedClassification?.level_1 || '—' }}</strong>
+                  <span>一级分类 sector</span>
+                  <strong>{{ selectedClassification?.sector || selectedClassification?.level_1 || '—' }}</strong>
                 </div>
                 <div>
-                  <span>二级分类</span>
-                  <strong>{{ selectedClassification?.level_2 || '—' }}</strong>
+                  <span>二级分类 industry_group</span>
+                  <strong>{{ selectedClassification?.industry_group || selectedClassification?.level_2 || '—' }}</strong>
                 </div>
                 <div>
-                  <span>三级分类</span>
-                  <strong>{{ selectedClassification?.level_3 || '—' }}</strong>
+                  <span>三级分类 industry</span>
+                  <strong>{{ selectedClassification?.industry || selectedClassification?.level_3 || '—' }}</strong>
                 </div>
                 <div>
-                  <span>四级分类</span>
-                  <strong>{{ selectedClassification?.level_4 || '—' }}</strong>
+                  <span>四级分类 sub_industry</span>
+                  <strong>{{ selectedClassification?.sub_industry || selectedClassification?.level_4 || '—' }}</strong>
                 </div>
               </div>
               <div class="industry-result-grid">
@@ -1775,12 +1978,20 @@ watch(
                   <strong>{{ selectedSegment.description || '暂无披露说明' }}</strong>
                 </div>
                 <div>
-                  <span>结果来源</span>
-                  <strong>{{ classifierTypeLabel(selectedClassification?.classifier_type) }}</strong>
+                  <span>当前采用状态</span>
+                  <strong>{{ classificationAdoptionText(selectedClassification) }}</strong>
                 </div>
                 <div>
                   <span>置信度</span>
                   <strong>{{ formatConfidence(selectedClassification?.confidence) }}</strong>
+                </div>
+                <div>
+                  <span>结果来源</span>
+                  <strong>{{ classificationSourceText(selectedClassification) }}</strong>
+                </div>
+                <div>
+                  <span>是否为最终采用结果</span>
+                  <strong>{{ classificationFinalText(selectedClassification) }}</strong>
                 </div>
                 <div>
                   <span>当前原因</span>
@@ -1790,13 +2001,13 @@ watch(
               <div class="industry-basis-card">
                 <div class="industry-basis-card__head">
                   <div>
-                    <span>映射依据摘要</span>
-                    <p>展示当前分类结果的摘要依据，便于核对分类结论。</p>
+                    <span>分类来源与映射依据</span>
+                    <p>展示规则来源、命中依据、描述证据和当前映射路径；字段为空时保留兜底说明。</p>
                   </div>
                 </div>
                 <div class="industry-basis-list">
                   <div
-                    v-for="item in mappingBasisSummaryItems(selectedClassification)"
+                    v-for="item in classificationBasisItems(selectedClassification, selectedSegment)"
                     :key="item.label"
                     class="industry-basis-item"
                   >
@@ -1812,7 +2023,7 @@ watch(
             </div>
           </section>
 
-          <section class="industry-drawer-section">
+          <section class="industry-drawer-section industry-section--history-trend">
             <div class="section-heading">
               <div>
                 <h3>历史变化趋势</h3>
@@ -1833,7 +2044,7 @@ watch(
             </div>
           </section>
 
-          <section class="industry-drawer-section">
+          <section class="industry-drawer-section industry-section--history-table">
             <div class="section-heading">
               <div>
                 <h3>历史明细表</h3>
@@ -1917,15 +2128,18 @@ watch(
             </div>
           </section>
 
-          <section class="industry-drawer-section">
+          <section ref="manualReviewSection" class="industry-drawer-section industry-section--manual">
             <div class="section-heading">
               <div>
-                <h3>人工征订 / 人工修订</h3>
-                <p>可在这里提交人工修订，更新当前业务线的分类结果。</p>
+                <h3>人工征订 / 人工复核</h3>
+                <p>可在此确认或修订当前业务线的产业分类结果，并记录业务类型复核意见；当前版本不自动覆盖原始业务类型标签。</p>
               </div>
             </div>
             <div class="industry-drawer-card industry-drawer-card--manual">
               <el-form label-position="top" class="industry-manual-form">
+                <div class="industry-manual-subsection">
+                  <strong>产业分类修订</strong>
+                </div>
                 <div class="industry-manual-form__grid">
                   <el-form-item label="一级分类">
                     <el-input v-model="manualDraft.level_1" placeholder="例如 Information Technology" />
@@ -1953,6 +2167,50 @@ watch(
                     标记为最终采用结果
                   </el-checkbox>
                 </el-form-item>
+                <div class="industry-manual-subsection">
+                  <strong>业务类型复核</strong>
+                  <span>复核意见将作为人工依据记录，不直接改写 segment_type。</span>
+                </div>
+                <div class="manual-type-review-grid">
+                  <div>
+                    <span>当前业务类型</span>
+                    <strong>{{ segmentTypeLabel(selectedSegment.segment_type) }}</strong>
+                  </div>
+                  <div>
+                    <span>系统建议类型</span>
+                    <strong>{{ segmentTypeLabel(selectedSegment.inferred_segment_type) }}</strong>
+                  </div>
+                  <el-form-item label="人工确认方式" class="manual-type-review-grid__input">
+                    <el-select v-model="manualDraft.segment_type_review_action" placeholder="请选择人工确认方式">
+                      <el-option
+                        v-for="option in segmentTypeReviewOptions"
+                        :key="option.value"
+                        :label="option.label"
+                        :value="option.value"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </div>
+                <el-form-item label="业务类型复核说明（可选）">
+                  <el-input
+                    v-model="manualDraft.segment_type_review_note"
+                    type="textarea"
+                    :rows="2"
+                    placeholder="可补充为什么保持当前类型、采纳系统建议或指定为其他类型。未填写时系统会自动生成一句复核依据。"
+                  />
+                </el-form-item>
+                <el-alert
+                  v-if="shouldShowSegmentTypeReview(selectedSegment)"
+                  type="warning"
+                  :closable="false"
+                  show-icon
+                  title="当前业务类型与系统建议不一致，可在此记录人工复核意见。"
+                />
+                <el-alert
+                  type="info"
+                  :closable="false"
+                  title="业务类型复核意见将拼接进人工修订依据，当前版本不自动覆盖原始业务类型标签。"
+                />
               </el-form>
               <div class="industry-manual-form__actions">
                 <el-button type="primary" :loading="manualSaving" @click="submitManualClassification">
@@ -1965,7 +2223,7 @@ watch(
             </div>
           </section>
 
-          <section class="industry-drawer-section">
+          <section class="industry-drawer-section industry-section--llm">
             <div class="section-heading">
               <div>
                 <h3>模型辅助分析</h3>
@@ -2297,6 +2555,91 @@ watch(
   padding: 18px 20px;
 }
 
+.industry-primary-summary {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.industry-primary-summary__main {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.industry-primary-summary__main span,
+.industry-primary-summary__subtitle {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.industry-primary-summary__main strong {
+  color: var(--brand-ink);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.industry-primary-summary__related {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px dashed rgba(77, 99, 124, 0.14);
+}
+
+.industry-primary-summary__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  min-width: 0;
+}
+
+.industry-primary-summary__item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(247, 250, 246, 0.86);
+  min-width: 0;
+}
+
+.industry-primary-summary__index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(88, 124, 101, 0.12);
+  color: #587c65;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.industry-primary-summary__item strong {
+  color: #40546a;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.58;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.industry-primary-summary__empty {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .industry-summary-tile__description {
   margin: 0;
   color: var(--text-secondary);
@@ -2567,6 +2910,10 @@ watch(
 .industry-quality-list {
   display: grid;
   gap: 10px;
+}
+
+.industry-quality-action {
+  justify-self: start;
 }
 
 .industry-quality-card {
@@ -2857,6 +3204,31 @@ watch(
   gap: 12px;
 }
 
+.industry-section--classification {
+  order: 10;
+}
+
+.industry-section--llm {
+  order: 20;
+}
+
+.industry-section--type {
+  order: 30;
+}
+
+.industry-section--history-trend {
+  order: 40;
+}
+
+.industry-section--history-table {
+  order: 50;
+}
+
+.industry-section--manual {
+  order: 60;
+  scroll-margin-top: 18px;
+}
+
 .industry-drawer-card {
   display: grid;
   gap: 14px;
@@ -2966,12 +3338,20 @@ watch(
 }
 
 .segment-type-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 9px 12px;
   border-radius: 12px;
   border: 1px solid rgba(31, 59, 87, 0.08);
   color: #33465b;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.segment-type-notice span {
+  min-width: 0;
 }
 
 .segment-type-notice--success {
@@ -3103,6 +3483,65 @@ watch(
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.industry-manual-subsection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0 4px;
+}
+
+.industry-manual-subsection strong {
+  color: var(--brand-ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.industry-manual-subsection span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.manual-type-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.manual-type-review-grid > div {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.manual-type-review-grid__input {
+  margin-bottom: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 59, 87, 0.08);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.manual-type-review-grid__input :deep(.el-select) {
+  width: 100%;
+}
+
+.manual-type-review-grid span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.manual-type-review-grid strong {
+  color: var(--brand-ink);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .industry-llm-head p {
@@ -3251,6 +3690,8 @@ watch(
   .industry-llm-summary,
   .industry-llm-levels,
   .industry-llm-notes,
+  .manual-type-review-grid,
+  .industry-primary-summary__list,
   .industry-manual-form__grid,
   .industry-drawer__meta {
     grid-template-columns: 1fr;

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 import json
 import logging
@@ -1791,6 +1791,58 @@ def _serialize_classification_summary(
     )
 
 
+SEGMENT_TYPE_LABELS = {
+    "primary": "主营",
+    "secondary": "补充",
+    "emerging": "新兴",
+    "other": "其他",
+}
+
+SEGMENT_TYPE_REVIEW_ACTION_LABELS = {
+    "keep_current": "保持当前类型",
+    "accept_suggestion": "采纳系统建议",
+    "use_system": "采纳系统建议",
+    "primary": "主营",
+    "secondary": "补充",
+    "emerging": "新兴",
+    "other": "其他",
+}
+
+
+def _segment_type_display(value: str | None) -> str | None:
+    if not value:
+        return None
+    label = SEGMENT_TYPE_LABELS.get(value)
+    return f"{value} / {label}" if label else value
+
+
+def _segment_type_review_action_display(value: str | None) -> str | None:
+    if not value:
+        return None
+    label = SEGMENT_TYPE_REVIEW_ACTION_LABELS.get(value)
+    return f"{value} / {label}" if label else value
+
+
+def _format_segment_type_review_reason(
+    *,
+    current_segment_type: str | None,
+    suggested_segment_type: str | None,
+    confirmed_segment_type: str | None,
+    review_action: str | None,
+    review_note: str | None,
+) -> str:
+    parts = [
+        f"当前类型={_segment_type_display(current_segment_type) or '未标注'}",
+        f"系统建议={_segment_type_display(suggested_segment_type) or '暂无'}",
+        f"人工确认={_segment_type_review_action_display(review_action) or '未选择'}",
+        f"确认类型={_segment_type_display(confirmed_segment_type) or '未标注'}",
+    ]
+    reason = f"业务类型复核：{'；'.join(parts)}。"
+    if review_note:
+        reason = f"{reason}复核说明：{review_note}"
+    return reason
+
+
 def confirm_business_segment_llm_classification(
     db: Session,
     *,
@@ -1999,6 +2051,69 @@ def confirm_business_segment_manual_classification(
         reason=annotation_reason,
         operator=operator,
     )
+    if (
+        manual_classification.segment_type_review_action
+        or manual_classification.confirmed_segment_type
+        or manual_classification.segment_type_review_note
+    ):
+        current_segment_type = (
+            manual_classification.current_segment_type or segment.segment_type
+        )
+        suggested_segment_type = manual_classification.suggested_segment_type
+        confirmed_segment_type = (
+            manual_classification.confirmed_segment_type or segment.segment_type
+        )
+        review_action = manual_classification.segment_type_review_action
+        segment_type_review_reason = _format_segment_type_review_reason(
+            current_segment_type=current_segment_type,
+            suggested_segment_type=suggested_segment_type,
+            confirmed_segment_type=confirmed_segment_type,
+            review_action=review_action,
+            review_note=manual_classification.segment_type_review_note,
+        )
+        segment_type_review_payload = {
+            "business_segment_id": segment_id,
+            "current_segment_type": current_segment_type,
+            "current_segment_type_label": _segment_type_display(
+                current_segment_type,
+            ),
+            "suggested_segment_type": suggested_segment_type,
+            "suggested_segment_type_label": _segment_type_display(
+                suggested_segment_type,
+            ),
+            "confirmed_segment_type": confirmed_segment_type,
+            "confirmed_segment_type_label": _segment_type_display(
+                confirmed_segment_type,
+            ),
+            "review_action": review_action,
+            "review_action_label": _segment_type_review_action_display(
+                review_action,
+            ),
+            "review_note": manual_classification.segment_type_review_note,
+            "operator": operator,
+            "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        create_annotation_log(
+            db,
+            target_type="business_segment",
+            target_id=segment_id,
+            action_type="segment_type_review",
+            old_value=json.dumps(
+                {
+                    "business_segment_id": segment_id,
+                    "segment_type": segment.segment_type,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            new_value=json.dumps(
+                segment_type_review_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            reason=segment_type_review_reason or annotation_reason,
+            operator=operator,
+        )
     db.commit()
     db.refresh(target_row)
 

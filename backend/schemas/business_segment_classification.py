@@ -293,6 +293,11 @@ class BusinessSegmentManualClassificationRequest(BaseModel):
     review_status: BusinessSegmentClassificationReviewStatus | None = "confirmed"
     confidence: Decimal | None = Decimal("1.0")
     mark_as_final: bool = True
+    segment_type_review_action: str | None = None
+    current_segment_type: str | None = None
+    suggested_segment_type: str | None = None
+    confirmed_segment_type: str | None = None
+    segment_type_review_note: str | None = None
 
     @field_validator("standard_system", mode="before")
     @classmethod
@@ -305,6 +310,11 @@ class BusinessSegmentManualClassificationRequest(BaseModel):
         "level_3",
         "level_4",
         "mapping_basis",
+        "segment_type_review_action",
+        "current_segment_type",
+        "suggested_segment_type",
+        "confirmed_segment_type",
+        "segment_type_review_note",
         mode="before",
     )
     @classmethod

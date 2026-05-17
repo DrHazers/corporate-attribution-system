@@ -578,6 +578,11 @@ def test_confirm_manual_classification_writes_back_and_stays_protected_on_refres
                     mapping_basis="人工核对业务线披露后，确认主营属性属于企业应用软件。",
                     confidence=1,
                     mark_as_final=True,
+                    segment_type_review_action="accept_suggestion",
+                    current_segment_type="primary",
+                    suggested_segment_type="secondary",
+                    confirmed_segment_type="secondary",
+                    segment_type_review_note="人工确认采纳系统建议类型：补充。",
                 ),
                 operator="pytest",
             )
@@ -630,6 +635,34 @@ def test_confirm_manual_classification_writes_back_and_stays_protected_on_refres
                     """
                 ).fetchall()
             ]
+            segment_type_review_logs = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT
+                        target_type,
+                        target_id,
+                        action_type,
+                        old_value,
+                        new_value,
+                        reason,
+                        operator
+                    FROM annotation_logs
+                    WHERE action_type = 'segment_type_review'
+                    ORDER BY id
+                    """
+                ).fetchall()
+            ]
+            business_segment_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT id, segment_type
+                    FROM business_segments
+                    WHERE id = 1
+                    """
+                ).fetchall()
+            ]
         finally:
             connection.close()
     finally:
@@ -661,3 +694,18 @@ def test_confirm_manual_classification_writes_back_and_stays_protected_on_refres
     assert all(row["reason"] == "人工核对业务线披露后，确认主营属性属于企业应用软件。" for row in manual_logs)
     assert any('"classifier_type": "rule_based"' in (row["old_value"] or "") for row in manual_logs)
     assert all('"classifier_type": "manual"' in (row["new_value"] or "") for row in manual_logs)
+    assert business_segment_rows == [{"id": 1, "segment_type": "primary"}]
+    assert len(segment_type_review_logs) == 1
+    assert segment_type_review_logs[0]["target_type"] == "business_segment"
+    assert segment_type_review_logs[0]["target_id"] == 1
+    assert segment_type_review_logs[0]["operator"] == "pytest"
+    assert segment_type_review_logs[0]["reason"] == (
+        "业务类型复核：当前类型=primary / 主营；系统建议=secondary / 补充；"
+        "人工确认=accept_suggestion / 采纳系统建议；确认类型=secondary / 补充。"
+        "复核说明：人工确认采纳系统建议类型：补充。"
+    )
+    assert '"current_segment_type": "primary"' in segment_type_review_logs[0]["new_value"]
+    assert '"current_segment_type_label": "primary / 主营"' in segment_type_review_logs[0]["new_value"]
+    assert '"suggested_segment_type": "secondary"' in segment_type_review_logs[0]["new_value"]
+    assert '"review_action": "accept_suggestion"' in segment_type_review_logs[0]["new_value"]
+    assert '"confirmed_segment_type": "secondary"' in segment_type_review_logs[0]["new_value"]

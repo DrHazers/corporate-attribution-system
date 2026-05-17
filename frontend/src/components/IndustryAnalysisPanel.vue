@@ -418,7 +418,7 @@ async function scrollToManualReview() {
 
 const segmentTypeReviewOptions = [
   { value: 'keep_current', label: '保持当前类型' },
-  { value: 'use_system', label: '采纳系统建议' },
+  { value: 'accept_suggestion', label: '采纳系统建议' },
   { value: 'primary', label: '主营' },
   { value: 'secondary', label: '补充' },
   { value: 'emerging', label: '新兴' },
@@ -434,7 +434,7 @@ function segmentTypeReviewResolvedType(segment = selectedSegment.value) {
   if (action === 'keep_current') {
     return segment?.segment_type || 'other'
   }
-  if (action === 'use_system') {
+  if (action === 'accept_suggestion' || action === 'use_system') {
     return segment?.inferred_segment_type || segment?.segment_type || 'other'
   }
   return action || segment?.segment_type || 'other'
@@ -446,7 +446,7 @@ function segmentTypeReviewBasisLine(segment = selectedSegment.value) {
   if (manualDraft.segment_type_review_note?.trim()) {
     return `业务类型复核：${segmentTypeReviewActionLabel(action)}，人工确认类型为${resolvedLabel}。复核说明：${manualDraft.segment_type_review_note.trim()}`
   }
-  if (action === 'use_system') {
+  if (action === 'accept_suggestion' || action === 'use_system') {
     return `人工确认采纳系统建议类型：${resolvedLabel}。`
   }
   if (action === 'keep_current') {
@@ -458,8 +458,6 @@ function segmentTypeReviewBasisLine(segment = selectedSegment.value) {
 function buildManualMappingBasis() {
   return [
     manualDraft.mapping_basis?.trim(),
-    segmentTypeReviewBasisLine(selectedSegment.value),
-    '业务类型复核意见仅作为人工依据记录，当前版本不自动覆盖原始业务类型标签。',
   ].filter(Boolean).join('\n')
 }
 
@@ -1244,6 +1242,13 @@ async function submitManualClassification() {
       review_status: 'confirmed',
       confidence: 1,
       mark_as_final: manualDraft.final_confirmed,
+      segment_type_review_action: manualDraft.segment_type_review_action,
+      current_segment_type: selectedSegment.value.segment_type || null,
+      suggested_segment_type: selectedSegment.value.inferred_segment_type || null,
+      confirmed_segment_type: segmentTypeReviewResolvedType(selectedSegment.value),
+      segment_type_review_note:
+        manualDraft.segment_type_review_note?.trim() ||
+        segmentTypeReviewBasisLine(selectedSegment.value),
     })
 
     applyConfirmedClassificationLocally(response.confirmed_classification)
@@ -1259,7 +1264,7 @@ async function submitManualClassification() {
         includeHistory: true,
       })
     }
-    ElMessage.success('已记录人工复核意见，原始业务类型标签未自动覆盖。')
+    ElMessage.success('已记录人工复核意见。')
   } catch (error) {
     ElMessage.warning(error.message || '人工征订更新失败。')
   } finally {
@@ -2132,7 +2137,7 @@ watch(
             <div class="section-heading">
               <div>
                 <h3>人工征订 / 人工复核</h3>
-                <p>可在此确认或修订当前业务线的产业分类结果，并记录业务类型复核意见；当前版本不自动覆盖原始业务类型标签。</p>
+                <p>可在此确认或修订当前业务线的产业分类结果，并记录业务类型复核意见。</p>
               </div>
             </div>
             <div class="industry-drawer-card industry-drawer-card--manual">
@@ -2169,18 +2174,18 @@ watch(
                 </el-form-item>
                 <div class="industry-manual-subsection">
                   <strong>业务类型复核</strong>
-                  <span>复核意见将作为人工依据记录，不直接改写 segment_type。</span>
                 </div>
-                <div class="manual-type-review-grid">
-                  <div>
-                    <span>当前业务类型</span>
+                <div class="manual-type-review-row">
+                  <div class="manual-type-review-inline">
+                    <span>当前业务类型：</span>
                     <strong>{{ segmentTypeLabel(selectedSegment.segment_type) }}</strong>
                   </div>
-                  <div>
-                    <span>系统建议类型</span>
+                  <div class="manual-type-review-inline">
+                    <span>系统建议类型：</span>
                     <strong>{{ segmentTypeLabel(selectedSegment.inferred_segment_type) }}</strong>
                   </div>
-                  <el-form-item label="人工确认方式" class="manual-type-review-grid__input">
+                  <div class="manual-type-review-field">
+                    <span>人工确认方式：</span>
                     <el-select v-model="manualDraft.segment_type_review_action" placeholder="请选择人工确认方式">
                       <el-option
                         v-for="option in segmentTypeReviewOptions"
@@ -2189,28 +2194,16 @@ watch(
                         :value="option.value"
                       />
                     </el-select>
-                  </el-form-item>
+                  </div>
                 </div>
                 <el-form-item label="业务类型复核说明（可选）">
                   <el-input
                     v-model="manualDraft.segment_type_review_note"
                     type="textarea"
                     :rows="2"
-                    placeholder="可补充为什么保持当前类型、采纳系统建议或指定为其他类型。未填写时系统会自动生成一句复核依据。"
+                    placeholder="可填写业务类型复核依据。"
                   />
                 </el-form-item>
-                <el-alert
-                  v-if="shouldShowSegmentTypeReview(selectedSegment)"
-                  type="warning"
-                  :closable="false"
-                  show-icon
-                  title="当前业务类型与系统建议不一致，可在此记录人工复核意见。"
-                />
-                <el-alert
-                  type="info"
-                  :closable="false"
-                  title="业务类型复核意见将拼接进人工修订依据，当前版本不自动覆盖原始业务类型标签。"
-                />
               </el-form>
               <div class="industry-manual-form__actions">
                 <el-button type="primary" :loading="manualSaving" @click="submitManualClassification">
@@ -3505,40 +3498,36 @@ watch(
   line-height: 1.5;
 }
 
-.manual-type-review-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+.manual-type-review-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  padding: 2px 0 4px;
 }
 
-.manual-type-review-grid > div {
-  display: grid;
+.manual-type-review-inline,
+.manual-type-review-field {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(31, 59, 87, 0.08);
-  background: rgba(255, 255, 255, 0.74);
+  min-height: 32px;
+  white-space: nowrap;
 }
 
-.manual-type-review-grid__input {
-  margin-bottom: 0;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(31, 59, 87, 0.08);
-  background: rgba(255, 255, 255, 0.74);
+.manual-type-review-field :deep(.el-select) {
+  width: 240px;
+  max-width: 100%;
 }
 
-.manual-type-review-grid__input :deep(.el-select) {
-  width: 100%;
-}
-
-.manual-type-review-grid span {
+.manual-type-review-inline span,
+.manual-type-review-field span {
   color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.35;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
-.manual-type-review-grid strong {
+.manual-type-review-inline strong {
   color: var(--brand-ink);
   font-size: 13px;
   line-height: 1.5;
@@ -3690,7 +3679,6 @@ watch(
   .industry-llm-summary,
   .industry-llm-levels,
   .industry-llm-notes,
-  .manual-type-review-grid,
   .industry-primary-summary__list,
   .industry-manual-form__grid,
   .industry-drawer__meta {

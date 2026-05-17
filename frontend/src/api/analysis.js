@@ -68,16 +68,47 @@ export function restoreAutomaticControlResult(companyId, payload = {}) {
 
 export function importOwnershipFacts({
   file,
-  mode = 'validate',
+  mode = 'validate_only',
   conflictStrategy = 'fail',
   analysisStrategy = 'missing_only',
 }) {
+  const requestMode =
+    mode === 'import_and_generate'
+      ? 'commit_and_analyze'
+      : mode === 'validate_only'
+        ? 'validate'
+        : mode
   const formData = new FormData()
   formData.append('file', file)
-  formData.append('mode', mode)
+  formData.append('mode', requestMode)
   formData.append('conflict_strategy', conflictStrategy)
   formData.append('analysis_strategy', analysisStrategy)
   return http.post('/imports/ownership', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  })
+}
+
+export function importBusinessSegments({
+  file,
+  importMode = 'validate_only',
+  targetMode = 'existing_companies_only',
+  conflictStrategy = 'replace_company_period',
+}) {
+  const requestImportMode =
+    importMode === 'import_and_generate' ? 'save_and_rebuild_classification' : importMode
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('target_mode', targetMode)
+  formData.append('conflict_strategy', conflictStrategy)
+  const endpoint =
+    requestImportMode === 'validate_only'
+      ? '/imports/business-segments/validate'
+      : '/imports/business-segments/apply'
+  if (requestImportMode !== 'validate_only') {
+    formData.append('import_mode', requestImportMode)
+  }
+  return http.post(endpoint, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120000,
   })

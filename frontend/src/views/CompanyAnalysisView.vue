@@ -8,6 +8,7 @@ import {
   fetchCompanyControlChain,
   fetchCompanyIndustryAnalysis,
   fetchShareholderEntities,
+  importBusinessSegments,
   importOwnershipFacts,
   restoreAutomaticControlResult,
   submitManualControlOverride,
@@ -51,8 +52,13 @@ const ownershipImportVisible = ref(false)
 const ownershipImportSubmitting = ref(false)
 const ownershipImportFileList = ref([])
 const ownershipImportResult = ref(null)
+const businessSegmentImportSubmitting = ref(false)
+const businessSegmentImportFileList = ref([])
+const businessSegmentImportResult = ref(null)
+const importHistoryRecords = ref([])
 const dataImportActiveTab = ref('ownership')
 const ownershipImportExampleCollapse = ref([])
+const businessSegmentImportExampleCollapse = ref([])
 const shareholderEntityOptions = ref([])
 const shareholderEntityLoading = ref(false)
 let manualPathKeySeed = 0
@@ -129,9 +135,13 @@ const manualForm = reactive({
   evidence: '',
 })
 const ownershipImportForm = reactive({
-  mode: 'validate',
+  mode: 'validate_only',
   conflictStrategy: 'fail',
-  analysisStrategy: 'missing_only',
+})
+const businessSegmentImportForm = reactive({
+  importMode: 'validate_only',
+  targetMode: 'existing_companies_only',
+  conflictStrategy: 'replace_company_period',
 })
 const sectionErrors = reactive({
   graph: '',
@@ -396,6 +406,15 @@ function clearOwnershipImportFile() {
   ownershipImportFileList.value = []
 }
 
+function handleBusinessSegmentImportFileChange(file, fileList) {
+  businessSegmentImportFileList.value = fileList.slice(-1)
+  businessSegmentImportResult.value = null
+}
+
+function clearBusinessSegmentImportFile() {
+  businessSegmentImportFileList.value = []
+}
+
 function analysisStatusLabel(status) {
   const labels = {
     reused: '已有结果',
@@ -409,11 +428,52 @@ function analysisStatusLabel(status) {
 watch(
   () => ownershipImportForm.mode,
   (mode) => {
-    if (mode === 'commit_and_analyze' && ownershipImportForm.conflictStrategy === 'fail') {
+    if (mode === 'import_and_generate' && ownershipImportForm.conflictStrategy === 'fail') {
       ownershipImportForm.conflictStrategy = 'skip'
     }
   },
 )
+
+function pushImportHistoryRecord({
+  type,
+  result,
+  rowCount = 0,
+  generated = false,
+}) {
+  const warningCount = Array.isArray(result?.warnings) ? result.warnings.length : 0
+  const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0
+  importHistoryRecords.value = [
+    {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      importedAt: new Date().toLocaleString(),
+      type,
+      status: result?.success ? (warningCount ? '有警告' : '成功') : '失败',
+      rowCount,
+      warningCount,
+      errorCount,
+      generated: Boolean(generated && result?.success),
+    },
+    ...importHistoryRecords.value,
+  ].slice(0, 10)
+}
+
+function ownershipImportRowCount(result) {
+  const summary = result?.summary || {}
+  return [
+    'companies_created',
+    'companies_matched',
+    'companies_updated',
+    'entities_created',
+    'entities_matched',
+    'entities_updated',
+    'structures_created',
+    'structures_matched',
+    'structures_updated',
+    'sources_created',
+    'sources_matched',
+    'sources_updated',
+  ].reduce((total, key) => total + Number(summary[key] || 0), 0)
+}
 
 async function handleOwnershipImport() {
   const uploadFile = ownershipImportFileList.value[0]?.raw
@@ -422,7 +482,7 @@ async function handleOwnershipImport() {
     return
   }
 
-  if (ownershipImportForm.mode === 'commit_and_analyze' && ownershipImportForm.conflictStrategy === 'fail') {
+  if (ownershipImportForm.mode === 'import_and_generate' && ownershipImportForm.conflictStrategy === 'fail') {
     ownershipImportForm.conflictStrategy = 'skip'
   }
 
@@ -434,9 +494,15 @@ async function handleOwnershipImport() {
       file: uploadFile,
       mode: requestMode,
       conflictStrategy: requestConflictStrategy,
-      analysisStrategy: ownershipImportForm.analysisStrategy,
+      analysisStrategy: requestMode === 'import_and_generate' ? 'force' : 'skip',
     })
     ownershipImportResult.value = result
+    pushImportHistoryRecord({
+      type: '控制关系事实导入',
+      result,
+      rowCount: ownershipImportRowCount(result),
+      generated: requestMode === 'import_and_generate',
+    })
     const warningCount = Array.isArray(result?.warnings) ? result.warnings.length : 0
     const failedCompanyIds = (result?.analysis?.failed_company_ids || []).map((id) => String(id))
     const missingFactCompanyIds = (result?.analysis?.missing_fact_company_ids || []).map((id) => String(id))
@@ -445,7 +511,7 @@ async function handleOwnershipImport() {
     } else if (failedCompanyIds.length || warningCount) {
       ElMessage.warning('导入完成，但存在需要关注的警告。')
     } else {
-      ElMessage.success(requestMode === 'validate' ? '校验完成，未写入数据库。' : '导入完成。')
+      ElMessage.success(requestMode === 'validate_only' ? '校验完成，未写入数据库。' : '导入并生成结果完成。')
     }
 
     const currentCompanyId = String(resolvedCompanyId.value || '')
@@ -461,7 +527,7 @@ async function handleOwnershipImport() {
       ...(result?.analysis?.reused_company_ids || []),
     ].map((id) => String(id))
     if (
-      requestMode === 'commit_and_analyze' &&
+      requestMode === 'import_and_generate' &&
       result?.success &&
       currentCompanyId &&
       reloadCompanyIds.includes(currentCompanyId)
@@ -472,6 +538,56 @@ async function handleOwnershipImport() {
     ElMessage.error(error.message || '控制关系数据导入失败。')
   } finally {
     ownershipImportSubmitting.value = false
+  }
+}
+
+async function handleBusinessSegmentImport() {
+  const uploadFile = businessSegmentImportFileList.value[0]?.raw
+  if (!uploadFile) {
+    ElMessage.warning('请选择需要导入的业务线 ZIP 文件。')
+    return
+  }
+
+  businessSegmentImportSubmitting.value = true
+  try {
+    const result = await importBusinessSegments({
+      file: uploadFile,
+      importMode: businessSegmentImportForm.importMode,
+      targetMode: businessSegmentImportForm.targetMode,
+      conflictStrategy: businessSegmentImportForm.conflictStrategy,
+    })
+    businessSegmentImportResult.value = result
+    pushImportHistoryRecord({
+      type: '业务线事实导入',
+      result,
+      rowCount: Number(result?.summary?.business_segments_parsed || 0),
+      generated: businessSegmentImportForm.importMode === 'import_and_generate',
+    })
+    if (!result?.success) {
+      ElMessage.warning('业务线导入处理完成，但存在错误。')
+    } else if (result?.warnings?.length) {
+      ElMessage.warning('业务线导入完成，但存在需要关注的警告。')
+    } else {
+      ElMessage.success(
+        businessSegmentImportForm.importMode === 'validate_only'
+          ? '业务线校验完成，未写入数据库。'
+          : '业务线导入并生成结果完成。',
+      )
+    }
+
+    const currentCompanyId = Number(resolvedCompanyId.value || 0)
+    if (
+      result?.success &&
+      businessSegmentImportForm.importMode !== 'validate_only' &&
+      currentCompanyId &&
+      (result?.affected_company_ids || []).includes(currentCompanyId)
+    ) {
+      await loadCompanyData(resolvedCompanyId.value)
+    }
+  } catch (error) {
+    ElMessage.error(error.message || '业务线数据导入失败。')
+  } finally {
+    businessSegmentImportSubmitting.value = false
   }
 }
 
@@ -1423,7 +1539,7 @@ async function handleRestoreAutomaticResult() {
               <section class="ownership-import-format" aria-label="导入格式说明">
                 <h3>导入格式说明</h3>
                 <p class="ownership-import-format__intro">
-                  请上传一个 ZIP 文件，文件中建议包含以下 CSV：
+                  系统导入的是事实数据。控制链分析结果和国别归属结果会在导入后自动生成，避免结果表与事实表不一致。请上传一个 ZIP 文件，文件中建议包含以下 CSV：
                 </p>
                 <ol class="ownership-import-format__list">
                   <li>
@@ -1458,7 +1574,7 @@ async function handleRestoreAutomaticResult() {
                   </li>
                 </ol>
                 <p class="ownership-import-format__note">
-                  导入文件中的 <code>company_key</code>、<code>entity_key</code>、<code>structure_key</code> 只用于描述文件内部关系，不是数据库 ID。系统会在导入时自动生成数据库 ID，并建立公司、主体和控制关系之间的关联。
+                  导入文件中的 <code>company_key</code>、<code>entity_key</code>、<code>structure_key</code> 只用于描述文件内部关系，不是数据库 ID。选择“导入并生成结果”后，系统会刷新本次受影响公司的控制链分析结果和国别归属结果。
                 </p>
               </section>
 
@@ -1504,15 +1620,14 @@ s001,parent,target,equity,60%,60%,true,true</code></pre>
                 <div class="ownership-import__options">
                   <el-form-item label="导入模式">
                     <el-radio-group v-model="ownershipImportForm.mode">
-                      <el-radio-button label="validate">仅校验</el-radio-button>
-                      <el-radio-button label="commit">导入保存</el-radio-button>
-                      <el-radio-button label="commit_and_analyze">导入并生成分析结果</el-radio-button>
+                      <el-radio-button label="validate_only">仅校验</el-radio-button>
+                      <el-radio-button label="import_and_generate">导入并生成结果</el-radio-button>
                     </el-radio-group>
                   </el-form-item>
                   <el-form-item label="冲突处理">
                     <el-radio-group v-model="ownershipImportForm.conflictStrategy">
                       <el-radio-button
-                        v-if="ownershipImportForm.mode !== 'commit_and_analyze'"
+                        v-if="ownershipImportForm.mode !== 'import_and_generate'"
                         label="fail"
                       >
                         发现重复即失败
@@ -1521,20 +1636,11 @@ s001,parent,target,equity,60%,60%,true,true</code></pre>
                       <el-radio-button label="update">更新已有</el-radio-button>
                     </el-radio-group>
                     <span
-                      v-if="ownershipImportForm.mode === 'commit_and_analyze'"
+                      v-if="ownershipImportForm.mode === 'import_and_generate'"
                       class="ownership-import__field-help"
                     >
-                      已有数据默认跳过，并继续生成或复用控制分析结果。
+                      已有数据默认跳过，并刷新本次受影响公司的控制分析结果。
                     </span>
-                  </el-form-item>
-                  <el-form-item
-                    v-if="ownershipImportForm.mode === 'commit_and_analyze'"
-                    label="分析策略"
-                  >
-                    <el-radio-group v-model="ownershipImportForm.analysisStrategy">
-                      <el-radio-button label="missing_only">仅缺失时生成</el-radio-button>
-                      <el-radio-button label="force">强制重新分析</el-radio-button>
-                    </el-radio-group>
                   </el-form-item>
                 </div>
               </el-form>
@@ -1546,7 +1652,7 @@ s001,parent,target,equity,60%,60%,true,true</code></pre>
                   :loading="ownershipImportSubmitting"
                   @click="handleOwnershipImport"
                 >
-                  开始导入
+                  {{ ownershipImportForm.mode === 'validate_only' ? '开始校验' : '导入并生成结果' }}
                 </el-button>
               </div>
 
@@ -1637,18 +1743,238 @@ s001,parent,target,equity,60%,60%,true,true</code></pre>
           </el-tab-pane>
 
           <el-tab-pane label="业务线事实导入" name="business-segments">
-            <div class="data-import-placeholder">
-              <h3>业务线事实导入</h3>
-              <p>用于导入企业业务线事实数据，如业务线名称、收入占比、报告期和说明。该功能后续支持。</p>
-              <el-tag type="info" effect="plain">后续支持</el-tag>
+            <div class="ownership-import">
+              <section class="ownership-import-format" aria-label="业务线导入格式说明">
+                <h3>导入格式说明</h3>
+                <p class="ownership-import-format__intro">
+                  业务线事实导入用于补充或更新企业在不同报告期下的业务分部数据。导入后系统会自动重建产业分类结果。请上传 ZIP 文件，支持两种格式：
+                </p>
+                <ol class="ownership-import-format__list">
+                  <li>
+                    <strong>格式 A：仅导入已有公司的业务线事实</strong>
+                    <div class="ownership-import-format__item">
+                      <span>ZIP 中包含：<code>business_segments.csv</code></span>
+                      <span><code>business_segments.csv</code> 中 <code>company_id</code> 必须存在于当前数据库 <code>companies.id</code>。</span>
+                      <span>适合给已有公司补充、更新或覆盖业务线数据。</span>
+                    </div>
+                  </li>
+                  <li>
+                    <strong>格式 B：导入新公司并附带业务线事实</strong>
+                    <div class="ownership-import-format__item">
+                      <span>ZIP 中包含：<code>companies.csv</code>、<code>business_segments.csv</code></span>
+                      <span><code>companies.csv</code> 使用 <code>company_key</code> 作为文件内部公司标识。</span>
+                      <span><code>business_segments.csv</code> 使用 <code>company_key</code> 关联公司，导入后系统自动映射为真实 <code>company_id</code>。</span>
+                    </div>
+                  </li>
+                </ol>
+                <p class="ownership-import-format__note">
+                  产业分类结果不建议直接导入。系统会在业务线事实导入后基于本地规则重新生成 <code>business_segment_classifications</code>，不调用外部 LLM，也不写控制链相关表。
+                </p>
+              </section>
+
+              <section class="ownership-import-format" aria-label="业务线字段说明">
+                <h3>字段说明</h3>
+                <div class="ownership-import-format__item">
+                  <span>已有公司模式使用 <code>company_id</code>；新公司附带业务线模式优先使用 <code>company_key</code>。</span>
+                  <span>业务线字段：<code>segment_name</code>、<code>segment_type</code>、<code>revenue_ratio</code>、<code>profit_ratio</code>、<code>reporting_period</code>、<code>is_current</code>、<code>confidence</code>、<code>source</code>、<code>description</code> / <code>notes</code>。</span>
+                  <span>建议报告期使用 <code>2021A</code>、<code>2022A</code>、<code>2023A</code>、<code>2024A</code>、<code>2025A</code> 等年度口径。</span>
+                </div>
+              </section>
+
+              <el-collapse v-model="businessSegmentImportExampleCollapse" class="ownership-import-example">
+                <el-collapse-item title="查看最小示例" name="business-segment-example">
+                  <div class="ownership-import-example__content">
+                    <pre><code>格式 A：business_segments.csv
+company_id,segment_name,segment_type,revenue_ratio,reporting_period,is_current,source,description
+128,Cloud Services,primary,0.62,2024A,true,annual report,Cloud platform and related services
+128,Devices,secondary,0.38,2024A,true,annual report,Consumer devices
+
+格式 B：companies.csv
+company_key,name,stock_code,incorporation_country,listing_country,headquarters,description
+target,Import Target Co,IMP-9002,China,China,Shanghai,Imported company
+
+格式 B：business_segments.csv
+company_key,segment_name,segment_type,revenue_ratio,reporting_period,is_current
+target,Advanced Manufacturing,primary,75%,2024A,true
+target,Industrial Services,secondary,25%,2024A,true</code></pre>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
+
+              <el-form label-position="top">
+                <el-form-item label="ZIP 文件">
+                  <el-upload
+                    drag
+                    action=""
+                    :auto-upload="false"
+                    :limit="1"
+                    :file-list="businessSegmentImportFileList"
+                    accept=".zip"
+                    :on-change="handleBusinessSegmentImportFileChange"
+                    :on-remove="clearBusinessSegmentImportFile"
+                  >
+                    <div class="ownership-import__upload-text">
+                      将包含 business_segments.csv，或 companies.csv + business_segments.csv 的 ZIP 拖到此处，或点击选择文件
+                    </div>
+                  </el-upload>
+                </el-form-item>
+
+                <div class="ownership-import__options">
+                  <el-form-item label="导入对象">
+                    <el-radio-group v-model="businessSegmentImportForm.targetMode">
+                      <el-radio-button label="existing_companies_only">仅已有公司业务线</el-radio-button>
+                      <el-radio-button label="new_companies_with_segments">新公司 + 业务线事实</el-radio-button>
+                    </el-radio-group>
+                  </el-form-item>
+                  <el-form-item label="导入模式">
+                    <el-radio-group v-model="businessSegmentImportForm.importMode">
+                      <el-radio-button label="validate_only">仅校验</el-radio-button>
+                      <el-radio-button label="import_and_generate">导入并生成结果</el-radio-button>
+                    </el-radio-group>
+                  </el-form-item>
+                  <el-form-item label="业务线冲突处理">
+                    <el-radio-group v-model="businessSegmentImportForm.conflictStrategy">
+                      <el-radio-button label="fail_on_duplicate">发现重复即失败</el-radio-button>
+                      <el-radio-button label="skip_existing">跳过已有</el-radio-button>
+                      <el-radio-button label="update_existing">更新已有</el-radio-button>
+                      <el-radio-button label="replace_company_period">按公司 + 报告期覆盖</el-radio-button>
+                      <el-radio-button label="replace_company_all">按公司全量覆盖</el-radio-button>
+                    </el-radio-group>
+                    <span class="ownership-import__field-help">
+                      重复判断优先使用 <code>company_id + reporting_period + segment_name</code>。
+                    </span>
+                  </el-form-item>
+                </div>
+              </el-form>
+
+              <div class="ownership-import__actions">
+                <el-button @click="ownershipImportVisible = false">关闭</el-button>
+                <el-button
+                  type="primary"
+                  :loading="businessSegmentImportSubmitting"
+                  @click="handleBusinessSegmentImport"
+                >
+                  {{ businessSegmentImportForm.importMode === 'validate_only' ? '开始校验' : '导入并生成结果' }}
+                </el-button>
+              </div>
+
+              <section v-if="businessSegmentImportResult" class="ownership-import__result">
+                <div class="ownership-import__stats">
+                  <div>
+                    <span>公司</span>
+                    <strong>{{ businessSegmentImportResult.summary?.companies_created || 0 }} / {{ businessSegmentImportResult.summary?.companies_existing || 0 }} / {{ businessSegmentImportResult.summary?.companies_updated || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>业务线</span>
+                    <strong>{{ businessSegmentImportResult.summary?.business_segments_created || 0 }} / {{ businessSegmentImportResult.summary?.business_segments_updated || 0 }} / {{ businessSegmentImportResult.summary?.business_segments_skipped || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>覆盖删除</span>
+                    <strong>{{ businessSegmentImportResult.summary?.business_segments_deleted || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>受影响公司</span>
+                    <strong>{{ businessSegmentImportResult.summary?.affected_company_count || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>分类重建</span>
+                    <strong>{{ businessSegmentImportResult.summary?.classification_rebuilt_count || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span>错误 / 警告</span>
+                    <strong>{{ businessSegmentImportResult.summary?.error_count || 0 }} / {{ businessSegmentImportResult.summary?.warning_count || 0 }}</strong>
+                  </div>
+                </div>
+                <p class="ownership-import__stats-note">
+                  公司摘要：新增 / 已有 / 更新；业务线摘要：新增 / 更新 / 跳过。
+                </p>
+
+                <el-alert
+                  v-if="businessSegmentImportResult.revenue_ratio_anomaly_groups?.length"
+                  type="warning"
+                  show-icon
+                  :closable="false"
+                  title="存在 revenue_ratio 合计异常的公司报告期组合，请核对。"
+                />
+
+                <el-table
+                  v-if="businessSegmentImportResult.errors?.length"
+                  :data="businessSegmentImportResult.errors"
+                  size="small"
+                  border
+                  max-height="260"
+                >
+                  <el-table-column prop="file" label="文件" min-width="170" />
+                  <el-table-column prop="row" label="行" width="72" />
+                  <el-table-column prop="field" label="字段" min-width="150" />
+                  <el-table-column prop="message" label="错误信息" min-width="260" />
+                </el-table>
+
+                <el-table
+                  v-if="businessSegmentImportResult.warnings?.length"
+                  :data="businessSegmentImportResult.warnings"
+                  size="small"
+                  border
+                  max-height="220"
+                >
+                  <el-table-column prop="file" label="文件" min-width="170" />
+                  <el-table-column prop="row" label="行" width="72" />
+                  <el-table-column prop="field" label="字段" min-width="150" />
+                  <el-table-column prop="message" label="警告信息" min-width="260" />
+                </el-table>
+
+                <section
+                  v-if="businessSegmentImportResult.classification_rebuild"
+                  class="ownership-import__analysis"
+                >
+                  <h3>分类重建结果</h3>
+                  <div class="ownership-import__stats">
+                    <div>
+                      <span>处理业务线</span>
+                      <strong>{{ businessSegmentImportResult.classification_rebuild?.total_segments || 0 }}</strong>
+                    </div>
+                    <div>
+                      <span>分类行</span>
+                      <strong>{{ businessSegmentImportResult.classification_rebuild?.classification_rows || 0 }}</strong>
+                    </div>
+                    <div>
+                      <span>待复核</span>
+                      <strong>{{ (businessSegmentImportResult.classification_rebuild?.needs_llm_review_count || 0) + (businessSegmentImportResult.classification_rebuild?.needs_manual_review_count || 0) }}</strong>
+                    </div>
+                  </div>
+                </section>
+              </section>
             </div>
           </el-tab-pane>
 
-          <el-tab-pane label="产业分类结果导入" name="industry-classifications">
+          <el-tab-pane label="导入历史" name="import-history">
             <div class="data-import-placeholder">
-              <h3>产业分类结果导入</h3>
-              <p>后续可用于导入 business_segment_classifications.csv，支持产业分类结果批量维护。</p>
-              <el-tag type="info" effect="plain">后续支持</el-tag>
+              <h3>导入历史</h3>
+              <p>后端导入历史表待完善。当前先展示本次页面会话中的最近导入报告。</p>
+              <el-table
+                v-if="importHistoryRecords.length"
+                :data="importHistoryRecords"
+                size="small"
+                border
+                max-height="320"
+              >
+                <el-table-column prop="importedAt" label="导入时间" min-width="170" />
+                <el-table-column prop="type" label="导入类型" min-width="150" />
+                <el-table-column prop="status" label="状态" width="90" />
+                <el-table-column prop="rowCount" label="导入行数" width="100" />
+                <el-table-column prop="errorCount" label="错误" width="80" />
+                <el-table-column prop="warningCount" label="警告" width="80" />
+                <el-table-column label="生成结果" width="100">
+                  <template #default="{ row }">
+                    {{ row.generated ? '是' : '否' }}
+                  </template>
+                </el-table-column>
+              </el-table>
+              <el-empty
+                v-else
+                description="暂无本次会话导入记录"
+                :image-size="72"
+              />
             </div>
           </el-tab-pane>
         </el-tabs>
@@ -2268,6 +2594,12 @@ s001,parent,target,equity,60%,60%,true,true</code></pre>
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.ownership-import__options :deep(.el-radio-group) {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .ownership-import__actions {
